@@ -6,7 +6,7 @@
 
 A fast, keyboard-driven terminal UI for batch renaming photos and files by EXIF date, timezone, and geodata, with live preview and undo.
 
-![rn](docs/screenshot.svg)
+![rn showing the file table, flags, options strip, and a color picture preview](docs/screenshot.png)
 
 Run it inside the folder you want to rename, or pass a path. `rn` works on macOS, Linux, and Windows.
 
