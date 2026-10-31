@@ -29,3 +29,4 @@ None.
 - Filename date planning uses `source_tz is None` for the system zone. Passing the local tzinfo is not the same call.
 - The dashed timestamp strip (`YYYY-MM-DD-HHMMSS` at either end) always runs, even when every toggle is off.
 - `Widget.remove()` only schedules a prune. The id stays until that finishes. Await the removal before mounting another widget with the same id, or Textual raises `DuplicateIds`.
+- A Textual `Checkbox` or `Button` is 3 lines tall because of its border. Forcing `height: 1` paints only the top border. Use `compact=True`, or a one-line label, and give the strip enough height for its border plus those lines.

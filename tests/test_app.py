@@ -10,9 +10,16 @@ from pathlib import Path
 from rich.style import Style
 from rich.text import Text
 from textual.coordinate import Coordinate
-from textual.widgets import Checkbox, DataTable, Input, Static
+from textual.geometry import Region
+from textual.widgets import DataTable, Input, Static
 
-from tui_renamer.app import CommandScreen, RenamerApp, TimezoneScreen, linux_stdin_deleted
+from tui_renamer.app import (
+    CommandScreen,
+    OptionToggle,
+    RenamerApp,
+    TimezoneScreen,
+    linux_stdin_deleted,
+)
 
 
 class FrozenDate(datetime):
@@ -106,12 +113,18 @@ async def test_escape_closes_find_then_zoom_then_mode(tmp_path: Path) -> None:
         assert app.visual is False
 
 
+def _painted(widget) -> str:
+    """Text drawn inside one widget. A clipped height drops the label."""
+    crop = Region(0, 0, widget.size.width, max(widget.size.height, 1))
+    return "".join(line.text for line in widget.render_lines(crop))
+
+
 async def test_date_toggle_checks_the_option(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        box = app.query_one("#opt-add_datetime", Checkbox)
+        box = app.query_one("#opt-add_datetime", OptionToggle)
         assert box.value is False
         await pilot.press("d")
         assert box.value is True
@@ -119,7 +132,41 @@ async def test_date_toggle_checks_the_option(tmp_path: Path) -> None:
         await pilot.click("#opt-add_datetime")
         assert app.rules.add_datetime is False
         assert box.value is False
-        assert app.query_one("#options").size.height <= 5
+
+
+async def test_options_strip_shows_each_toggle_on_one_line(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(200, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        options = app.query_one("#options")
+        inner = options.content_region
+        for toggle in app.query(OptionToggle):
+            assert toggle.size.height == 1
+            assert inner.contains_region(toggle.region)
+            assert f"{toggle.key_name} {toggle.caption}" in _painted(toggle)
+        assert "[x] d Date" in _painted(app.query_one("#opt-add_datetime"))
+        assert "[ ] m Mod" in _painted(app.query_one("#opt-add_modtime"))
+        assert "[x] P Preview" in _painted(app.query_one("#opt-preview"))
+        for button in app.query("#opt-actions Button"):
+            assert button.size.height == 1
+            assert inner.contains_region(button.region)
+            assert str(button.label) in _painted(button)
+        assert app.query_one("#opt-toggles").size.height == 1
+        await pilot.resize_terminal(72, 40)
+        await pilot.pause()
+        options = app.query_one("#options")
+        inner = options.content_region
+        assert app.query_one("#opt-toggles").size.height >= 2
+        for toggle in app.query(OptionToggle):
+            assert toggle.size.height == 1
+            assert inner.contains_region(toggle.region)
+            assert f"{toggle.key_name} {toggle.caption}" in _painted(toggle)
+        for button in app.query("#opt-actions Button"):
+            assert button.size.height == 1
+            assert inner.contains_region(button.region)
 
 
 async def test_commands_overlay_filters_and_closes(tmp_path: Path) -> None:

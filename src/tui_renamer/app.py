@@ -10,15 +10,19 @@ from datetime import datetime, tzinfo
 from pathlib import Path
 
 from rich.text import Text
-from textual import work
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from textual.events import Click
+from textual.geometry import Size
+from textual.layouts.grid import GridLayout
+from textual.message import Message
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
-    Checkbox,
     DataTable,
     Footer,
     Header,
@@ -417,27 +421,91 @@ class DetailPane(Vertical):
             yield Static("", id="detail-body")
 
 
+class OptionToggle(Static):
+    """One line, such as `[x] d Date`. A click assigns the other state."""
+
+    class Changed(Message):
+        def __init__(self, toggle: OptionToggle, value: bool) -> None:
+            super().__init__()
+            self.toggle = toggle
+            self.value = value
+
+    def __init__(
+        self, key: str, caption: str, value: bool = False, *, id: str | None = None
+    ) -> None:
+        self.key_name = key
+        self.caption = caption
+        self._value = value
+        super().__init__(self._line(), id=id, markup=False)
+
+    @property
+    def value(self) -> bool:
+        return self._value
+
+    def _line(self) -> str:
+        mark = "[x]" if self._value else "[ ]"
+        return f"{mark} {self.key_name} {self.caption}"
+
+    def set_value(self, value: bool) -> None:
+        """Show `value` without posting Changed, so a refresh cannot toggle twice."""
+        if self._value == value:
+            return
+        self._value = value
+        self.update(self._line())
+
+    def get_content_width(self, container: Size, viewport: Size) -> int:
+        del container, viewport
+        return len(self._line())
+
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        del container, viewport, width
+        return 1
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        self._value = not self._value
+        self.update(self._line())
+        self.post_message(self.Changed(self, self._value))
+
+
+class WrappingRow(Widget):
+    """Grid row. Children stay one line tall and wrap instead of being clipped."""
+
+    def pre_layout(self, layout: object) -> None:
+        if not isinstance(layout, GridLayout) or not self.children:
+            return
+        viewport = self.app.size
+        widest = 1
+        for child in self.children:
+            widest = max(widest, child.get_content_width(self.size, viewport))
+        layout.min_column_width = widest
+
+
 class OptionsPane(Vertical):
-    """Checkboxes and buttons for the rules that used to be chips."""
+    """One-line toggles and buttons for the rules that used to be chips."""
 
     can_focus = True
 
+    def on_mount(self) -> None:
+        for button in self.query(Button):
+            button.styles.line_pad = 0
+
     def compose(self) -> ComposeResult:
-        with Horizontal(id="opt-toggles"):
+        with WrappingRow(id="opt-toggles"):
             for key, field, label in OPTION_FIELDS:
-                yield Checkbox(f"{key} {label}", id=f"opt-{field}", value=False)
-        with Horizontal(id="opt-modes"):
-            yield Checkbox("D Filename date", id="opt-date_mode", value=False)
-            yield Checkbox("M mtime", id="opt-mtime_mode", value=False)
-            yield Checkbox("P Preview", id="opt-preview", value=True)
-        with Horizontal(id="opt-actions"):
-            yield Button("Enter Apply", id="act-apply")
-            yield Button("u Undo", id="act-undo")
-            yield Button("T Local", id="act-zone")
-            yield Button("W Write zone", id="act-write-zone")
-            yield Button("B GPS", id="act-gps")
-            yield Button("r Refresh", id="act-refresh")
-            yield Button("0 Reset", id="act-reset")
+                yield OptionToggle(key, label, id=f"opt-{field}")
+        with WrappingRow(id="opt-modes"):
+            yield OptionToggle("D", "Filename date", id="opt-date_mode")
+            yield OptionToggle("M", "mtime", id="opt-mtime_mode")
+            yield OptionToggle("P", "Preview", value=True, id="opt-preview")
+        with WrappingRow(id="opt-actions"):
+            yield Button("Enter Apply", id="act-apply", compact=True)
+            yield Button("u Undo", id="act-undo", compact=True)
+            yield Button("T Local", id="act-zone", compact=True)
+            yield Button("W Write zone", id="act-write-zone", compact=True)
+            yield Button("B GPS", id="act-gps", compact=True)
+            yield Button("r Refresh", id="act-refresh", compact=True)
+            yield Button("0 Reset", id="act-reset", compact=True)
 
 
 SOURCE_STYLE = {
@@ -496,16 +564,28 @@ class RenamerApp(App[None]):
     #body { height: 1fr; }
     #files { width: 1fr; height: 100%; }
     #detail { width: 1fr; height: 100%; }
-    #options { height: 5; padding: 0 1; }
-    #opt-toggles, #opt-modes, #opt-actions { height: 1; overflow: hidden; }
-    #options Checkbox { height: 1; width: auto; margin: 0 1 0 0; padding: 0; }
-    #options Button {
+    #options { height: auto; padding: 0 1; }
+    #opt-toggles, #opt-modes, #opt-actions {
+        layout: grid;
+        height: auto;
+        width: 100%;
+        grid-gutter: 0 1;
+    }
+    #options OptionToggle, #options Button {
         height: 1;
+        min-height: 1;
+        max-height: 1;
         width: auto;
         min-width: 0;
-        margin: 0 1 0 0;
-        padding: 0 1;
+        margin: 0;
+        padding: 0;
         border: none;
+        content-align: left middle;
+    }
+    #options Button:hover, #options Button:focus {
+        height: 1;
+        border: none;
+        padding: 0;
     }
     #timeline { height: 1; padding: 0 1; }
     #status { height: auto; max-height: 3; padding: 0 1; }
@@ -1758,10 +1838,12 @@ class RenamerApp(App[None]):
         self._syncing = True
         try:
             for _key, field, _label in OPTION_FIELDS:
-                self.query_one(f"#opt-{field}", Checkbox).value = bool(getattr(self.rules, field))
-            self.query_one("#opt-date_mode", Checkbox).value = self.date_mode
-            self.query_one("#opt-mtime_mode", Checkbox).value = self.mtime_mode
-            self.query_one("#opt-preview", Checkbox).value = self.preview_on
+                self.query_one(f"#opt-{field}", OptionToggle).set_value(
+                    bool(getattr(self.rules, field))
+                )
+            self.query_one("#opt-date_mode", OptionToggle).set_value(self.date_mode)
+            self.query_one("#opt-mtime_mode", OptionToggle).set_value(self.mtime_mode)
+            self.query_one("#opt-preview", OptionToggle).set_value(self.preview_on)
             zone = self.rules.source_tz or "Local"
             self.query_one("#act-zone", Button).label = f"T {zone}"
         except NoMatches:
@@ -1769,10 +1851,11 @@ class RenamerApp(App[None]):
         finally:
             self._syncing = False
 
-    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+    @on(OptionToggle.Changed)
+    def _option_toggled(self, event: OptionToggle.Changed) -> None:
         if self._syncing:
             return
-        box_id = event.checkbox.id or ""
+        box_id = event.toggle.id or ""
         if box_id == "opt-date_mode":
             if event.value == self.date_mode:
                 return
