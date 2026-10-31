@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, tzinfo
 from pathlib import Path
 
@@ -781,6 +781,7 @@ class RenamerApp(App[None]):
         self._leader = False
         self._message = ""
         self._rebuilding = False
+        self._rebuild_depth = 0
         self._changing: set[int] = set()
         self._neighbors: list[str] = []
         self.exiftool = find_exiftool()
@@ -918,18 +919,14 @@ class RenamerApp(App[None]):
         return preview_name(path.name, self.facts_for(path), self.rules)
 
     def refresh_view(self) -> None:
-        self._rebuilding = True
-        try:
-            self._recompute_changing()
-            self._recompute_neighbors()
-            self._fill_table()
-            self._sync_options()
-            self._update_detail()
-            self._update_timeline()
-            self._update_status()
-            self._update_subtitle()
-        finally:
-            self._rebuilding = False
+        self._recompute_changing()
+        self._recompute_neighbors()
+        self._fill_table()
+        self._sync_options()
+        self._update_detail()
+        self._update_timeline()
+        self._update_status()
+        self._update_subtitle()
 
     def _recompute_changing(self) -> None:
         """Indexes whose apply preview differs from the file as it is now."""
@@ -1112,11 +1109,7 @@ class RenamerApp(App[None]):
         name_w, new_w = self._desired_flex()
         if name_w == self._name_width and new_w == self._new_width:
             return
-        self._rebuilding = True
-        try:
-            self._fill_table(keep_scroll=True)
-        finally:
-            self._rebuilding = False
+        self._fill_table()
 
     def _styled(
         self,
@@ -1153,28 +1146,78 @@ class RenamerApp(App[None]):
         names = [(path.name, self.preview_for(index)) for index, path in enumerate(self.files)]
         return query_hits(names, needle)
 
-    def _fill_table(self, *, keep_scroll: bool = False) -> None:
+    def _column_keys(self) -> tuple[str, ...]:
+        if self.date_mode:
+            return ("mark", "src", "flag", "miss", "file", "cur", "new", "status")
+        if self.mtime_mode:
+            return ("mark", "src", "flag", "miss", "name", "mtime", "status")
+        return ("mark", "src", "flag", "miss", "name", "new", "status")
+
+    def _current_rows(self) -> list[tuple[object, ...]]:
+        if self.date_mode:
+            return self._date_rows()
+        if self.mtime_mode:
+            return self._mtime_rows()
+        return self._rename_rows()
+
+    def _begin_rebuild(self) -> None:
+        """Ignore table highlights until the rebuild's cursor events have run."""
+        self._rebuild_depth += 1
+        self._rebuilding = True
+
+    def _end_rebuild(self) -> None:
+        self._rebuild_depth -= 1
+        if self._rebuild_depth <= 0:
+            self._rebuild_depth = 0
+            self._rebuilding = False
+
+    def _restore_table_scroll(self, x: float, y: float) -> None:
+        try:
+            table = self.query_one(FileTable)
+        except NoMatches:
+            return
+        table.scroll_to(x, y, animate=False)
+
+    def _fill_table(self) -> None:
         table = self.query_one(FileTable)
-        scroll = table.scroll_offset if keep_scroll else None
+        scroll_x = table.scroll_x
+        scroll_y = table.scroll_y
+        self._begin_rebuild()
         table.clear(columns=True)
         if self.date_mode:
             self._add_date_columns(table)
-            rows = self._date_rows()
         elif self.mtime_mode:
             self._add_mtime_columns(table)
-            rows = self._mtime_rows()
         else:
             self._add_rename_columns(table)
-            rows = self._rename_rows()
-        for row in rows:
-            table.add_row(*row)
+        for index, row in enumerate(self._current_rows()):
+            table.add_row(*row, key=str(index))
         if table.row_count:
             self._cursor = min(self._cursor, table.row_count - 1)
-            table.move_cursor(row=self._cursor)
+            table.move_cursor(row=self._cursor, scroll=False)
         else:
             self._cursor = 0
-        if scroll is not None:
-            table.scroll_to(scroll.x, scroll.y, animate=False)
+        # After the cursor watcher scrolls the row into view.
+        table.call_after_refresh(self._restore_table_scroll, scroll_x, scroll_y)
+        self.call_after_refresh(self._end_rebuild)
+
+    def _paint_rows(self, indexes: Iterable[int]) -> None:
+        """Update selection or lock cells without clearing the table."""
+        wanted = sorted({index for index in indexes if 0 <= index < len(self.files)})
+        table = self.query_one(FileTable)
+        if wanted and table.row_count == len(self.files):
+            rows = self._current_rows()
+            columns = self._column_keys()
+            for index in wanted:
+                for column, value in zip(columns, rows[index], strict=True):
+                    table.update_cell(str(index), column, value, update_width=False)
+        elif wanted:
+            self.refresh_view()
+            return
+        self._update_detail()
+        self._update_timeline()
+        self._update_status()
+        self._update_subtitle()
 
     def _add_rename_columns(self, table: FileTable) -> None:
         name_w, new_w = self._name_new_widths()
@@ -1498,13 +1541,9 @@ class RenamerApp(App[None]):
             self.selected.update(new_block - old_block)
             self.selected.difference_update(old_block - new_block)
             self._cursor = row
-            self._rebuilding = True
-            try:
-                self._fill_table()
-            finally:
-                self._rebuilding = False
-        else:
-            self._cursor = row
+            self._paint_rows(old_block.symmetric_difference(new_block))
+            return
+        self._cursor = row
         self._update_detail()
         self._update_timeline()
         self._update_status()
@@ -1558,6 +1597,12 @@ class RenamerApp(App[None]):
         if self._zoom:
             self._set_zoom(None)
             self.query_one(FileTable).focus()
+            return
+        if self.visual:
+            self.visual = False
+            self.anchor = None
+            self.set_status("Visual select off")
+            self._paint_rows([])
             return
         if self._cancel_modes_on_escape():
             self.refresh_view()
@@ -1929,7 +1974,7 @@ class RenamerApp(App[None]):
             self.visual = False
             self.anchor = None
             self.set_status("Visual select off")
-            self.refresh_view()
+            self._paint_rows([self._cursor])
             return
         if not self.files:
             return
@@ -1937,7 +1982,7 @@ class RenamerApp(App[None]):
             self.selected.remove(self._cursor)
         else:
             self.selected.add(self._cursor)
-        self.refresh_view()
+        self._paint_rows([self._cursor])
 
     def action_visual(self) -> None:
         self._begin()
@@ -1946,25 +1991,27 @@ class RenamerApp(App[None]):
             self.anchor = self._cursor
             self.selected.add(self._cursor)
             self.set_status("Visual select on")
-        else:
-            self.anchor = None
-            self.visual = False
-            self.set_status("Visual select off")
-        self.refresh_view()
+            self._paint_rows([self._cursor])
+            return
+        self.anchor = None
+        self.visual = False
+        self.set_status("Visual select off")
+        self._paint_rows([])
 
     def action_select_all(self) -> None:
         self._begin()
         self.selected = set(range(len(self.files)))
         self.set_status(f"Selected all {len(self.files)} files")
-        self.refresh_view()
+        self._paint_rows(self.selected)
 
     def action_select_none(self) -> None:
         self._begin()
+        previous = set(self.selected)
         self.selected.clear()
         self.visual = False
         self.anchor = None
         self.set_status("Deselected all files")
-        self.refresh_view()
+        self._paint_rows(previous)
 
     def action_toggle(self, field: str) -> None:
         self._begin()
@@ -2069,7 +2116,8 @@ class RenamerApp(App[None]):
                 self.set_status("Locked this file")
             else:
                 self.set_status("No changes to lock")
-        self.refresh_view()
+        self._recompute_changing()
+        self._paint_rows([index])
 
     def action_lock_selected(self) -> None:
         self._begin()
@@ -2096,17 +2144,21 @@ class RenamerApp(App[None]):
             self.set_status(f"Locked {locked} files.")
         else:
             self.set_status("Selected files have no changes to lock.")
-        self.refresh_view()
+        self._recompute_changing()
+        self._paint_rows(self.selected)
 
     def action_unlock_all(self) -> None:
         self._begin()
         if not self.locked:
             self.set_status("No files are locked")
-        else:
-            count = len(self.locked)
-            self.locked.clear()
-            self.set_status(f"Unlocked all {count} locked files.")
-        self.refresh_view()
+            self._update_status()
+            return
+        count = len(self.locked)
+        indexes = list(self.locked)
+        self.locked.clear()
+        self.set_status(f"Unlocked all {count} locked files.")
+        self._recompute_changing()
+        self._paint_rows(indexes)
 
     def action_date_mode(self) -> None:
         self._begin()
