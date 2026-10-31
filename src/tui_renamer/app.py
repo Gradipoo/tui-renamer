@@ -1,0 +1,1582 @@
+"""Textual UI for rn."""
+
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, tzinfo
+from pathlib import Path
+
+from rich.text import Text
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.command import DiscoveryHit, Hit, Hits, Provider
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
+from textual.widgets import Button, DataTable, Footer, Header, Input, OptionList, Static
+
+from tui_renamer.core import (
+    ZONEINFO_AVAILABLE,
+    DatePlanItem,
+    FileFacts,
+    RenameRules,
+    Step,
+    active_steps,
+    datetime_for_write,
+    filter_timezones,
+    format_offset,
+    format_tz_display,
+    list_files,
+    list_timezones,
+    mtime_source,
+    name_diff_ops,
+    parse_filename_datetime,
+    plan_filename_dates,
+    preview_name,
+    rename_paths,
+    reset_name_rules,
+    resolve_tz,
+    show_not_oldest_warning,
+)
+from tui_renamer.journal import Batch, Journal, RenameOp
+from tui_renamer.metadata import (
+    IMAGE_EXTENSIONS,
+    PIEXIF_AVAILABLE,
+    WriteCounts,
+    can_write_metadata,
+    find_exiftool,
+    find_setfile,
+    inspect_file,
+    set_birthtime,
+    set_filesystem_times,
+    tally_write,
+    timezone_write_message,
+    write_file_metadata_and_offset,
+    write_geodata,
+)
+
+TOGGLE_FIELDS = {
+    "d": "add_datetime",
+    "m": "add_modtime",
+    "o": "add_origtime",
+    "e": "use_json_data",
+    "b": "add_geodata",
+    "t": "use_prefix",
+    "x": "strip_original_name",
+    "y": "strip_to_text",
+    "c": "remove_caps",
+    "s": "remove_special",
+    "p": "replace_spaces",
+    ".": "replace_dots",
+}
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    group: str
+    key: str
+    label: str
+    description: str
+    run: str
+    state: str = ""
+
+
+def _spec(
+    group: str,
+    key: str,
+    label: str,
+    description: str,
+    run: str,
+    state: str = "",
+) -> CommandSpec:
+    return CommandSpec(group, key, label, description, run, state)
+
+
+COMMAND_SPECS: tuple[CommandSpec, ...] = (
+    _spec("Move", "k / up", "Up", "Move up", "cursor_up"),
+    _spec("Move", "j / down", "Down", "Move down", "cursor_down"),
+    _spec("Move", "pageup", "Page up", "Page up", "page_up"),
+    _spec("Move", "pagedown", "Page down", "Page down", "page_down"),
+    _spec("Move", "g g", "Top", "Jump to the first file", "goto_top"),
+    _spec("Move", "G", "Bottom", "Jump to the last file", "goto_end"),
+    _spec("Select", "space", "Select", "Select or clear this file", "toggle_select"),
+    _spec("Select", "v", "Visual", "Select a range", "visual", "visual"),
+    _spec("Select", "a", "All", "Select all", "select_all"),
+    _spec("Select", "A", "None", "Select none", "select_none"),
+    _spec("Name", "d", "Date", "Add today's date and time", "toggle:add_datetime", "add_datetime"),
+    _spec("Name", "m", "Mod", "Add the modified time", "toggle:add_modtime", "add_modtime"),
+    _spec("Name", "o", "Orig", "Add the original time", "toggle:add_origtime", "add_origtime"),
+    _spec("Name", "e", "JSON", "Read a sidecar JSON file", "toggle:use_json_data", "use_json_data"),
+    _spec("Name", "b", "Geo", "Add JSON location to the name", "toggle:add_geodata", "add_geodata"),
+    _spec("Name", "t", "Prefix", "Times at the start when on", "toggle:use_prefix", "use_prefix"),
+    _spec(
+        "Name",
+        "x",
+        "Strip",
+        "Drop the original name",
+        "toggle:strip_original_name",
+        "strip_original_name",
+    ),
+    _spec("Name", "y", "Text", "Keep letters and spaces", "toggle:strip_to_text", "strip_to_text"),
+    _spec("Name", "c", "lower", "Lowercase the name", "toggle:remove_caps", "remove_caps"),
+    _spec("Name", "s", "Symbols", "Remove symbols", "toggle:remove_special", "remove_special"),
+    _spec("Name", "p", "Dashes", "Spaces become dashes", "toggle:replace_spaces", "replace_spaces"),
+    _spec("Name", ".", "Dots", "Dots to dashes", "toggle:replace_dots", "replace_dots"),
+    _spec("Name", "0", "Reset", "Reset name options", "reset_rules"),
+    _spec("Edit", "i", "Edit", "Edit this name", "insert"),
+    _spec("Edit", "l", "Lock", "Lock this file", "lock"),
+    _spec("Edit", "L", "Lock all", "Lock selected files", "lock_selected"),
+    _spec("Edit", "U", "Unlock", "Unlock all", "unlock_all"),
+    _spec("Actions", "enter", "Apply", "Apply the current mode", "apply"),
+    _spec("Actions", "D", "Filename date", "Set dates from filenames", "date_mode", "date_mode"),
+    _spec("Actions", "W", "Write zone", "Write date and timezone offset", "write_timezone"),
+    _spec("Actions", "M", "mtime", "Set mtime mode", "mtime_mode", "mtime_mode"),
+    _spec("Actions", "B", "Write GPS", "Write JSON location into EXIF", "write_geodata"),
+    _spec("Actions", "T", "Timezone", "Choose a timezone", "timezone"),
+    _spec("Actions", "u", "Undo", "Undo the last batch", "undo"),
+    _spec("Actions", "r", "Refresh", "Reload the folder", "reload_files"),
+    _spec("Actions", "?", "Help", "Show commands", "help"),
+    _spec("Actions", "q", "Quit", "Quit", "quit"),
+)
+
+APP_FLAGS = {"visual", "date_mode", "mtime_mode"}
+
+
+def linux_stdin_deleted() -> bool:
+    """True when Linux reports that the terminal device for stdin is gone."""
+    if sys.platform != "linux":
+        return False
+    try:
+        fd = sys.__stdin__.fileno()
+        if not os.isatty(fd):
+            return False
+        target = os.readlink(f"/proc/self/fd/{fd}")
+    except (OSError, ValueError):
+        return False
+    return target.endswith(" (deleted)")
+
+
+def split_stem(filename: str) -> tuple[str, str]:
+    """Split a name into the editable stem and the extension."""
+    dot = filename.rfind(".")
+    if 0 < dot < len(filename) - 1:
+        return filename[:dot], filename[dot:]
+    return filename, ""
+
+
+def _flag(app: RenamerApp, name: str) -> bool | None:
+    if not name:
+        return None
+    if name in APP_FLAGS:
+        return bool(getattr(app, name))
+    return bool(getattr(app.rules, name))
+
+
+def help_text(app: RenamerApp) -> str:
+    lines: list[str] = []
+    group = ""
+    for spec in COMMAND_SPECS:
+        if spec.group != group:
+            if lines:
+                lines.append("")
+            lines.append(spec.group)
+            group = spec.group
+        flag = _flag(app, spec.state)
+        mark = ""
+        if flag is True:
+            mark = "[x] "
+        elif flag is False:
+            mark = "[ ] "
+        lines.append(f"  {spec.key:<14} {mark}{spec.description}")
+    lines.append("")
+    lines.append("Panes: 1 files, 2 detail, 3 rules. : or ctrl+p opens the command palette.")
+    return "\n".join(lines)
+
+
+def _invoke(app: RenamerApp, spec: CommandSpec) -> Callable[[], None]:
+    run = spec.run
+
+    def call(run: str = run, app: RenamerApp = app) -> None:
+        if run.startswith("toggle:"):
+            app.action_toggle(run.split(":", 1)[1])
+        else:
+            getattr(app, f"action_{run}")()
+
+    return call
+
+
+class RenamerCommands(Provider):
+    """Every rn action, for the command palette."""
+
+    async def discover(self) -> Hits:
+        app = self.app
+        assert isinstance(app, RenamerApp)
+        for spec in COMMAND_SPECS:
+            yield DiscoveryHit(
+                f"{spec.key}  {spec.label}",
+                _invoke(app, spec),
+                help=spec.description,
+                text=f"{spec.key} {spec.label} {spec.description}",
+            )
+
+    async def search(self, query: str) -> Hits:
+        app = self.app
+        assert isinstance(app, RenamerApp)
+        matcher = self.matcher(query)
+        for spec in COMMAND_SPECS:
+            blob = f"{spec.key} {spec.label} {spec.description} {spec.group}"
+            score = matcher.match(blob)
+            if score > 0:
+                yield Hit(
+                    score,
+                    matcher.highlight(f"{spec.key}  {spec.label}"),
+                    _invoke(app, spec),
+                    help=spec.description,
+                    text=blob,
+                )
+
+
+class DebugLog:
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        if path is None:
+            return
+        try:
+            path.write_text(
+                f"--- rn debug ---\nSession started: {datetime.now().isoformat()}\n\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            self.path = None
+
+    def write(self, message: str) -> None:
+        if self.path is None:
+            return
+        try:
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(message + "\n")
+        except OSError:
+            pass
+
+
+class ConfirmScreen(ModalScreen[bool]):
+    BINDINGS = [
+        Binding("y", "answer(True)", show=False),
+        Binding("n,escape", "answer(False)", show=False),
+    ]
+
+    def __init__(self, question: str) -> None:
+        super().__init__()
+        self.question = question
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static(self.question, id="confirm-question")
+            yield Button("Yes", id="yes")
+            yield Button("No", id="no")
+
+    def on_mount(self) -> None:
+        self.query_one("#no", Button).focus()
+
+    def action_answer(self, yes: bool) -> None:
+        self.dismiss(yes)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "yes":
+            self.dismiss(True)
+        elif event.button.id == "no":
+            self.dismiss(False)
+
+
+class HelpScreen(ModalScreen[None]):
+    BINDINGS = [Binding("escape,q,question_mark,h", "close", show=False)]
+
+    def __init__(self, body: str) -> None:
+        super().__init__()
+        self.body = body
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="dialog"):
+            yield Static(self.body, markup=False)
+            yield Static("Esc, q, or ? closes.", markup=False)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class InsertScreen(ModalScreen[tuple[str, str]]):
+    """Edit the stem. Escape saves. Enter saves and renames."""
+
+    BINDINGS = [Binding("escape", "save", show=False)]
+
+    def __init__(self, stem: str, extension: str) -> None:
+        super().__init__()
+        self.stem = stem
+        self.extension = extension
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static("Edit name", markup=False)
+            yield Input(value=self.stem, id="stem", select_on_focus=True)
+            yield Static(self.extension or "(no extension)", id="extension", markup=False)
+            yield Static("Esc saves. Enter saves and renames.", markup=False)
+
+    def on_mount(self) -> None:
+        self.query_one("#stem", Input).focus()
+
+    def _full(self) -> str:
+        return self.query_one("#stem", Input).value + self.extension
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(("rename", event.value + self.extension))
+
+    def action_save(self) -> None:
+        self.dismiss(("save", self._full()))
+
+
+class TimezoneScreen(ModalScreen[str | None]):
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("up", "prev", show=False),
+        Binding("down", "next", show=False),
+        Binding("ctrl+u", "clear_query", show=False),
+    ]
+
+    def __init__(self, current: str | None) -> None:
+        super().__init__()
+        self.names = list_timezones()
+        self.current = current or "Local System"
+        self.matches = list(self.names)
+        self.index = self.names.index(self.current) if self.current in self.names else 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static("Select timezone", markup=False)
+            yield Input(placeholder="Search", id="query")
+            yield OptionList(id="zones", markup=False)
+            yield Static("", id="tz-hint", markup=False)
+
+    def on_mount(self) -> None:
+        self._refill()
+        self.query_one("#query", Input).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self.matches = filter_timezones(self.names, event.value)
+        self.index = 0
+        self._refill()
+
+    def _refill(self) -> None:
+        options = self.query_one("#zones", OptionList)
+        options.clear_options()
+        now = datetime.now()
+        for name in self.matches:
+            options.add_option(format_tz_display(name, now))
+        hint = f"{len(self.matches)} matches"
+        if self.matches:
+            self.index = min(self.index, len(self.matches) - 1)
+            options.highlighted = self.index
+        else:
+            hint = "No matching timezones"
+        self.query_one("#tz-hint", Static).update(hint)
+
+    def action_prev(self) -> None:
+        if not self.matches:
+            return
+        self.index = max(0, self.index - 1)
+        self.query_one("#zones", OptionList).highlighted = self.index
+
+    def action_next(self) -> None:
+        if not self.matches:
+            return
+        self.index = min(len(self.matches) - 1, self.index + 1)
+        self.query_one("#zones", OptionList).highlighted = self.index
+
+    def action_pick(self) -> None:
+        if self.matches:
+            self.dismiss(self.matches[self.index])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_clear_query(self) -> None:
+        self.query_one("#query", Input).value = ""
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        del event
+        self.action_pick()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.index = event.option_index
+        self.action_pick()
+
+
+class FileTable(DataTable):
+    BINDINGS = [
+        Binding("enter", "app.apply", show=False),
+        Binding("space", "app.toggle_select", show=False),
+        Binding("j", "app.cursor_down", show=False),
+        Binding("k", "app.cursor_up", show=False),
+        Binding("up", "app.cursor_up", show=False),
+        Binding("down", "app.cursor_down", show=False),
+        Binding("pageup", "app.page_up", show=False),
+        Binding("pagedown", "app.page_down", show=False),
+        Binding("g", "app.leader_g", show=False),
+        Binding("G", "app.goto_end", show=False),
+    ]
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(cursor_type="row", zebra_stripes=True, **kwargs)  # type: ignore[arg-type]
+
+
+class DetailPane(VerticalScroll):
+    def compose(self) -> ComposeResult:
+        yield Static("", id="detail-body")
+
+
+class RulesPane(Static):
+    can_focus = True
+    BINDINGS = [
+        Binding("left", "prev_chip", show=False),
+        Binding("right", "next_chip", show=False),
+        Binding("enter", "toggle_chip", show=False),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__(id="rules")
+        self.steps: list[Step] = []
+        self.index = 0
+
+    def set_steps(self, steps: list[Step]) -> None:
+        self.steps = steps
+        if self.steps:
+            self.index = min(self.index, len(self.steps) - 1)
+        else:
+            self.index = 0
+        self.redraw()
+
+    def redraw(self) -> None:
+        if not self.steps:
+            self.update(
+                "No rename steps. Letters such as d, m, and o turn them on. : lists commands."
+            )
+            return
+        text = Text()
+        for index, step in enumerate(self.steps):
+            if index == self.index and self.has_focus:
+                style = f"bold black on {step.color}"
+            else:
+                style = f"bold {step.color}"
+            text.append(f" {step.key} {step.label} ", style=style)
+            text.append(" ")
+        self.update(text)
+
+    def on_focus(self) -> None:
+        self.redraw()
+
+    def on_blur(self) -> None:
+        self.redraw()
+
+    def action_prev_chip(self) -> None:
+        if self.steps:
+            self.index = max(0, self.index - 1)
+            self.redraw()
+
+    def action_next_chip(self) -> None:
+        if self.steps:
+            self.index = min(len(self.steps) - 1, self.index + 1)
+            self.redraw()
+
+    def action_toggle_chip(self) -> None:
+        app = self.app
+        assert isinstance(app, RenamerApp)
+        app.action_chip()
+
+
+class RenamerApp(App[None]):
+    """Batch renamer. Keys match the original curses script."""
+
+    TITLE = "rn"
+    CSS = """
+    Screen { layout: vertical; }
+    #body { height: 1fr; }
+    #files { width: 1fr; height: 100%; }
+    #detail { width: 1fr; height: 100%; }
+    #rules { height: auto; max-height: 5; padding: 0 1; }
+    #status { height: auto; max-height: 3; padding: 0 1; }
+    #files, #detail, #rules { border: solid $primary; }
+    ConfirmScreen, HelpScreen, TimezoneScreen, InsertScreen { align: center middle; }
+    #dialog {
+        width: 72;
+        max-width: 90%;
+        height: auto;
+        max-height: 80%;
+        background: $panel;
+        border: thick $primary;
+        padding: 1 2;
+    }
+    #zones { height: 12; }
+    """
+    COMMANDS = {RenamerCommands}
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("?", "help", "Help"),
+        Binding("h", "help", show=False),
+        Binding("f1", "help", show=False),
+        Binding("ctrl+p", "command_palette", "Commands", show=False),
+        Binding(":", "command_palette", "Commands"),
+        Binding("space", "toggle_select", "Select"),
+        Binding("enter", "apply", "Apply"),
+        Binding("escape", "escape", show=False),
+        Binding("1", "focus_files", show=False),
+        Binding("2", "focus_detail", show=False),
+        Binding("3", "focus_rules", show=False),
+        Binding("j", "cursor_down", show=False),
+        Binding("k", "cursor_up", show=False),
+        Binding("up", "cursor_up", show=False),
+        Binding("down", "cursor_down", show=False),
+        Binding("pageup", "page_up", show=False),
+        Binding("pagedown", "page_down", show=False),
+        Binding("g", "leader_g", show=False),
+        Binding("G", "goto_end", show=False),
+        Binding("v", "visual", show=False),
+        Binding("a", "select_all", show=False),
+        Binding("A", "select_none", show=False),
+        Binding("d", "toggle('add_datetime')", show=False),
+        Binding("m", "toggle('add_modtime')", show=False),
+        Binding("o", "toggle('add_origtime')", show=False),
+        Binding("e", "toggle('use_json_data')", show=False),
+        Binding("b", "toggle('add_geodata')", show=False),
+        Binding("t", "toggle('use_prefix')", show=False),
+        Binding("x", "toggle('strip_original_name')", show=False),
+        Binding("y", "toggle('strip_to_text')", show=False),
+        Binding("c", "toggle('remove_caps')", show=False),
+        Binding("s", "toggle('remove_special')", show=False),
+        Binding("p", "toggle('replace_spaces')", show=False),
+        Binding(".", "toggle('replace_dots')", show=False),
+        Binding("0", "reset_rules", show=False),
+        Binding("i", "insert", show=False),
+        Binding("l", "lock", show=False),
+        Binding("L", "lock_selected", show=False),
+        Binding("U", "unlock_all", show=False),
+        Binding("D", "date_mode", show=False),
+        Binding("W", "write_timezone", show=False),
+        Binding("M", "mtime_mode", show=False),
+        Binding("B", "write_geodata", show=False),
+        Binding("T", "timezone", show=False),
+        Binding("u", "undo", show=False),
+        Binding("r", "reload_files", show=False),
+    ]
+
+    def __init__(self, directory: Path, debug: bool = False) -> None:
+        super().__init__()
+        self.directory = directory
+        self.rules = RenameRules()
+        self.files: list[Path] = []
+        self.selected: set[int] = set()
+        self.locked: dict[int, str] = {}
+        self.manual: dict[int, str] = {}
+        self._facts: dict[tuple[str, str | None, bool], FileFacts] = {}
+        self._cursor = 0
+        self.visual = False
+        self.anchor: int | None = None
+        self.date_mode = False
+        self.mtime_mode = False
+        self._leader = False
+        self._message = ""
+        self._rebuilding = False
+        self.exiftool = find_exiftool()
+        self.setfile = find_setfile()
+        self.journal = Journal(Path(tempfile.mkdtemp(prefix="rn-undo-")))
+        log_path = directory / "renamer_debug.log" if debug else None
+        self.debug_log = DebugLog(log_path)
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal(id="body"):
+            yield FileTable(id="files")
+            yield DetailPane(id="detail")
+        yield RulesPane()
+        yield Static("", id="status")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#files").border_title = "1 Files"
+        self.query_one("#detail").border_title = "2 Detail"
+        self.query_one("#rules").border_title = "3 Rules"
+        self.rules.datetime_stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        self.reload_files()
+        if not self.exiftool:
+            self.set_status(
+                "exiftool is not on PATH. Video, HEIC, and PNG metadata writes are off."
+            )
+        self.refresh_view()
+        self._apply_layout(self.size.width)
+        self.set_interval(0.5, self._tick)
+        self.query_one(FileTable).focus()
+
+    def on_unmount(self) -> None:
+        self.journal.cleanup()
+
+    def on_resize(self, event: object) -> None:
+        width = getattr(getattr(event, "size", None), "width", self.size.width)
+        if self.is_mounted:
+            self._apply_layout(width)
+
+    def _apply_layout(self, width: int) -> None:
+        body = self.query_one("#body")
+        files = self.query_one("#files")
+        detail = self.query_one("#detail")
+        narrow = width < 100
+        body.set_class(narrow, "-narrow")
+        if narrow:
+            body.styles.layout = "vertical"
+            files.styles.width = "100%"
+            detail.styles.width = "100%"
+            files.styles.height = "1fr"
+            detail.styles.height = "1fr"
+        else:
+            body.styles.layout = "horizontal"
+            files.styles.width = "1fr"
+            detail.styles.width = "1fr"
+            files.styles.height = "100%"
+            detail.styles.height = "100%"
+
+    def _tick(self) -> None:
+        if linux_stdin_deleted():
+            self.exit()
+            return
+        if not self.rules.add_datetime or len(self.screen_stack) > 1:
+            return
+        stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        if stamp != self.rules.datetime_stamp:
+            self.rules.datetime_stamp = stamp
+            self.refresh_view()
+
+    def debug(self, message: str) -> None:
+        self.debug_log.write(message)
+
+    def set_status(self, message: str) -> None:
+        self._message = message
+
+    def _begin(self) -> None:
+        self._leader = False
+        self._message = ""
+
+    def reload_files(self) -> None:
+        self.files = list_files(self.directory)
+        self.selected.clear()
+        self.locked.clear()
+        self.manual.clear()
+        self._facts.clear()
+        self._cursor = 0
+        self.visual = False
+        self.anchor = None
+
+    def target_zone(self) -> tzinfo:
+        return resolve_tz(self.rules.source_tz)
+
+    def plan_zone(self) -> tzinfo | None:
+        if self.rules.source_tz:
+            return resolve_tz(self.rules.source_tz)
+        return None
+
+    def facts_for(self, path: Path) -> FileFacts:
+        key = (str(path), self.rules.source_tz, self.rules.use_json_data)
+        cached = self._facts.get(key)
+        if cached is None:
+            cached = inspect_file(path, self.rules, self.target_zone())
+            self._facts[key] = cached
+        return cached
+
+    def preview_for(self, index: int) -> str:
+        path = self.files[index]
+        if index in self.locked:
+            return self.locked[index]
+        if index in self.manual:
+            return self.manual[index]
+        return preview_name(path.name, self.facts_for(path), self.rules)
+
+    def refresh_view(self) -> None:
+        self._rebuilding = True
+        try:
+            self._fill_table()
+            self.query_one(RulesPane).set_steps(active_steps(self.rules))
+            self._update_detail()
+            self._update_status()
+            self._update_subtitle()
+        finally:
+            self._rebuilding = False
+
+    def _fill_table(self) -> None:
+        table = self.query_one(FileTable)
+        table.clear(columns=True)
+        if self.date_mode:
+            self._add_date_columns(table)
+            rows = self._date_rows()
+        elif self.mtime_mode:
+            self._add_mtime_columns(table)
+            rows = self._mtime_rows()
+        else:
+            self._add_rename_columns(table)
+            rows = self._rename_rows()
+        for row in rows:
+            table.add_row(*row)
+        if table.row_count:
+            self._cursor = min(self._cursor, table.row_count - 1)
+            table.move_cursor(row=self._cursor)
+        else:
+            self._cursor = 0
+
+    def _add_rename_columns(self, table: FileTable) -> None:
+        table.add_column("", key="mark", width=2)
+        table.add_column("Name", key="name")
+        table.add_column("New", key="new")
+        table.add_column("Status", key="status", width=10)
+
+    def _add_date_columns(self, table: FileTable) -> None:
+        table.add_column("", key="mark", width=2)
+        table.add_column("File", key="file")
+        table.add_column("Current", key="cur", width=19)
+        table.add_column("New", key="new", width=19)
+        table.add_column("Status", key="status", width=10)
+
+    def _add_mtime_columns(self, table: FileTable) -> None:
+        table.add_column("", key="mark", width=2)
+        table.add_column("Name", key="name")
+        table.add_column("New mtime", key="mtime", width=19)
+        table.add_column("Status", key="status", width=10)
+
+    def _mark(self, index: int) -> str:
+        return "*" if index in self.selected else ""
+
+    def _rename_rows(self) -> list[tuple[str, str, Text, str]]:
+        rows: list[tuple[str, str, Text, str]] = []
+        for index, path in enumerate(self.files):
+            new_name = self.preview_for(index)
+            style = ""
+            if index in self.locked:
+                style = "bold green"
+            elif index in self.manual:
+                style = "bold yellow"
+            elif new_name != path.name:
+                style = "yellow"
+            rows.append(
+                (
+                    self._mark(index),
+                    path.name,
+                    Text(new_name, style=style),
+                    self._rename_status(index, new_name),
+                )
+            )
+        return rows
+
+    def _rename_status(self, index: int, new_name: str) -> str:
+        facts = self.facts_for(self.files[index])
+        if index in self.locked:
+            return "LOCKED"
+        if index in self.manual:
+            return "MANUAL"
+        if index in self.selected:
+            return "SELECTED"
+        if facts.json_error:
+            return "JSON ERR"
+        if new_name != self.files[index].name:
+            return "MODIFIED"
+        return "UNCHANGED"
+
+    def _date_rows(self) -> list[tuple[str, str, str, str, str]]:
+        plan = plan_filename_dates(self.files, self.plan_zone())
+        by_path = {item.path: item for item in plan.todo + plan.same}
+        zone = self.plan_zone()
+        rows: list[tuple[str, str, str, str, str]] = []
+        for index, path in enumerate(self.files):
+            item = by_path.get(path)
+            current = self._clock(path, zone)
+            if item is None:
+                parsed, _precision = parse_filename_datetime(path.name)
+                new = "---" if parsed is None else "Error"
+                status = "NO DATE" if parsed is None else "ERR"
+            else:
+                new = _format_stamp(item.target, zone)
+                status = "UPDATE" if item in plan.todo else "UNCHANGED"
+            if index in self.selected:
+                status = "SELECTED"
+            rows.append((self._mark(index), path.name, current, new, status))
+        return rows
+
+    def _mtime_rows(self) -> list[tuple[str, str, str, str]]:
+        local = _local_zone()
+        rows: list[tuple[str, str, str, str]] = []
+        for index, path in enumerate(self.files):
+            label, _moment = mtime_source(self.facts_for(path), self.rules, local)
+            status = "SELECTED" if index in self.selected else "UNCHANGED"
+            rows.append((self._mark(index), path.name, label, status))
+        return rows
+
+    def _clock(self, path: Path, zone: tzinfo | None) -> str:
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            return "Error"
+        return _format_stamp(stamp, zone)
+
+    def _update_detail(self) -> None:
+        self.query_one("#detail-body", Static).update(self._detail_text())
+
+    def _detail_text(self) -> Text:
+        text = Text()
+        if not self.files:
+            text.append("No files in this folder.\n")
+            text.append("Press r after you add some.\n", style="dim")
+            return text
+        path = self.files[self._cursor]
+        facts = self.facts_for(path)
+        new_name = self.preview_for(self._cursor)
+        text.append(path.name + "\n", style="bold")
+        if self._cursor in self.locked:
+            text.append("locked\n", style="green")
+        elif self._cursor in self.manual:
+            text.append("manual edit\n", style="yellow")
+        for tag, piece in name_diff_ops(path.name, new_name):
+            style = {"equal": "", "delete": "red strike", "insert": "green"}[tag]
+            text.append(piece, style=style)
+        text.append("\n\n")
+        if facts.json_error:
+            text.append("JSON sidecar could not be read.\n", style="red")
+        if facts.sidecar is not None:
+            text.append(f"sidecar  {facts.sidecar.name}\n")
+        text.append("Dates\n", style="bold")
+        if facts.candidates:
+            for candidate in facts.candidates:
+                text.append(f"  {candidate.label}\n    {candidate.text}\n")
+        else:
+            text.append("  none\n", style="dim")
+        text.append("\nWinner\n", style="bold")
+        text.append(f"  original  {facts.origtime_text or 'none'}\n")
+        text.append(f"  modified  {facts.modtime_text or 'none'}\n")
+        zone_name = self.rules.source_tz or "Local"
+        offset = format_offset(datetime.now(self.target_zone()))
+        text.append(f"\nZone  {zone_name} ({offset})\n")
+        if facts.geodata:
+            text.append(f"Geodata  {facts.geodata}\n")
+            if facts.geodata_raw:
+                text.append(
+                    f"  {facts.geodata_raw['latitude']}, {facts.geodata_raw['longitude']}\n"
+                )
+        else:
+            text.append("Geodata  none\n", style="dim")
+        if show_not_oldest_warning(facts, self.rules):
+            text.append("\n! Chosen time is not the oldest\n", style="bold yellow")
+        return text
+
+    def _update_status(self) -> None:
+        widget = self.query_one("#status", Static)
+        if self._message:
+            widget.update(self._message)
+            return
+        if self._leader:
+            widget.update("g then g: first file")
+            return
+        if not self.files:
+            widget.update("")
+            return
+        path = self.files[self._cursor]
+        new_name = self.preview_for(self._cursor)
+        if new_name == path.name:
+            widget.update(Text.assemble(path.name, (" (unchanged)", "dim")))
+            return
+        text = Text()
+        for tag, piece in name_diff_ops(path.name, new_name):
+            style = {"equal": "", "delete": "red strike", "insert": "bold green"}[tag]
+            text.append(piece, style=style)
+        widget.update(text)
+
+    def _update_subtitle(self) -> None:
+        if self.visual:
+            mode = "VISUAL"
+        elif self.date_mode:
+            mode = "FILENAME DATE"
+        elif self.mtime_mode:
+            mode = "SET MTIME"
+        else:
+            mode = "NORMAL"
+        total = len(self.files)
+        pos = min(self._cursor + 1, total) if total else 0
+        place = "Prefix" if self.rules.use_prefix else "Suffix"
+        zone = self.rules.source_tz or "Local"
+        extra = []
+        if self.selected:
+            extra.append(f"Sel:{len(self.selected)}")
+        if self.locked:
+            extra.append(f"Lock:{len(self.locked)}")
+        if self.manual:
+            extra.append(f"Man:{len(self.manual)}")
+        tail = ("  " + " ".join(extra)) if extra else ""
+        self.sub_title = f"{mode}  {pos}/{total}  {place}  {zone}{tail}"
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if self._rebuilding:
+            return
+        row = event.cursor_row
+        if self.visual and self.anchor is not None and row != self._cursor:
+            old = self._cursor
+            old_block = set(range(min(self.anchor, old), max(self.anchor, old) + 1))
+            new_block = set(range(min(self.anchor, row), max(self.anchor, row) + 1))
+            self.selected.update(new_block - old_block)
+            self.selected.difference_update(old_block - new_block)
+            self._cursor = row
+            self._rebuilding = True
+            try:
+                self._fill_table()
+            finally:
+                self._rebuilding = False
+        else:
+            self._cursor = row
+        self._update_detail()
+        self._update_status()
+        self._update_subtitle()
+
+    def _move_to(self, row: int) -> None:
+        if not self.files:
+            return
+        table = self.query_one(FileTable)
+        self._cursor = max(0, min(row, len(self.files) - 1))
+        if table.row_count:
+            table.move_cursor(row=self._cursor)
+
+    def _targets(self) -> list[int]:
+        if self.selected:
+            return sorted(index for index in self.selected if index < len(self.files))
+        if self.files and self._cursor < len(self.files):
+            return [self._cursor]
+        return []
+
+    def _ask(self, question: str, on_yes: Callable[[], None]) -> None:
+        def done(yes: bool | None) -> None:
+            if yes:
+                on_yes()
+            else:
+                self.set_status("Cancelled.")
+                self._update_status()
+
+        self.push_screen(ConfirmScreen(question), done)
+
+    def _cancel_modes_on_escape(self) -> bool:
+        if self.visual:
+            self.visual = False
+            self.anchor = None
+            self.set_status("Visual select off")
+            return True
+        if self.date_mode:
+            self.date_mode = False
+            self.set_status("Filename date mode off")
+            return True
+        if self.mtime_mode:
+            self.mtime_mode = False
+            self.set_status("Set mtime mode off")
+            return True
+        return False
+
+    def action_escape(self) -> None:
+        if self._cancel_modes_on_escape():
+            self.refresh_view()
+
+    def action_focus_files(self) -> None:
+        self._begin()
+        self.query_one(FileTable).focus()
+
+    def action_focus_detail(self) -> None:
+        self._begin()
+        self.query_one("#detail").focus()
+
+    def action_focus_rules(self) -> None:
+        self._begin()
+        self.query_one(RulesPane).focus()
+
+    def action_help(self) -> None:
+        self._begin()
+        self.push_screen(HelpScreen(help_text(self)))
+
+    def action_cursor_down(self) -> None:
+        self._begin()
+        table = self.query_one(FileTable)
+        if table.row_count:
+            table.action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self._begin()
+        table = self.query_one(FileTable)
+        if table.row_count:
+            table.action_cursor_up()
+
+    def action_page_down(self) -> None:
+        self._begin()
+        table = self.query_one(FileTable)
+        if table.row_count:
+            table.action_page_down()
+
+    def action_page_up(self) -> None:
+        self._begin()
+        table = self.query_one(FileTable)
+        if table.row_count:
+            table.action_page_up()
+
+    def action_leader_g(self) -> None:
+        if self._leader:
+            self._leader = False
+            self._move_to(0)
+            self.set_status("")
+            self._update_status()
+        else:
+            self._leader = True
+            self.set_status("g then g: first file")
+            self._update_status()
+
+    def action_goto_top(self) -> None:
+        self._begin()
+        self._move_to(0)
+
+    def action_goto_end(self) -> None:
+        self._begin()
+        if self.files:
+            self._move_to(len(self.files) - 1)
+
+    def action_toggle_select(self) -> None:
+        self._begin()
+        if self.visual:
+            self.visual = False
+            self.anchor = None
+            self.set_status("Visual select off")
+            self.refresh_view()
+            return
+        if not self.files:
+            return
+        if self._cursor in self.selected:
+            self.selected.remove(self._cursor)
+        else:
+            self.selected.add(self._cursor)
+        self.refresh_view()
+
+    def action_visual(self) -> None:
+        self._begin()
+        self.visual = not self.visual
+        if self.visual and self.files:
+            self.anchor = self._cursor
+            self.selected.add(self._cursor)
+            self.set_status("Visual select on")
+        else:
+            self.anchor = None
+            self.visual = False
+            self.set_status("Visual select off")
+        self.refresh_view()
+
+    def action_select_all(self) -> None:
+        self._begin()
+        self.selected = set(range(len(self.files)))
+        self.set_status(f"Selected all {len(self.files)} files")
+        self.refresh_view()
+
+    def action_select_none(self) -> None:
+        self._begin()
+        self.selected.clear()
+        self.visual = False
+        self.anchor = None
+        self.set_status("Deselected all files")
+        self.refresh_view()
+
+    def action_toggle(self, field: str) -> None:
+        self._begin()
+        setattr(self.rules, field, not getattr(self.rules, field))
+        if field == "use_json_data":
+            self._facts.clear()
+            state = "on" if self.rules.use_json_data else "off"
+            self.set_status(f"JSON data is {state}")
+        if field == "add_datetime" and self.rules.add_datetime:
+            self.rules.datetime_stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        self.refresh_view()
+
+    def action_chip(self) -> None:
+        pane = self.query_one(RulesPane)
+        if not pane.steps:
+            return
+        step = pane.steps[pane.index]
+        if step.key == "T":
+            self._begin()
+            self.rules.source_tz = None
+            self._facts.clear()
+            self.set_status("Timezone override cleared.")
+            self.refresh_view()
+            return
+        field = TOGGLE_FIELDS.get(step.key)
+        if field:
+            self.action_toggle(field)
+
+    def action_reset_rules(self) -> None:
+        self._begin()
+        reset_name_rules(self.rules)
+        self._facts.clear()
+        self.set_status("Name options reset.")
+        self.refresh_view()
+
+    def action_lock(self) -> None:
+        self._begin()
+        if self.date_mode or self.mtime_mode:
+            self.set_status("Date or mtime mode is on.")
+            self._update_status()
+            return
+        if not self.files:
+            return
+        index = self._cursor
+        if index in self.locked:
+            del self.locked[index]
+            self.set_status("Unlocked this file")
+        else:
+            path = self.files[index]
+            new_name = self.manual.get(index) or preview_name(
+                path.name, self.facts_for(path), self.rules
+            )
+            if new_name != path.name:
+                self.locked[index] = new_name
+                self.set_status("Locked this file")
+            else:
+                self.set_status("No changes to lock")
+        self.refresh_view()
+
+    def action_lock_selected(self) -> None:
+        self._begin()
+        if self.date_mode or self.mtime_mode:
+            self.set_status("Date or mtime mode is on.")
+            self._update_status()
+            return
+        if not self.selected:
+            self.set_status("No files selected to lock")
+            self._update_status()
+            return
+        locked = 0
+        for index in self.selected:
+            if index >= len(self.files) or index in self.locked:
+                continue
+            path = self.files[index]
+            new_name = self.manual.get(index) or preview_name(
+                path.name, self.facts_for(path), self.rules
+            )
+            if new_name != path.name:
+                self.locked[index] = new_name
+                locked += 1
+        if locked:
+            self.set_status(f"Locked {locked} files.")
+        else:
+            self.set_status("Selected files have no changes to lock.")
+        self.refresh_view()
+
+    def action_unlock_all(self) -> None:
+        self._begin()
+        if not self.locked:
+            self.set_status("No files are locked")
+        else:
+            count = len(self.locked)
+            self.locked.clear()
+            self.set_status(f"Unlocked all {count} locked files.")
+        self.refresh_view()
+
+    def action_date_mode(self) -> None:
+        self._begin()
+        self.date_mode = not self.date_mode
+        if self.date_mode:
+            self.mtime_mode = False
+        state = "on" if self.date_mode else "off"
+        self.set_status(f"Filename date mode {state}")
+        self.refresh_view()
+
+    def action_mtime_mode(self) -> None:
+        self._begin()
+        self.mtime_mode = not self.mtime_mode
+        if self.mtime_mode:
+            self.date_mode = False
+        state = "on" if self.mtime_mode else "off"
+        self.set_status(f"Set mtime mode {state}")
+        self.refresh_view()
+
+    def action_reload_files(self) -> None:
+        self._begin()
+        self.reload_files()
+        self.set_status("File list refreshed")
+        self.refresh_view()
+
+    def action_insert(self) -> None:
+        self._begin()
+        if self.visual or self.date_mode or self.mtime_mode:
+            self.set_status("Cannot enter insert mode while in another mode.")
+            self._update_status()
+            return
+        if not self.files:
+            return
+        stem, extension = split_stem(self.preview_for(self._cursor))
+
+        def done(result: tuple[str, str] | None) -> None:
+            if not result:
+                return
+            kind, name = result
+            self._save_manual(name)
+            if kind == "rename":
+                self.action_apply()
+            else:
+                self.refresh_view()
+
+        self.push_screen(InsertScreen(stem, extension), done)
+
+    def _save_manual(self, name: str) -> None:
+        cleaned = name.strip()
+        if cleaned:
+            self.manual[self._cursor] = cleaned
+            self.set_status("Manual edit applied.")
+        elif self._cursor in self.manual:
+            del self.manual[self._cursor]
+            self.set_status("Manual edit cleared.")
+
+    def action_timezone(self) -> None:
+        self._begin()
+        if not ZONEINFO_AVAILABLE:
+            self.set_status("Timezone selection needs zoneinfo.")
+            self._update_status()
+            return
+
+        def done(selected: str | None) -> None:
+            if not selected:
+                self.set_status("Timezone selection cancelled.")
+                self._update_status()
+                return
+            if selected == "Local System":
+                self.rules.source_tz = None
+                self.set_status("Timezone override cleared (using system time).")
+            else:
+                try:
+                    zone = resolve_tz(selected)
+                except Exception:
+                    self.set_status(f"Timezone '{selected}' was not found.")
+                    self._update_status()
+                    return
+                self.rules.source_tz = selected
+                offset = format_offset(datetime.now(zone))
+                self.set_status(f"Timezone set to {selected} ({offset}).")
+            self._facts.clear()
+            self.refresh_view()
+
+        self.push_screen(TimezoneScreen(self.rules.source_tz), done)
+
+    def _rename_pairs(self) -> list[tuple[Path, str]]:
+        names: dict[int, str] = dict(self.locked)
+        for index, name in self.manual.items():
+            names.setdefault(index, name)
+        for index in self.selected:
+            if index in names or index >= len(self.files):
+                continue
+            path = self.files[index]
+            new_name = preview_name(path.name, self.facts_for(path), self.rules)
+            if new_name != path.name:
+                names[index] = new_name
+        pairs: list[tuple[Path, str]] = []
+        for index, name in sorted(names.items()):
+            if index < len(self.files):
+                pairs.append((self.files[index], name))
+        return pairs
+
+    def action_apply(self) -> None:
+        self._begin()
+        if self.visual:
+            self.visual = False
+            self.anchor = None
+            self.set_status("Visual select off")
+            self.refresh_view()
+            return
+        if self.date_mode:
+            self._ask_dates()
+            return
+        if self.mtime_mode:
+            self._ask_mtime()
+            return
+        pairs = [(src, name) for src, name in self._rename_pairs() if src.name != name]
+        if not pairs:
+            self.set_status("No changes to apply.")
+            self._update_status()
+            return
+        self._ask(f"Rename {len(pairs)} files?", lambda: self._do_rename(pairs))
+
+    def _do_rename(self, pairs: list[tuple[Path, str]]) -> None:
+        outcome = rename_paths(pairs)
+        self.journal.push(Batch("rename", [RenameOp(src, dst) for src, dst in outcome.done]))
+        self.reload_files()
+        message = f"Renamed {len(outcome.done)} files."
+        if outcome.conflicts:
+            message += f" {outcome.conflicts} conflicts."
+        if outcome.errors:
+            message += f" {len(outcome.errors)} errors."
+            self.debug("; ".join(outcome.errors))
+        self.set_status(message)
+        self.refresh_view()
+
+    def _ask_mtime(self) -> None:
+        if not self.selected:
+            self.set_status("No files selected. Press space to select.")
+            self._update_status()
+            return
+        indexes = [index for index in sorted(self.selected) if index < len(self.files)]
+        self._ask(
+            f"Set mtime for {len(indexes)} files?",
+            lambda: self._do_mtime(indexes),
+        )
+
+    def _do_mtime(self, indexes: list[int]) -> None:
+        local = _local_zone()
+        batch = Batch("mtime")
+        updated = 0
+        errors = 0
+        for index in indexes:
+            path = self.files[index]
+            _label, moment = mtime_source(self.facts_for(path), self.rules, local)
+            if moment is None:
+                errors += 1
+                continue
+            op = self.journal.snapshot(path, mode="times")
+            try:
+                stamp = moment.timestamp()
+                os.utime(path, (stamp, stamp))
+            except OSError as exc:
+                errors += 1
+                self.debug(f"Error setting mtime: {exc}")
+                continue
+            batch.ops.append(op)
+            updated += 1
+        self.journal.push(batch)
+        self._facts.clear()
+        self.mtime_mode = False
+        message = f"Updated mtime for {updated} files."
+        if errors:
+            message += f" {errors} failed."
+        self.set_status(message)
+        self.refresh_view()
+
+    def _ask_dates(self) -> None:
+        if self.selected:
+            paths = [
+                self.files[index] for index in sorted(self.selected) if index < len(self.files)
+            ]
+        else:
+            paths = list(self.files)
+        plan = plan_filename_dates(paths, self.plan_zone())
+        if not plan.todo:
+            if plan.same:
+                self.set_status(
+                    f"Nothing to do: {len(plan.same)} file(s) already match their filename."
+                )
+            else:
+                self.set_status(
+                    "No date found in the filename(s). Expected e.g. 2024-01-31-142500 or 20240131."
+                )
+            self._update_status()
+            return
+        zone = self.target_zone()
+        offset = format_offset(datetime.now(zone))
+        name = self.rules.source_tz or "Local System"
+        n_time = sum(1 for item in plan.todo if item.prec in ("second", "minute"))
+        n_noon = sum(1 for item in plan.todo if item.prec == "date")
+        n_nudge = sum(1 for item in plan.todo if item.nudged)
+        parts = [
+            part
+            for part in (
+                f"{n_time} with time" if n_time else "",
+                f"{n_noon} date-only set to 12:00" if n_noon else "",
+                f"{n_nudge} nudged by 1 second" if n_nudge else "",
+            )
+            if part
+        ]
+        question = (
+            f"Set dates and EXIF offsets ({offset}) for {len(plan.todo)} file(s)?\n"
+            f"Timezone: {name}. Sets mtime, birth time, and EXIF offset tags.\n"
+        )
+        if parts:
+            question += ", ".join(parts) + "\n"
+        question += "y or n"
+        todo = list(plan.todo)
+        self._ask(question, lambda: self._do_dates(todo))
+
+    def _do_dates(self, todo: list[DatePlanItem]) -> None:
+        zone = self.target_zone()
+        batch = Batch("dates")
+        ok = 0
+        errors = 0
+        meta_ok = 0
+        notes: list[str] = []
+        for item in todo:
+            try:
+                moment = datetime.fromtimestamp(item.target, tz=zone)
+            except (OSError, OverflowError, ValueError) as exc:
+                errors += 1
+                self.debug(f"Error setting date for {item.path.name}: {exc}")
+                continue
+            try:
+                op = self.journal.snapshot(item.path)
+            except OSError as exc:
+                errors += 1
+                self.debug(f"Snapshot failed for {item.path.name}: {exc}")
+                continue
+            if not set_filesystem_times(item.path, moment, setfile=self.setfile):
+                errors += 1
+                continue
+            if write_file_metadata_and_offset(item.path, moment, exiftool=self.exiftool):
+                meta_ok += 1
+            ok += 1
+            if op is not None:
+                batch.ops.append(op)
+                if op.copy_failed:
+                    notes.append(f"{item.path.name}: metadata cannot be undone")
+        self.journal.push(batch)
+        self._facts.clear()
+        self.date_mode = False
+        note = f" ({meta_ok} EXIF or video tags written)" if meta_ok else ""
+        message = f"Set dates on {ok} file(s){note}."
+        if errors:
+            message += f" {errors} failed."
+        if notes:
+            message += " " + " ".join(notes)
+        self.set_status(message)
+        self.refresh_view()
+
+    def action_write_timezone(self) -> None:
+        self._begin()
+        indexes = self._targets()
+        if not indexes:
+            self.set_status("No files selected.")
+            self._update_status()
+            return
+        zone = self.target_zone()
+        offset = format_offset(datetime.now(zone))
+        name = self.rules.source_tz or "Local System"
+        question = (
+            f"Write EXIF date and timezone offset ({offset}) to {len(indexes)} file(s)?\n"
+            f"Timezone: {name}\n"
+            "Sets DateTimeOriginal, OffsetTimeOriginal, and filesystem dates.\n"
+            "y or n"
+        )
+        self._ask(question, lambda: self._do_timezone(indexes))
+
+    def _do_timezone(self, indexes: list[int]) -> None:
+        zone = self.target_zone()
+        batch = Batch("timezone")
+        counts = WriteCounts()
+        notes: list[str] = []
+        for index in indexes:
+            path = self.files[index]
+            moment = datetime_for_write(path, self.facts_for(path), zone)
+            if moment is None:
+                counts.skipped += 1
+                continue
+            try:
+                op = self.journal.snapshot(path)
+            except OSError as exc:
+                counts.skipped += 1
+                self.debug(f"Snapshot failed for {path.name}: {exc}")
+                continue
+            if op.copy_failed:
+                notes.append(f"{path.name}: metadata cannot be undone")
+            filesystem_ok = set_filesystem_times(path, moment, setfile=self.setfile)
+            if can_write_metadata(path):
+                metadata_ok: bool | None = write_file_metadata_and_offset(
+                    path, moment, exiftool=self.exiftool
+                )
+            else:
+                metadata_ok = None
+            tally_write(counts, filesystem_ok=filesystem_ok, metadata_ok=metadata_ok)
+            if filesystem_ok or metadata_ok:
+                batch.ops.append(op)
+            if metadata_ok is False:
+                self.debug(f"Metadata write failed for {path.name}")
+        self.journal.push(batch)
+        self._facts.clear()
+        message = timezone_write_message(counts)
+        if notes:
+            message += " " + " ".join(notes)
+        self.set_status(message)
+        self.refresh_view()
+
+    def action_write_geodata(self) -> None:
+        self._begin()
+        if not PIEXIF_AVAILABLE:
+            self.set_status("Cannot write EXIF. piexif is not installed.")
+            self._update_status()
+            return
+        indexes = [
+            index
+            for index in self._targets()
+            if self.files[index].suffix.lower() in IMAGE_EXTENSIONS
+        ]
+        if not indexes:
+            self.set_status("No compatible image files selected (.jpg, .tif).")
+            self._update_status()
+            return
+        self._ask(
+            f"Write geodata to {len(indexes)} files?",
+            lambda: self._do_geodata(indexes),
+        )
+
+    def _do_geodata(self, indexes: list[int]) -> None:
+        batch = Batch("geodata")
+        updated = 0
+        errors = 0
+        for index in indexes:
+            path = self.files[index]
+            raw = self.facts_for(path).geodata_raw
+            if not raw:
+                errors += 1
+                continue
+            try:
+                op = self.journal.snapshot(path)
+            except OSError as exc:
+                errors += 1
+                self.debug(f"Snapshot failed for {path.name}: {exc}")
+                continue
+            if write_geodata(path, raw["latitude"], raw["longitude"]):
+                updated += 1
+                if op is not None:
+                    batch.ops.append(op)
+            else:
+                errors += 1
+                self.debug(f"Failed to write geodata to {path.name}")
+        self.journal.push(batch)
+        self._facts.clear()
+        message = f"Wrote geodata to {updated} files."
+        if errors:
+            message += f" {errors} failed."
+        self.set_status(message)
+        self.refresh_view()
+
+    def action_undo(self) -> None:
+        self._begin()
+
+        def restore_birth(path: Path, birth: float) -> None:
+            set_birthtime(path, datetime.fromtimestamp(birth).astimezone(), setfile=self.setfile)
+
+        result = self.journal.undo(restore_birth=restore_birth)
+        if result is None:
+            self.set_status("Nothing to undo.")
+            self._update_status()
+            return
+        self.reload_files()
+        message = f"Undid {result.kind} ({result.restored} restored)."
+        if result.notes:
+            message += " " + " ".join(result.notes)
+        self.set_status(message)
+        self.refresh_view()
+
+
+def _local_zone() -> tzinfo:
+    zone = datetime.now().astimezone().tzinfo
+    assert zone is not None
+    return zone
+
+
+def _format_stamp(stamp: float, zone: tzinfo | None) -> str:
+    return datetime.fromtimestamp(stamp, tz=zone).strftime("%Y-%m-%d %H:%M:%S")
