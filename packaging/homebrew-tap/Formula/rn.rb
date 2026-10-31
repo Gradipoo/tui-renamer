@@ -73,8 +73,8 @@ class Rn < Formula
   end
 
   resource "textual-image" do
-    url "https://files.pythonhosted.org/packages/e8/32/7844d7c06cfc540caeb3ad8e7f96e66a12daac8934f4d45a86cab879e7e1/textual_image-0.14.2.tar.gz"
-    sha256 "0ec2ac1e2a9b30bfc478708ea011eb31e7844c377322ed2094976c1a84c131ba"
+    url "https://files.pythonhosted.org/packages/66/da/80883aab94e35ff27b3fc6f28eeb1824c19422090344b15d54d24e9dd02f/textual_image-0.14.2-py3-none-any.whl"
+    sha256 "f698d883959637515ab6c7086ffbc17fffc204a90010562b4f3bd1fba963ade4"
   end
 
   resource "typing-extensions" do
