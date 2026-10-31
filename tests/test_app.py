@@ -637,3 +637,75 @@ async def test_preview_falls_back_when_the_widget_is_missing(tmp_path: Path, mon
         assert not app.query("#preview-image")
         detail = str(app.query_one("#detail-body").render())
         assert "dot.png" in detail
+
+
+async def test_video_source_letter_is_quicktime(tmp_path: Path) -> None:
+    from tests.test_quicktime import CAPTURE, movie, mvhd
+
+    (tmp_path / "clip.mp4").write_bytes(movie(mvhd(CAPTURE)))
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one(DataTable)
+        assert table.get_cell_at(Coordinate(0, 1)).plain == "Q"
+        assert "e" not in table.get_cell_at(Coordinate(0, 3)).plain
+        detail = str(app.query_one("#detail-body").render())
+        assert "Src QuickTime" in detail
+
+
+async def test_at_jumps_to_the_previous_warning(tmp_path: Path) -> None:
+    from PIL import Image
+
+    from tui_renamer.metadata import write_image_exif_datetime
+
+    (tmp_path / "a-note.txt").write_text("x", encoding="utf-8")
+    for name in ("b-2020-06-01-120000-photo.jpg", "c-2020-06-01-120000-photo.jpg"):
+        path = tmp_path / name
+        Image.new("RGB", (8, 8), (20, 30, 40)).save(path, format="JPEG")
+        write_image_exif_datetime(path, datetime(2020, 6, 1, 17, 0, tzinfo=timezone.utc))
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.rules.source_tz = "UTC"
+        app._facts.clear()
+        app.refresh_view()
+        await pilot.pause()
+        table = app.query_one(DataTable)
+        await pilot.press("G")
+        assert table.cursor_row == 2
+        await pilot.press("@")
+        assert table.cursor_row == 1
+        await pilot.press("@")
+        assert table.cursor_row == 2
+
+
+async def test_preview_and_zoom_are_remembered(tmp_path: Path) -> None:
+    (tmp_path / "note.txt").write_text("x", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("P")
+        await pilot.press("1")
+        await pilot.pause()
+        assert app.preview_on is False
+        assert app._zoom == "files"
+
+    again = RenamerApp(tmp_path)
+    async with again.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert again.preview_on is False
+        assert again.query_one("#preview-slot").has_class("-off")
+        assert again._zoom == "files"
+        assert again.screen.has_class("-zoom-files")
+        await pilot.press("ctrl+0")
+        await pilot.pause()
+        assert again.preview_on is True
+        assert again._zoom is None
+        assert not again.query_one("#preview-slot").has_class("-off")
+        assert not again.screen.has_class("-zoom-files")
+
+    reset = RenamerApp(tmp_path)
+    async with reset.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert reset.preview_on is True
+        assert reset._zoom is None

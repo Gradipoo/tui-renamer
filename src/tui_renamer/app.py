@@ -94,6 +94,7 @@ from tui_renamer.search import (
     match_span,
     query_hits,
 )
+from tui_renamer.view_config import ViewState, clear_view, load_view, save_view
 
 TOGGLE_FIELDS = {
     "d": "add_datetime",
@@ -576,6 +577,7 @@ SOURCE_STYLE = {
     "B": "blue",
     "M": "yellow",
     "F": "cyan",
+    "Q": "cyan",
 }
 FLAG_STYLE = {
     "H": "bold yellow",
@@ -600,6 +602,7 @@ SOURCE_NAME = {
     "B": "birth or ctime",
     "M": "mtime",
     "F": "filename",
+    "Q": "QuickTime",
 }
 MISSING_NAME = {
     "e": "no EXIF date",
@@ -734,6 +737,8 @@ class RenamerApp(App[None]):
         Binding("left_square_bracket", "prev_changed", show=False),
         Binding("ctrl+g", "search_again", show=False),
         Binding("!", "next_warning", show=False),
+        Binding("@", "prev_warning", show=False),
+        Binding("ctrl+0", "reset_view", show=False),
         Binding("P", "preview", show=False),
         Binding("v", "visual", show=False),
         Binding("a", "select_all", show=False),
@@ -821,6 +826,10 @@ class RenamerApp(App[None]):
         self.query_one("#detail").border_title = "2 Detail"
         self.query_one("#options").border_title = "3 Options"
         self.query_one("#preview-slot").border_title = "4 Preview"
+        saved = load_view()
+        self.preview_on = saved.preview
+        self.query_one("#preview-slot").set_class(not saved.preview, "-off")
+        self._set_zoom(saved.zoom, persist=False)
         self.rules.datetime_stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         self.reload_files()
         if not self.exiftool:
@@ -1627,11 +1636,16 @@ class RenamerApp(App[None]):
         if self._cancel_modes_on_escape():
             self.refresh_view()
 
-    def _set_zoom(self, which: str | None) -> None:
+    def _set_zoom(self, which: str | None, *, persist: bool = True) -> None:
         self._zoom = which
         for name in ("files", "detail", "options", "preview"):
             self.screen.set_class(which == name, f"-zoom-{name}")
+        if persist:
+            self._save_view()
         self.call_after_refresh(self._fit_table_columns)
+
+    def _save_view(self) -> None:
+        save_view(ViewState(preview=self.preview_on, zoom=self._zoom))
 
     def _zoom_to(self, which: str, target_id: str) -> None:
         self._begin()
@@ -1779,6 +1793,20 @@ class RenamerApp(App[None]):
             self.set_status("Preview off")
         self._sync_options()
         self._update_status()
+        self._save_view()
+
+    def action_reset_view(self) -> None:
+        self._begin()
+        clear_view()
+        self.preview_on = True
+        self.query_one("#preview-slot").set_class(False, "-off")
+        self._set_zoom(None, persist=False)
+        self._preview_gen += 1
+        self._schedule_preview()
+        self.set_status("View reset")
+        self._sync_options()
+        self._update_status()
+        self.query_one(FileTable).focus()
 
     def _open_find(self) -> None:
         self._begin()
@@ -1960,6 +1988,14 @@ class RenamerApp(App[None]):
             if is_warning(self.facts_for(path), self._neighbor_at(index))
         ]
         self._jump_hits(hits, 1, "No warnings.", "No other warning.")
+
+    def action_prev_warning(self) -> None:
+        hits = [
+            index
+            for index, path in enumerate(self.files)
+            if is_warning(self.facts_for(path), self._neighbor_at(index))
+        ]
+        self._jump_hits(hits, -1, "No warnings.", "No other warning.")
 
     def _jump_hits(
         self,

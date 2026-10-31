@@ -1,6 +1,8 @@
-"""Keep tests off the real terminal graphics probe."""
+"""Keep tests off the real terminal graphics probe and the real view config."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 from textual.widgets import Static
@@ -41,3 +43,9 @@ class FakeImage(Static):
 @pytest.fixture(autouse=True)
 def _fake_image_widget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tui_renamer.preview.load_image_widget", lambda: FakeImage)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_view_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    folder = tmp_path / "rn-config"
+    monkeypatch.setattr("tui_renamer.view_config.config_dir", lambda: folder)

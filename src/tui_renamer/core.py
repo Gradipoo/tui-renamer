@@ -641,13 +641,14 @@ def _set_winner(
     fs_birth: datetime | None,
     final_mod: datetime | None,
     filename_instant: datetime | None,
+    capture_letter: str = "E",
 ) -> None:
     """Letter for the clock datetime_for_write would use."""
     if json_orig is not None:
         facts.winner_source = "J"
         facts.winner_instant = json_orig
     elif exif_utc is not None:
-        facts.winner_source = "E"
+        facts.winner_source = capture_letter
         facts.winner_instant = exif_utc
     elif fs_birth is not None:
         facts.winner_source = "B"
@@ -669,6 +670,7 @@ def load_facts(
     exif_label: str = "EXIF DateTimeOriginal",
     exif_offset_text: str = "",
     has_gps: bool = False,
+    capture_letter: str = "E",
 ) -> FileFacts:
     """Pick original and modified times the way the curses script did.
 
@@ -732,8 +734,9 @@ def load_facts(
         label = exif_label
         if exif_offset_text:
             label = f"{exif_label} {exif_offset_text}"
-        facts.has_exif = True
-        facts.has_offset = bool(exif_offset_text)
+        if capture_letter == "E":
+            facts.has_exif = True
+            facts.has_offset = bool(exif_offset_text)
         facts.candidates.append(
             DateCandidate(label, _show(exif_utc, zone), instant=exif_utc, capture=True)
         )
@@ -763,6 +766,7 @@ def load_facts(
         fs_birth,
         final_mod,
         filename_instant,
+        capture_letter,
     )
     return facts
 
