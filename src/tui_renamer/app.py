@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import datetime, tzinfo
 from pathlib import Path
 
+from rich.style import Style
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -483,10 +484,13 @@ class OptionToggle(Static):
         return self._value
 
     def _chip(self) -> Text:
+        # Gap space uses its own style so it stays a separate segment. A plain
+        # space merges into the label run, and SVG textLength then squeezes it.
         text = Text()
         text.append(" ")
         text.append(self.key_name, style="bold underline")
-        text.append(f" {self.caption} ")
+        text.append(" ", style=Style(bold=False))
+        text.append(f"{self.caption} ")
         return text
 
     def set_value(self, value: bool) -> None:

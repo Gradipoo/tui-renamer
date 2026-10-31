@@ -161,10 +161,19 @@ async def test_options_strip_shows_each_toggle_on_one_line(tmp_path: Path) -> No
         for toggle in app.query(OptionToggle):
             assert toggle.size.height == 1
             assert inner.contains_region(toggle.region)
+            chip = toggle.render()
+            assert chip.plain == f" {toggle.key_name} {toggle.caption} "
+            assert chip.plain[1 + len(toggle.key_name)] == " "
             assert f"{toggle.key_name} {toggle.caption}" in _painted(toggle)
             assert toggle.tooltip
-            chip = toggle.render()
-            assert any("underline" in str(span.style) for span in chip.spans)
+            key_spans = [
+                span
+                for span in chip.spans
+                if span.start == 1 and span.end == 1 + len(toggle.key_name)
+            ]
+            assert key_spans
+            style = str(key_spans[0].style)
+            assert "underline" in style and "bold" in style
         for button in app.query("#opt-actions Button"):
             assert button.size.height == 1
             assert inner.contains_region(button.region)
@@ -186,6 +195,7 @@ async def test_options_strip_shows_each_toggle_on_one_line(tmp_path: Path) -> No
         for toggle in app.query(OptionToggle):
             assert toggle.size.height == 1
             assert inner.contains_region(toggle.region)
+            assert toggle.render().plain == f" {toggle.key_name} {toggle.caption} "
             assert f"{toggle.key_name} {toggle.caption}" in _painted(toggle)
         for button in app.query("#opt-actions Button"):
             assert button.size.height == 1
