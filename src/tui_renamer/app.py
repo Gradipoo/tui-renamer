@@ -1567,32 +1567,60 @@ class RenamerApp(App[None]):
         self.call_from_thread(self._apply_preview, path_str, generation, result)
 
     def _apply_preview(self, path_str: str, generation: int, result: file_preview.Preview) -> None:
+        if not self._preview_current(generation, path_str):
+            return
+        self.run_worker(
+            self._show_preview(result, generation, path_str),
+            group="preview-show",
+            exclusive=True,
+            exit_on_error=False,
+        )
+
+    def _preview_current(self, generation: int, path_str: str) -> bool:
         if generation != self._preview_gen or not self.preview_on:
-            return
-        if not self.files or str(self.files[self._cursor]) != path_str:
-            return
-        self._show_preview(result)
+            return False
+        return bool(self.files) and str(self.files[self._cursor]) == path_str
 
     def _show_preview_caption(self, caption: str, body: str) -> None:
-        self._remove_preview_image()
+        self.run_worker(
+            self._show_preview_caption_now(caption, body),
+            group="preview-show",
+            exclusive=True,
+            exit_on_error=False,
+        )
+
+    async def _show_preview_caption_now(self, caption: str, body: str) -> None:
+        await self.query("#preview-image").remove()
         self.query_one("#preview-caption", Static).update(caption)
         fallback = self.query_one("#preview-fallback", Static)
         fallback.update(body)
         fallback.display = bool(body)
 
-    def _show_preview(self, result: file_preview.Preview) -> None:
+    async def _show_preview(
+        self,
+        result: file_preview.Preview,
+        generation: int,
+        path_str: str,
+    ) -> None:
+        if not self._preview_current(generation, path_str):
+            return
+        # remove() only schedules a prune. The id stays until that finishes.
+        # Mounting preview-image again in the same call raises DuplicateIds,
+        # which the handler was showing as "Picture unavailable" on every
+        # second file.
+        await self.query("#preview-image").remove()
+        if not self._preview_current(generation, path_str):
+            return
         self.query_one("#preview-caption", Static).update(result.caption)
         fallback = self.query_one("#preview-fallback", Static)
         if result.show_image and result.image is not None:
             widget_cls = file_preview.load_image_widget()
             if widget_cls is None:
-                self._remove_preview_image()
                 fallback.update(result.caption)
                 fallback.display = True
                 return
-            self._remove_preview_image()
             try:
-                self.query_one("#preview-slot").mount(
+                await self.query_one("#preview-slot").mount(
                     widget_cls(
                         result.image,
                         id="preview-image",
@@ -1600,20 +1628,19 @@ class RenamerApp(App[None]):
                     )
                 )
             except Exception:
-                self._remove_preview_image()
-                fallback.update("Picture unavailable")
-                fallback.display = True
+                await self.query("#preview-image").remove()
+                if self._preview_current(generation, path_str):
+                    fallback.update("Picture unavailable")
+                    fallback.display = True
+                return
+            if not self._preview_current(generation, path_str):
+                await self.query("#preview-image").remove()
                 return
             fallback.update("")
             fallback.display = False
             return
-        self._remove_preview_image()
         fallback.update(result.body)
         fallback.display = bool(result.body)
-
-    def _remove_preview_image(self) -> None:
-        for widget in list(self.query("#preview-image")):
-            widget.remove()
 
     def _preview_error(self, error: Exception) -> Static:
         del error

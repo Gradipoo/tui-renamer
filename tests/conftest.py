@@ -7,7 +7,11 @@ from textual.widgets import Static
 
 
 class FakeImage(Static):
-    """Stand-in for textual-image so pilots do not query the terminal."""
+    """Stand-in for textual-image so pilots do not query the terminal.
+
+    ``mounted_ok`` stays false when Textual rejects the widget (a reused id
+    while the previous picture is still being removed). Pilots assert it.
+    """
 
     def __init__(
         self,
@@ -19,6 +23,10 @@ class FakeImage(Static):
         super().__init__("image", id=id)
         self.on_error = on_error
         self._picture = image
+        self.mounted_ok = False
+
+    def on_mount(self) -> None:
+        self.mounted_ok = True
 
     @property
     def image(self) -> object:

@@ -11,7 +11,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.command import CommandPalette
 from textual.coordinate import Coordinate
-from textual.widgets import DataTable, Input
+from textual.widgets import DataTable, Input, Static
 
 from tui_renamer.app import RenamerApp, RulesPane, linux_stdin_deleted
 
@@ -240,6 +240,27 @@ async def _until(pilot, app: RenamerApp, needle: str) -> None:
     raise AssertionError(needle)
 
 
+async def _until_picture(pilot, app: RenamerApp, size: tuple[int, int]):
+    """Wait until the id lookup finds a mounted stand-in of this size.
+
+    A CSS query can still see a picture whose mount was rejected for a
+    duplicate id. ``query_one`` uses the id map, so that failure stays visible.
+    """
+    last = "no picture"
+    for _ in range(40):
+        await pilot.pause(0.05)
+        try:
+            picture = app.query_one("#preview-image")
+        except Exception as exc:
+            last = type(exc).__name__
+            continue
+        image = getattr(picture, "image", None)
+        if getattr(picture, "mounted_ok", False) and image is not None and image.size == size:
+            return picture
+        last = f"mounted={getattr(picture, 'mounted_ok', None)} size={getattr(image, 'size', None)}"
+    raise AssertionError(last)
+
+
 async def test_find_escapes_without_changing_selection(tmp_path: Path) -> None:
     for name in ("catalog.txt", "cat.txt", "dog.txt"):
         (tmp_path / name).write_text(name, encoding="utf-8")
@@ -320,6 +341,26 @@ async def test_preview_text_and_toggle(tmp_path: Path) -> None:
         await pilot.press("P")
         assert not app.query_one("#preview-slot").has_class("-off")
         await _until(pilot, app, "Hello preview")
+
+
+async def test_preview_renders_each_picture_in_a_row(tmp_path: Path) -> None:
+    from PIL import Image
+
+    for index, color in enumerate(((10, 0, 0), (0, 10, 0), (0, 0, 10), (10, 10, 0))):
+        Image.new("RGB", (8 + index, 6), color).save(tmp_path / f"pic{index}.png")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        for index in range(4):
+            if index:
+                await pilot.press("j")
+            await _until(pilot, app, f"pic{index}.png")
+            picture = await _until_picture(pilot, app, (8 + index, 6))
+            assert picture.mounted_ok
+            assert picture.image is not None
+            assert picture.image.size == (8 + index, 6)
+            fallback = app.query_one("#preview-fallback", Static)
+            assert fallback.display is False
+            assert "Picture unavailable" not in str(fallback.render())
 
 
 async def test_preview_falls_back_when_the_widget_is_missing(tmp_path: Path, monkeypatch) -> None:
