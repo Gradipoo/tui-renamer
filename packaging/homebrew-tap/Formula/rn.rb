@@ -3,10 +3,8 @@ class Rn < Formula
 
   desc "Keyboard-driven terminal UI for batch renaming"
   homepage "https://github.com/Gradipoo/tui-renamer"
-  # Placeholder until the first PyPI release. packaging/update_homebrew_formula.py
-  # replaces this url and sha256 from the sdist.
-  url "https://files.pythonhosted.org/packages/source/t/tui-renamer/tui-renamer-0.0.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  url "https://files.pythonhosted.org/packages/f2/70/ba2a8eb8e307b2197b8d81afed61736ec62ec571946a7857d50bee939680/tui_renamer-0.1.3.tar.gz"
+  sha256 "d2f0f89b3445642c47cadebc34029bb872706115207dd7895a2136954d4936ce"
   license "GPL-3.0-only"
 
   depends_on "python@3.12"

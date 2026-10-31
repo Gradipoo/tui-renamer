@@ -36,9 +36,14 @@ def main() -> None:
         text = replace_header(text, url, digest)
         formula.write_text(text, encoding="utf-8")
         if shutil.which("brew"):
-            subprocess.run(["brew", "update-python-resources", str(formula)], check=True)
-            print(f"Updated {formula} with brew update-python-resources")
-            return
+            result = subprocess.run(
+                ["brew", "update-python-resources", str(formula)],
+                check=False,
+            )
+            if result.returncode == 0:
+                print(f"Updated {formula} with brew update-python-resources")
+                return
+            print("brew update-python-resources failed. Filling resources from PyPI.")
     else:
         print("tui-renamer is not on PyPI. Leaving the sdist url as a placeholder.")
     blocks = resource_blocks(ROOT)

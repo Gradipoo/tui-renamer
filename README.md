@@ -28,8 +28,6 @@ py -3.12 --version
 
 ### PyPI and Homebrew
 
-These arrive with the next release. They are not live for 0.1.2.
-
 ```bash
 pipx install "tui-renamer[heif]"
 brew install gradipoo/tap/rn
