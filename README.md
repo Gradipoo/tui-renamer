@@ -1,6 +1,6 @@
 # rn
 
-![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
+![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
 ![Made with Textual](https://img.shields.io/badge/made%20with-Textual-green.svg)
 
@@ -10,15 +10,110 @@ Run it inside the folder you want to rename, or pass a path. `rn` works on macOS
 
 ## Install
 
-### pipx or uv
+`rn` needs Python 3.12 or newer. Pictures use [textual-image](https://pypi.org/project/textual-image/), which is installed with the app. HEIC and HEIF need the optional `heif` extra.
+
+Check the version you already have:
 
 ```bash
-pipx install git+https://github.com/Gradipoo/tui-renamer.git
+python3 --version
 ```
 
-```bash
-uv tool install git+https://github.com/Gradipoo/tui-renamer.git
+On Windows, if `python3` is missing, use the launcher:
+
+```powershell
+py -3.12 --version
 ```
+
+### macOS
+
+Install Python 3.12 or newer with Homebrew if `python3 --version` is older, then install pipx:
+
+```bash
+brew install python@3.12
+brew install pipx
+pipx ensurepath
+python3 --version
+pipx install "git+https://github.com/Gradipoo/tui-renamer.git"
+```
+
+Or with uv:
+
+```bash
+uv tool install "git+https://github.com/Gradipoo/tui-renamer.git"
+```
+
+### Linux
+
+On Arch:
+
+```bash
+sudo pacman -S python python-pipx
+python3 --version
+pipx install "git+https://github.com/Gradipoo/tui-renamer.git"
+```
+
+Arch's `python` package is a current 3.x. Stop if `python3 --version` is older than 3.12.
+
+On other distributions, install Python 3.12 or newer and pipx from the package manager, then run the same `pipx install` command.
+
+uv works the same as on macOS:
+
+```bash
+uv tool install "git+https://github.com/Gradipoo/tui-renamer.git"
+```
+
+### Windows
+
+Install Python 3.12 or newer with the `py` launcher or winget, then pipx:
+
+```powershell
+py -3.12 --version
+winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
+py -3.12 -m pip install --user pipx
+py -3.12 -m pipx ensurepath
+py -3.12 -m pipx install "git+https://github.com/Gradipoo/tui-renamer.git"
+```
+
+Or with uv:
+
+```powershell
+uv tool install "git+https://github.com/Gradipoo/tui-renamer.git"
+```
+
+Open a new terminal after `ensurepath` so `rn` is on `PATH`.
+
+### Upgrade
+
+Reinstall from git with `--force`:
+
+```bash
+pipx install --force "git+https://github.com/Gradipoo/tui-renamer.git"
+uv tool install --force "git+https://github.com/Gradipoo/tui-renamer.git"
+```
+
+On Windows:
+
+```powershell
+py -3.12 -m pipx install --force "git+https://github.com/Gradipoo/tui-renamer.git"
+uv tool install --force "git+https://github.com/Gradipoo/tui-renamer.git"
+```
+
+### HEIC
+
+JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. HEIC and HEIF need `pillow-heif`:
+
+```bash
+pipx install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
+uv tool install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
+```
+
+On Windows:
+
+```powershell
+py -3.12 -m pipx install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
+```
+
+Camera RAW (CR2, NEF, ARW, DNG) is not previewed.
 
 ### From source
 
@@ -31,7 +126,7 @@ pip install -e .
 rn
 ```
 
-On Windows, activate with `.venv\Scripts\activate`.
+On Windows, activate with `.venv\Scripts\activate`. Use Python 3.12 or newer for that venv. Add the HEIC extra with `pip install -e ".[heif]"`.
 
 ### Download a release
 
@@ -85,9 +180,20 @@ rn -d
 
 `rn` reads the terminal. If stdin is not a terminal, it exits. On Linux it also exits if the terminal device goes away, so closing the window does not leave the process running.
 
-Hidden files and `.json` sidecars are not listed. Sidecars are read when JSON mode is on. The search matches Google Takeout names, including `name.jpg.json`.
+Hidden files and `.json` sidecars are not listed. Sidecars are read when JSON mode is on. Sidecar lookup matches Google Takeout names, including `name.jpg.json`.
 
 An empty folder still opens. Press `r` after you add files.
+
+## Pictures
+
+`P` shows or hides the preview for this session. It starts on. Only the highlighted file is drawn.
+
+| Terminal | What you see |
+| --- | --- |
+| Kitty, iTerm2, WezTerm, and Sixel terminals | The picture |
+| macOS Terminal, plain tmux, and terminals without those protocols | Half blocks |
+
+If the picture cannot be drawn, the detail pane stays up and shows the file name, size, and dates. A detail pane under 24 columns or 12 rows hides the picture and says the pane is too small.
 
 ## Keys
 
@@ -95,6 +201,11 @@ An empty folder still opens. Press `r` after you add files.
 | --- | --- |
 | `1` / `2` / `3` | Focus files, detail, or rules |
 | Up/Down, `j`/`k` | Move |
+| `/` | Find in the current name and the new name. Smart case: lowercase ignores case |
+| Enter / Esc | Keep the match, or restore the row you started from |
+| `n` / `N` | Next or previous match after a search. Otherwise the next or previous file that will change |
+| `]` / `[` | Next or previous file that will change |
+| Ctrl+G | Next match. Before a search is accepted, the status line says there is no search |
 | `g` then `g` / `G` | First file / last file |
 | PageUp / PageDown | Page |
 | Space | Select or clear this file |
@@ -115,6 +226,7 @@ An empty folder still opens. Press `r` after you add files.
 | `W` | Write the local time and timezone offset |
 | `B` | Write JSON location into EXIF GPS |
 | `T` | Choose a timezone |
+| `P` | Show or hide the preview |
 | `u` | Undo the last batch (this session only) |
 | `r` | Reload the folder |
 | `:` or Ctrl+P | Command palette |

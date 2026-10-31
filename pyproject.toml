@@ -9,7 +9,7 @@ description = "A fast, keyboard-driven terminal UI for batch renaming photos and
 readme = "README.md"
 license = "GPL-3.0-only"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [{ name = "Gradipoo" }]
 keywords = ["rename", "exif", "tui", "photos"]
 classifiers = [
@@ -20,12 +20,16 @@ classifiers = [
 ]
 dependencies = [
   "textual>=3",
-  "pillow>=10",
+  "pillow>=10.3",
   "piexif>=1.1",
   "tzdata",
+  "textual-image[textual]>=0.14.2",
 ]
 
 [project.optional-dependencies]
+heif = [
+  "pillow-heif>=1.0",
+]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.24",

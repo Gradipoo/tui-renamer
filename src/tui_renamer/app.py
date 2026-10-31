@@ -11,13 +11,16 @@ from datetime import datetime, tzinfo
 from pathlib import Path
 
 from rich.text import Text
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Input, OptionList, Static
 
+from tui_renamer import preview as file_preview
 from tui_renamer.core import (
     ZONEINFO_AVAILABLE,
     DatePlanItem,
@@ -66,6 +69,14 @@ from tui_renamer.metadata import (
     write_file_metadata_and_offset,
     write_geodata,
 )
+from tui_renamer.search import (
+    find_label,
+    first_at_or_after,
+    highlighted_name,
+    kept_span,
+    match_span,
+    query_hits,
+)
 
 TOGGLE_FIELDS = {
     "d": "add_datetime",
@@ -111,8 +122,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     _spec("Move", "pagedown", "Page down", "Page down", "page_down"),
     _spec("Move", "g g", "Top", "Jump to the first file", "goto_top"),
     _spec("Move", "G", "Bottom", "Jump to the last file", "goto_end"),
-    _spec("Move", "n", "Next change", "Next file that will change", "next_change"),
-    _spec("Move", "N", "Previous change", "Previous file that will change", "prev_change"),
+    _spec("Move", "/", "Find", "Find in the current and new name", "find"),
+    _spec("Move", "n", "Next", "Next match, or the next file that will change", "next_change"),
+    _spec(
+        "Move",
+        "N",
+        "Previous",
+        "Previous match, or the previous file that will change",
+        "prev_change",
+    ),
+    _spec("Move", "]", "Next change", "Next file that will change", "next_changed"),
+    _spec("Move", "[", "Previous change", "Previous file that will change", "prev_changed"),
+    _spec("Move", "ctrl+g", "Find next", "Next search match", "search_again"),
     _spec("Move", "!", "Next warning", "Next warning", "next_warning"),
     _spec("Select", "space", "Select", "Select or clear this file", "toggle_select"),
     _spec("Select", "v", "Visual", "Select a range", "visual", "visual"),
@@ -149,12 +170,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     _spec("Actions", "B", "Write GPS", "Write JSON location into EXIF", "write_geodata"),
     _spec("Actions", "T", "Timezone", "Choose a timezone", "timezone"),
     _spec("Actions", "u", "Undo", "Undo the last batch", "undo"),
+    _spec("Actions", "P", "Preview", "Show or hide the preview", "preview", "preview_on"),
     _spec("Actions", "r", "Refresh", "Reload the folder", "reload_files"),
     _spec("Actions", "?", "Help", "Show commands", "help"),
     _spec("Actions", "q", "Quit", "Quit", "quit"),
 )
 
-APP_FLAGS = {"visual", "date_mode", "mtime_mode"}
+APP_FLAGS = {"visual", "date_mode", "mtime_mode", "preview_on"}
 
 
 def linux_stdin_deleted() -> bool:
@@ -443,9 +465,15 @@ class FileTable(DataTable):
         super().__init__(cursor_type="row", zebra_stripes=True, **kwargs)  # type: ignore[arg-type]
 
 
-class DetailPane(VerticalScroll):
+class DetailPane(Vertical):
+    can_focus = True
+
     def compose(self) -> ComposeResult:
-        yield Static("", id="detail-body")
+        with Vertical(id="preview-slot"):
+            yield Static("", id="preview-caption")
+            yield Static("", id="preview-fallback")
+        with VerticalScroll(id="detail-scroll"):
+            yield Static("", id="detail-body")
 
 
 class RulesPane(Static):
@@ -559,6 +587,15 @@ class RenamerApp(App[None]):
     #rules { height: auto; max-height: 5; padding: 0 1; }
     #timeline { height: 1; padding: 0 1; }
     #status { height: auto; max-height: 3; padding: 0 1; }
+    #find { display: none; height: 1; margin: 0 1; }
+    #find.-open { display: block; }
+    #detail { layout: vertical; }
+    #preview-slot { height: auto; max-height: 12; overflow: hidden; }
+    #preview-slot.-off { display: none; }
+    #preview-caption { height: auto; max-height: 2; }
+    #preview-fallback { height: auto; max-height: 8; }
+    #preview-image { height: 8; width: 100%; }
+    #detail-scroll { height: 1fr; }
     #files, #detail, #rules { border: solid $primary; }
     ConfirmScreen, HelpScreen, TimezoneScreen, InsertScreen { align: center middle; }
     #dialog {
@@ -594,9 +631,14 @@ class RenamerApp(App[None]):
         Binding("pagedown", "page_down", show=False),
         Binding("g", "leader_g", show=False),
         Binding("G", "goto_end", show=False),
+        Binding("slash", "find", show=False),
         Binding("n", "next_change", show=False),
         Binding("N", "prev_change", show=False),
+        Binding("right_square_bracket", "next_changed", show=False),
+        Binding("left_square_bracket", "prev_changed", show=False),
+        Binding("ctrl+g", "search_again", show=False),
         Binding("!", "next_warning", show=False),
+        Binding("P", "preview", show=False),
         Binding("v", "visual", show=False),
         Binding("a", "select_all", show=False),
         Binding("A", "select_none", show=False),
@@ -650,6 +692,18 @@ class RenamerApp(App[None]):
         self.journal = Journal(Path(tempfile.mkdtemp(prefix="rn-undo-")))
         log_path = directory / "renamer_debug.log" if debug else None
         self.debug_log = DebugLog(log_path)
+        self.preview_on = True
+        self._thumbs = file_preview.ThumbCache()
+        self._preview_gen = 0
+        self._preview_timer = None
+        self._find_open = False
+        self._find_origin = 0
+        self._draft = ""
+        self._search_query = ""
+        self._search_active = False
+        self._search_nav = False
+        self._name_width = 8
+        self._new_width = 8
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -658,6 +712,7 @@ class RenamerApp(App[None]):
             yield FileTable(id="files")
             yield DetailPane(id="detail")
         yield RulesPane()
+        yield Input(placeholder="find", id="find", select_on_focus=True)
         yield Static("", id="status")
         yield Footer()
 
@@ -677,6 +732,8 @@ class RenamerApp(App[None]):
         self.query_one(FileTable).focus()
 
     def on_unmount(self) -> None:
+        if self._preview_timer is not None:
+            self._preview_timer.stop()
         self.journal.cleanup()
 
     def on_resize(self, event: object) -> None:
@@ -724,6 +781,7 @@ class RenamerApp(App[None]):
     def _begin(self) -> None:
         self._leader = False
         self._message = ""
+        self._search_nav = False
 
     def reload_files(self) -> None:
         self.files = list_files(self.directory)
@@ -861,8 +919,40 @@ class RenamerApp(App[None]):
             return 8
         return max(8, remaining // flex_count)
 
-    def _styled(self, value: str, width: int, style: str) -> Text:
-        return Text(fit_middle(value, width), style=style)
+    def _styled(
+        self,
+        value: str,
+        width: int,
+        style: str,
+        span: tuple[int, int] | None = None,
+    ) -> Text:
+        shown = fit_middle(value, width)
+        text = Text(shown, style=style)
+        if span is not None:
+            mapped = kept_span(value, width, span[0], span[1])
+            if mapped is not None:
+                text.stylize("reverse", mapped[0], mapped[1])
+        return text
+
+    def _match_query(self) -> str:
+        if self._find_open:
+            return self._draft
+        if self._search_active:
+            return self._search_query
+        return ""
+
+    def _name_spans(
+        self, current: str, new: str
+    ) -> tuple[tuple[int, int] | None, tuple[int, int] | None]:
+        query = self._match_query()
+        if not query:
+            return None, None
+        return match_span(current, query), match_span(new, query)
+
+    def _hit_indexes(self, query: str | None = None) -> list[int]:
+        needle = self._search_query if query is None else query
+        names = [(path.name, self.preview_for(index)) for index, path in enumerate(self.files)]
+        return query_hits(names, needle)
 
     def _fill_table(self) -> None:
         table = self.query_one(FileTable)
@@ -930,6 +1020,7 @@ class RenamerApp(App[None]):
         new_w = self._new_width
         for index, path in enumerate(self.files):
             new_name = self.preview_for(index)
+            name_span, new_span = self._name_spans(path.name, new_name)
             changing = index in self._changing
             if index in self.locked:
                 new_style = "bold green"
@@ -947,8 +1038,8 @@ class RenamerApp(App[None]):
                     source,
                     flag,
                     missing,
-                    self._styled(path.name, name_w, name_style),
-                    self._styled(new_name, new_w, new_style),
+                    self._styled(path.name, name_w, name_style, name_span),
+                    self._styled(new_name, new_w, new_style, new_span),
                     self._short_status(self._rename_status(index, new_name)),
                 )
             )
@@ -987,6 +1078,7 @@ class RenamerApp(App[None]):
                 status = "SELECTED"
             file_style = "" if index in self._changing else "dim"
             new_style = "" if index in self._changing else "dim"
+            name_span, _new_span = self._name_spans(path.name, self.preview_for(index))
             source, flag, missing = self._mark_cells(index, path)
             rows.append(
                 (
@@ -994,7 +1086,7 @@ class RenamerApp(App[None]):
                     source,
                     flag,
                     missing,
-                    self._styled(path.name, self._name_width, file_style),
+                    self._styled(path.name, self._name_width, file_style, name_span),
                     current,
                     self._styled(new, self._new_width, new_style),
                     self._short_status(status),
@@ -1009,6 +1101,7 @@ class RenamerApp(App[None]):
             label, _moment = mtime_source(self.facts_for(path), self.rules, local)
             status = "SELECTED" if index in self.selected else "UNCHANGED"
             name_style = "" if index in self._changing else "dim"
+            name_span, _new_span = self._name_spans(path.name, self.preview_for(index))
             source, flag, missing = self._mark_cells(index, path)
             rows.append(
                 (
@@ -1016,7 +1109,7 @@ class RenamerApp(App[None]):
                     source,
                     flag,
                     missing,
-                    self._styled(path.name, self._name_width, name_style),
+                    self._styled(path.name, self._name_width, name_style, name_span),
                     label,
                     self._short_status(status),
                 )
@@ -1032,6 +1125,7 @@ class RenamerApp(App[None]):
 
     def _update_detail(self) -> None:
         self.query_one("#detail-body", Static).update(self._detail_text())
+        self._schedule_preview()
 
     def _detail_text(self) -> Text:
         text = Text()
@@ -1128,6 +1222,12 @@ class RenamerApp(App[None]):
             return
         path = self.files[self._cursor]
         new_name = self.preview_for(self._cursor)
+        query = self._match_query()
+        if query:
+            matched = highlighted_name(path.name, new_name, query)
+            if matched is not None:
+                widget.update(matched)
+                return
         if new_name == path.name:
             widget.update(Text.assemble(path.name, (" (unchanged)", "dim")))
             return
@@ -1166,12 +1266,28 @@ class RenamerApp(App[None]):
             if is_warning(self.facts_for(file_path), self._neighbor_at(index))
         )
         warning = f"  W:{warnings}" if warnings else ""
-        self.sub_title = f"{mode}  {pos}/{total}  {place}  {zone}  {count}{warning}{tail}"
+        found = ""
+        if self._find_open or self._search_active:
+            needle = self._draft if self._find_open else self._search_query
+            found = "  " + find_label(self._cursor, self._hit_indexes(needle))
+        self.sub_title = f"{mode}  {pos}/{total}  {place}  {zone}  {count}{warning}{found}{tail}"
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if self._rebuilding:
             return
         row = event.cursor_row
+        if self._search_nav:
+            if row != self._cursor:
+                table = self.query_one(FileTable)
+                if table.row_count:
+                    table.move_cursor(row=self._cursor)
+                return
+            self._search_nav = False
+            self._update_detail()
+            self._update_timeline()
+            self._update_status()
+            self._update_subtitle()
+            return
         if self.visual and self.anchor is not None and row != self._cursor:
             old = self._cursor
             old_block = set(range(min(self.anchor, old), max(self.anchor, old) + 1))
@@ -1233,6 +1349,9 @@ class RenamerApp(App[None]):
         return False
 
     def action_escape(self) -> None:
+        if self._find_open:
+            self._close_find(restore=True)
+            return
         if self._cancel_modes_on_escape():
             self.refresh_view()
 
@@ -1297,12 +1416,208 @@ class RenamerApp(App[None]):
             self._move_to(len(self.files) - 1)
 
     def action_next_change(self) -> None:
+        if self._search_active:
+            self._jump_hits(
+                self._hit_indexes(),
+                1,
+                "No matches.",
+                "No other match.",
+                from_search=True,
+            )
+            return
         hits = [index for index in range(len(self.files)) if index in self._changing]
         self._jump_hits(hits, 1, "No files will change.", "No other file will change.")
 
     def action_prev_change(self) -> None:
+        if self._search_active:
+            self._jump_hits(
+                self._hit_indexes(),
+                -1,
+                "No matches.",
+                "No other match.",
+                from_search=True,
+            )
+            return
         hits = [index for index in range(len(self.files)) if index in self._changing]
         self._jump_hits(hits, -1, "No files will change.", "No other file will change.")
+
+    def action_next_changed(self) -> None:
+        hits = [index for index in range(len(self.files)) if index in self._changing]
+        self._jump_hits(hits, 1, "No files will change.", "No other file will change.")
+
+    def action_prev_changed(self) -> None:
+        hits = [index for index in range(len(self.files)) if index in self._changing]
+        self._jump_hits(hits, -1, "No files will change.", "No other file will change.")
+
+    def action_search_again(self) -> None:
+        if not self._search_active:
+            self.set_status("No search.")
+            self._update_status()
+            return
+        self.action_next_change()
+
+    def action_find(self) -> None:
+        if self._find_open or len(self.screen_stack) > 1:
+            return
+        self._open_find()
+
+    def action_preview(self) -> None:
+        self._begin()
+        self.preview_on = not self.preview_on
+        self.query_one("#preview-slot").set_class(not self.preview_on, "-off")
+        self._preview_gen += 1
+        if self.preview_on:
+            self._schedule_preview()
+            self.set_status("Preview on")
+        else:
+            self.set_status("Preview off")
+        self._update_status()
+
+    def _open_find(self) -> None:
+        self._begin()
+        self._find_open = True
+        self._find_origin = self._cursor
+        box = self.query_one("#find", Input)
+        prefill = self._search_query if self._search_active else ""
+        box.add_class("-open")
+        box.value = prefill
+        self._apply_query(prefill)
+        box.focus()
+
+    def _close_find(self, *, restore: bool) -> None:
+        self._find_open = False
+        self._leader = False
+        self._message = ""
+        self.query_one("#find", Input).remove_class("-open")
+        if restore and self.files:
+            self._search_nav = True
+            self._cursor = max(0, min(self._find_origin, len(self.files) - 1))
+        self.refresh_view()
+        table = self.query_one(FileTable)
+        if table.row_count:
+            table.focus()
+
+    def _apply_query(self, query: str) -> None:
+        self._draft = query
+        if not self.files:
+            self._update_subtitle()
+            self._update_status()
+            return
+        hits = self._hit_indexes(query)
+        if query and hits:
+            target = first_at_or_after(self._find_origin, hits)
+        else:
+            target = self._find_origin
+        self._search_nav = True
+        self._cursor = max(0, min(target, len(self.files) - 1))
+        self.refresh_view()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "find" or not self._find_open:
+            return
+        self._apply_query(event.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "find" or not self._find_open:
+            return
+        query = event.value
+        if query == "":
+            self._search_active = False
+            self._search_query = ""
+            self._close_find(restore=False)
+            return
+        if not self._hit_indexes(query):
+            self._close_find(restore=True)
+            return
+        self._search_query = query
+        self._search_active = True
+        self._draft = query
+        self._close_find(restore=False)
+
+    def _schedule_preview(self) -> None:
+        if not self.is_running:
+            return
+        timer = self._preview_timer
+        if timer is not None:
+            timer.stop()
+        self._preview_timer = self.set_timer(file_preview.DEBOUNCE_SECONDS, self._kick_preview)
+
+    def _kick_preview(self) -> None:
+        self._preview_timer = None
+        if not self.is_running or not self.preview_on or not self.files:
+            return
+        try:
+            detail = self.query_one("#detail")
+        except NoMatches:
+            return
+        if file_preview.pane_too_small(detail.size.width, detail.size.height):
+            self._preview_gen += 1
+            self._show_preview_caption("pane too small", "")
+            return
+        self._preview_gen += 1
+        self._load_preview(str(self.files[self._cursor]), self._preview_gen)
+
+    @work(thread=True, exclusive=True, group="preview", exit_on_error=False)
+    def _load_preview(self, path_str: str, generation: int) -> None:
+        path = Path(path_str)
+        try:
+            result = file_preview.build_preview(path, self._thumbs)
+        except Exception:
+            result = file_preview.plain_preview(path)
+        self.call_from_thread(self._apply_preview, path_str, generation, result)
+
+    def _apply_preview(self, path_str: str, generation: int, result: file_preview.Preview) -> None:
+        if generation != self._preview_gen or not self.preview_on:
+            return
+        if not self.files or str(self.files[self._cursor]) != path_str:
+            return
+        self._show_preview(result)
+
+    def _show_preview_caption(self, caption: str, body: str) -> None:
+        self._remove_preview_image()
+        self.query_one("#preview-caption", Static).update(caption)
+        fallback = self.query_one("#preview-fallback", Static)
+        fallback.update(body)
+        fallback.display = bool(body)
+
+    def _show_preview(self, result: file_preview.Preview) -> None:
+        self.query_one("#preview-caption", Static).update(result.caption)
+        fallback = self.query_one("#preview-fallback", Static)
+        if result.show_image and result.image is not None:
+            widget_cls = file_preview.load_image_widget()
+            if widget_cls is None:
+                self._remove_preview_image()
+                fallback.update(result.caption)
+                fallback.display = True
+                return
+            self._remove_preview_image()
+            try:
+                self.query_one("#preview-slot").mount(
+                    widget_cls(
+                        result.image,
+                        id="preview-image",
+                        on_error=self._preview_error,
+                    )
+                )
+            except Exception:
+                self._remove_preview_image()
+                fallback.update("Picture unavailable")
+                fallback.display = True
+                return
+            fallback.update("")
+            fallback.display = False
+            return
+        self._remove_preview_image()
+        fallback.update(result.body)
+        fallback.display = bool(result.body)
+
+    def _remove_preview_image(self) -> None:
+        for widget in list(self.query("#preview-image")):
+            widget.remove()
+
+    def _preview_error(self, error: Exception) -> Static:
+        del error
+        return Static("Picture unavailable")
 
     def action_next_warning(self) -> None:
         hits = [
@@ -1312,7 +1627,14 @@ class RenamerApp(App[None]):
         ]
         self._jump_hits(hits, 1, "No warnings.", "No other warning.")
 
-    def _jump_hits(self, hits: list[int], step: int, none_msg: str, only_msg: str) -> None:
+    def _jump_hits(
+        self,
+        hits: list[int],
+        step: int,
+        none_msg: str,
+        only_msg: str,
+        from_search: bool = False,
+    ) -> None:
         self._begin()
         if not hits:
             self.set_status(none_msg)
@@ -1328,6 +1650,8 @@ class RenamerApp(App[None]):
             self.set_status(only_msg)
             self._update_status()
             return
+        if from_search:
+            self._search_nav = True
         self._move_to(target)
 
     def action_toggle_select(self) -> None:
@@ -1571,6 +1895,8 @@ class RenamerApp(App[None]):
         return pairs
 
     def action_apply(self) -> None:
+        if self._find_open:
+            return
         self._begin()
         if self.visual:
             self.visual = False

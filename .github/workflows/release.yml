@@ -34,6 +34,7 @@ jobs:
           MAIN=$(python -c "import tui_renamer.__main__ as entry; print(entry.__file__)")
           pyinstaller --noconfirm --clean --onefile --name rn \
             --collect-all textual \
+            --collect-all textual_image \
             --collect-all rich \
             --collect-all tzdata \
             --hidden-import PIL \

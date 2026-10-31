@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from tui_renamer.app import RenamerApp
+from tui_renamer.preview import warm_image_widget
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,5 +35,6 @@ def main(argv: list[str] | None = None) -> int:
     if not sys.stdin.isatty():
         print("Error: rn needs a terminal.", file=sys.stderr)
         return 1
+    warm_image_widget()
     RenamerApp(directory, debug=args.debug).run()
     return 0
