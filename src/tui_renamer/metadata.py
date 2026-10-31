@@ -1,11 +1,15 @@
 """Read and write EXIF, QuickTime dates, GPS, and birth time.
 
-JPEG and TIFF dates go through piexif. Video, HEIC, and PNG go through exiftool
-when it is on PATH. Birth time uses SetFile on macOS and SetFileTime on Windows.
+JPEG and TIFF dates go through piexif. HEIC dates use the same reader when the
+heif extra is installed. MOV, MP4, and M4V dates are read from the file, with
+exiftool as a fallback when the atoms have no date. Writes for video, HEIC, and
+PNG still go through exiftool. Birth time uses SetFile on macOS and SetFileTime
+on Windows.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -16,6 +20,8 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from tui_renamer.core import FileFacts, RenameRules, format_offset, load_facts
+from tui_renamer.preview import HEIF_SUFFIXES, heif_ready
+from tui_renamer.quicktime import QuickTimeClock, parse_creationdate, read_quicktime
 
 try:
     from PIL import Image
@@ -87,7 +93,7 @@ def _text(value: object) -> str | None:
     return cleaned or None
 
 
-def read_exif(path: Path) -> ExifClock:
+def read_exif(path: Path, *, extra_suffixes: frozenset[str] = frozenset()) -> ExifClock:
     """Date and offset from the Exif IFD.
 
     DateTimeOriginal (36867) wins over DateTime (306). The offset is
@@ -95,7 +101,8 @@ def read_exif(path: Path) -> ExifClock:
     written with the others and is not used as a fallback.
     """
     empty = ExifClock(None, None, "", "")
-    if path.suffix.lower() not in IMAGE_EXTENSIONS or not PILLOW_AVAILABLE or Image is None:
+    allowed = IMAGE_EXTENSIONS | extra_suffixes
+    if path.suffix.lower() not in allowed or not PILLOW_AVAILABLE or Image is None:
         return empty
     has_gps = False
     try:
@@ -127,17 +134,118 @@ def read_exif(path: Path) -> ExifClock:
 
 
 def inspect_file(path: Path, rules: RenameRules, zone: tzinfo) -> FileFacts:
-    clock = read_exif(path)
+    suffix = path.suffix.lower()
+    if suffix in HEIF_SUFFIXES and heif_ready():
+        return _load_clock(path, rules, zone, read_exif(path, extra_suffixes=HEIF_SUFFIXES), "E")
+    if suffix in VIDEO_EXTENSIONS:
+        clock = _from_quicktime(read_quicktime(path))
+        if clock.naive is None:
+            clock = read_exiftool_video(path)
+        return _load_clock(path, rules, zone, clock, "Q")
+    return _load_clock(path, rules, zone, read_exif(path), "E")
+
+
+def _load_clock(
+    path: Path,
+    rules: RenameRules,
+    zone: tzinfo,
+    clock: ExifClock,
+    capture_letter: str,
+) -> FileFacts:
+    fallback = "EXIF DateTimeOriginal" if capture_letter == "E" else "QuickTime"
     return load_facts(
         path,
         rules,
         zone,
         exif_naive=clock.naive,
         exif_offset=clock.offset,
-        exif_label=clock.label or "EXIF DateTimeOriginal",
+        exif_label=clock.label or fallback,
         exif_offset_text=clock.offset_text,
         has_gps=clock.has_gps,
+        capture_letter=capture_letter,
     )
+
+
+def _from_quicktime(clock: QuickTimeClock) -> ExifClock:
+    return ExifClock(clock.naive, clock.offset, clock.label, clock.offset_text)
+
+
+def read_exiftool_video(path: Path) -> ExifClock:
+    """CreationDate, then CreateDate, when exiftool is on PATH.
+
+    Used only after the box walker finds no capture date. A missing tool,
+    a timeout, or a bad reply is an empty clock.
+    """
+    empty = ExifClock(None, None, "", "")
+    tool = find_exiftool()
+    if not tool:
+        return empty
+    try:
+        result = subprocess.run(
+            [tool, "-j", "-CreationDate", "-CreateDate", "-api", "QuickTimeUTC=1", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return empty
+    if result.returncode != 0 or not result.stdout:
+        return empty
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return empty
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        return empty
+    row = payload[0]
+    for key, label in (
+        ("CreationDate", "QuickTime creation date"),
+        ("CreateDate", "QuickTime CreateDate"),
+    ):
+        text = row.get(key)
+        if isinstance(text, str):
+            clock = _parse_exiftool_date(text, label)
+            if clock is not None:
+                return clock
+    return empty
+
+
+def _parse_exiftool_date(text: str, label: str) -> ExifClock | None:
+    """exiftool prints `2020:06:01 10:00:00-07:00` or an ISO creation date."""
+    stripped = text.strip()
+    if len(stripped) >= 19 and stripped[4] == ":":
+        body = stripped[:19]
+        try:
+            naive = datetime.strptime(body, "%Y:%m:%d %H:%M:%S")
+        except ValueError:
+            return None
+        offset, offset_text = _exiftool_offset(stripped[19:])
+        return ExifClock(naive, offset, label, offset_text)
+    parsed = parse_creationdate(stripped)
+    if parsed is None:
+        return None
+    return ExifClock(parsed.naive, parsed.offset, label, parsed.offset_text)
+
+
+def _exiftool_offset(text: str) -> tuple[tzinfo | None, str]:
+    piece = text.strip()
+    if not piece:
+        return None, ""
+    if piece == "Z":
+        return timezone.utc, "+00:00"
+    if piece[0] not in "+-" or len(piece) < 5:
+        return None, ""
+    sign = -1 if piece[0] == "-" else 1
+    digits = piece[1:].replace(":", "")
+    if len(digits) not in {2, 4} or not digits.isdigit():
+        return None, ""
+    hours = int(digits[:2])
+    minutes = int(digits[2:4]) if len(digits) == 4 else 0
+    if hours > 23 or minutes > 59:
+        return None, ""
+    zone = timezone(timedelta(hours=sign * hours, minutes=sign * minutes))
+    return zone, f"{piece[0]}{hours:02d}:{minutes:02d}"
 
 
 def write_image_exif_datetime(path: Path, moment: datetime) -> bool:

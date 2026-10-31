@@ -13,6 +13,7 @@ from PIL import Image
 
 from tui_renamer.core import RenameRules
 from tui_renamer.metadata import (
+    DATETIME,
     OFFSET_TIME,
     OFFSET_TIME_DIGITIZED,
     OFFSET_TIME_ORIGINAL,
@@ -34,6 +35,7 @@ from tui_renamer.metadata import (
     write_geodata,
     write_image_exif_datetime,
 )
+from tui_renamer.preview import HEIF_SUFFIXES, heif_ready
 
 UTC = timezone.utc
 KOLKATA = timezone(timedelta(hours=5, minutes=30))
@@ -103,6 +105,20 @@ def test_read_uses_datetime_when_original_is_missing(tmp_path: Path) -> None:
     assert clock.naive == datetime(2019, 1, 2, 3, 4, 5)
     assert clock.label == "EXIF DateTime"
     assert read_exif(tmp_path / "clip.mp4").naive is None
+
+
+@pytest.mark.skipif(not heif_ready(), reason="pillow-heif is not installed")
+def test_heic_capture_date_uses_the_exif_letter(tmp_path: Path) -> None:
+    path = tmp_path / "photo.heic"
+    image = Image.new("RGB", (8, 8), (1, 2, 3))
+    exif = Image.Exif()
+    exif[DATETIME] = "2020:06:01 15:00:00"
+    image.save(path, format="HEIF", exif=exif.tobytes())
+    clock = read_exif(path, extra_suffixes=HEIF_SUFFIXES)
+    assert clock.naive == datetime(2020, 6, 1, 15, 0, 0)
+    facts = inspect_file(path, RenameRules(), UTC)
+    assert facts.winner_source == "E"
+    assert facts.has_exif is True
 
 
 def test_write_round_trip_stores_all_three_offset_tags(tmp_path: Path) -> None:

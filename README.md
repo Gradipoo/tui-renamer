@@ -26,6 +26,17 @@ On Windows, if `python3` is missing, use the launcher:
 py -3.12 --version
 ```
 
+### PyPI and Homebrew
+
+These arrive with the next release. They are not live for 0.1.2.
+
+```bash
+pipx install "tui-renamer[heif]"
+brew install gradipoo/tap/rn
+```
+
+`pipx install tui-renamer` leaves HEIC off. The Homebrew formula installs the `heif` extra. The command name stays `rn`.
+
 ### Download a release
 
 Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.2` is pushed.
@@ -125,7 +136,7 @@ uv tool install --force "git+https://github.com/Gradipoo/tui-renamer.git"
 
 ### HEIC
 
-JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. HEIC and HEIF need `pillow-heif`:
+JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. HEIC and HEIF need `pillow-heif`. With that extra, their capture dates are read the same way as JPEG. Without it, those files keep their file times.
 
 ```bash
 pipx install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
@@ -211,7 +222,7 @@ An empty folder still opens. Press `r` after you add files.
 
 ## Pictures
 
-`P` shows or hides the preview for this session. It starts on. Only the highlighted file is drawn.
+`P` shows or hides the preview. That choice is remembered, and so is a zoom from `1` through `4`. Preview starts on, and there is no zoom, until you change them. Ctrl+0 resets both. Only the highlighted file is drawn.
 
 | Terminal | What you see |
 | --- | --- |
@@ -243,6 +254,8 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `x` / `y` | Drop the original name / keep letters and spaces |
 | `c` `s` `p` `.` | Lowercase, drop symbols, spaces to dashes, dots to dashes |
 | `0` | Reset name options |
+| Ctrl+0 | Reset preview and zoom |
+| `!` / `@` | Next or previous warning |
 | `i` | Edit this name. Esc saves. Enter saves and renames |
 | `l` / `L` / `U` | Lock this file / lock selected / unlock all |
 | Enter | Apply the current mode. Asks first |
@@ -265,7 +278,9 @@ The detail pane shows every date candidate for the highlighted file, which one w
 
 Esc closes find first, then leaves a zoomed pane, then leaves visual, filename date, or mtime mode.
 
-`!` means the timestamp you chose is not the oldest of modified and original.
+`!` on a row means the timestamp you chose is not the oldest of modified and original. The `!` key jumps to the next warning, and `@` jumps to the previous one.
+
+MOV, MP4, and M4V use the QuickTime creation date when the file stores one. That source is Q. A video with no capture date is not marked as missing EXIF. `exiftool` is only a fallback for reading those files, and it is still required to write video, HEIC, and PNG metadata.
 
 Locked names stay put when you change toggles. A manual edit is used until you lock that file. Refresh clears selection, locks, and manual edits.
 
