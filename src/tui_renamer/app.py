@@ -840,6 +840,7 @@ class RenamerApp(App[None]):
         if self.is_mounted and not self._rebuilding:
             self._apply_layout(width)
             self.refresh_view()
+            self.call_after_refresh(self._fit_table_columns)
 
     def _apply_layout(self, width: int) -> None:
         body = self.query_one("#body")
@@ -1047,17 +1048,75 @@ class RenamerApp(App[None]):
         else:
             widget.update(line)
 
-    def _flex_width(self, fixed_content: int, column_count: int, flex_count: int) -> int:
-        """Content width for each flexible column so the row fits the pane."""
+    def _flex_budget(self, fixed_content: int, column_count: int) -> int:
+        """Cells left for flexible columns after the short ones and padding."""
         table = self.query_one(FileTable)
         viewport = table.scrollable_content_region.width
         if viewport <= 0:
             viewport = max(table.size.width - 2, 64)
         pad = 2 * table.cell_padding * column_count
-        remaining = viewport - fixed_content - pad
+        return viewport - fixed_content - pad
+
+    def _flex_width(self, fixed_content: int, column_count: int, flex_count: int) -> int:
+        """Content width for each flexible column so the row fits the pane."""
+        remaining = self._flex_budget(fixed_content, column_count)
         if flex_count <= 0:
             return 8
         return max(8, remaining // flex_count)
+
+    def _name_new_widths(self) -> tuple[int, int]:
+        """Split leftover width across Name and New. Show full names when they fit."""
+        remaining = max(16, self._flex_budget(18, 7))
+        name_need = max((len(path.name) for path in self.files), default=8)
+        new_need = max(
+            (len(self.preview_for(index)) for index in range(len(self.files))),
+            default=8,
+        )
+        name_need = max(8, name_need)
+        new_need = max(8, new_need)
+        name_w = min(name_need, remaining // 2)
+        new_w = min(new_need, remaining - name_w)
+        leftover = remaining - name_w - new_w
+        name_gap = name_need - name_w
+        new_gap = new_need - new_w
+        if leftover and (name_gap or new_gap):
+            if name_gap and new_gap:
+                extra = leftover * name_gap // (name_gap + new_gap)
+                name_w += extra
+                new_w += leftover - extra
+            elif name_gap:
+                name_w += leftover
+            else:
+                new_w += leftover
+        elif leftover:
+            extra = leftover // 2
+            name_w += extra
+            new_w += leftover - extra
+        return max(8, name_w), max(8, new_w)
+
+    def _desired_flex(self) -> tuple[int, int]:
+        if self.date_mode:
+            return self._flex_width(56, 8, 1), 19
+        if self.mtime_mode:
+            return self._flex_width(37, 7, 1), 19
+        return self._name_new_widths()
+
+    def _fit_table_columns(self) -> None:
+        """Rebuild name columns from the pane's current width after layout."""
+        if not self.is_mounted or self._rebuilding or self._syncing:
+            return
+        try:
+            self.query_one(FileTable)
+        except NoMatches:
+            return
+        name_w, new_w = self._desired_flex()
+        if name_w == self._name_width and new_w == self._new_width:
+            return
+        self._rebuilding = True
+        try:
+            self._fill_table(keep_scroll=True)
+        finally:
+            self._rebuilding = False
 
     def _styled(
         self,
@@ -1094,8 +1153,9 @@ class RenamerApp(App[None]):
         names = [(path.name, self.preview_for(index)) for index, path in enumerate(self.files)]
         return query_hits(names, needle)
 
-    def _fill_table(self) -> None:
+    def _fill_table(self, *, keep_scroll: bool = False) -> None:
         table = self.query_one(FileTable)
+        scroll = table.scroll_offset if keep_scroll else None
         table.clear(columns=True)
         if self.date_mode:
             self._add_date_columns(table)
@@ -1113,18 +1173,20 @@ class RenamerApp(App[None]):
             table.move_cursor(row=self._cursor)
         else:
             self._cursor = 0
+        if scroll is not None:
+            table.scroll_to(scroll.x, scroll.y, animate=False)
 
     def _add_rename_columns(self, table: FileTable) -> None:
-        width = self._flex_width(fixed_content=18, column_count=7, flex_count=2)
+        name_w, new_w = self._name_new_widths()
         table.add_column("Sel", key="mark", width=3)
         table.add_column("Src", key="src", width=3)
         table.add_column("Flag", key="flag", width=4)
         table.add_column("Miss", key="miss", width=4)
-        table.add_column("Name", key="name", width=width)
-        table.add_column("New", key="new", width=width)
+        table.add_column("Name", key="name", width=name_w)
+        table.add_column("New", key="new", width=new_w)
         table.add_column("Stat", key="status", width=4)
-        self._name_width = width
-        self._new_width = width
+        self._name_width = name_w
+        self._new_width = new_w
 
     def _add_date_columns(self, table: FileTable) -> None:
         width = self._flex_width(fixed_content=56, column_count=8, flex_count=1)
@@ -1504,6 +1566,7 @@ class RenamerApp(App[None]):
         self._zoom = which
         for name in ("files", "detail", "options", "preview"):
             self.screen.set_class(which == name, f"-zoom-{name}")
+        self.call_after_refresh(self._fit_table_columns)
 
     def _zoom_to(self, which: str, target_id: str) -> None:
         self._begin()
