@@ -1203,8 +1203,13 @@ class RenamerApp(App[None]):
 
     def _paint_rows(self, indexes: Iterable[int]) -> None:
         """Update selection or lock cells without clearing the table."""
+        if not self.is_mounted:
+            return
         wanted = sorted({index for index in indexes if 0 <= index < len(self.files)})
-        table = self.query_one(FileTable)
+        try:
+            table = self.query_one(FileTable)
+        except NoMatches:
+            return
         if wanted and table.row_count == len(self.files):
             rows = self._current_rows()
             columns = self._column_keys()
@@ -1214,10 +1219,7 @@ class RenamerApp(App[None]):
         elif wanted:
             self.refresh_view()
             return
-        self._update_detail()
-        self._update_timeline()
-        self._update_status()
-        self._update_subtitle()
+        self._refresh_side_panels()
 
     def _add_rename_columns(self, table: FileTable) -> None:
         name_w, new_w = self._name_new_widths()
@@ -1369,7 +1371,12 @@ class RenamerApp(App[None]):
         return _format_stamp(stamp, zone)
 
     def _update_detail(self) -> None:
-        self.query_one("#detail-body", Static).update(self._detail_text())
+        if not self.is_mounted:
+            return
+        try:
+            self.query_one("#detail-body", Static).update(self._detail_text())
+        except NoMatches:
+            return
         self._schedule_preview()
 
     def _detail_text(self) -> Text:
@@ -1519,20 +1526,20 @@ class RenamerApp(App[None]):
         self.sub_title = f"{mode}  {pos}/{total}  {place}  {zone}  {count}{warning}{found}{tail}"
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if self._rebuilding:
+        if self._rebuilding or not self.is_mounted:
             return
         row = event.cursor_row
         if self._search_nav:
             if row != self._cursor:
-                table = self.query_one(FileTable)
+                try:
+                    table = self.query_one(FileTable)
+                except NoMatches:
+                    return
                 if table.row_count:
                     table.move_cursor(row=self._cursor)
                 return
             self._search_nav = False
-            self._update_detail()
-            self._update_timeline()
-            self._update_status()
-            self._update_subtitle()
+            self._refresh_side_panels()
             return
         if self.visual and self.anchor is not None and row != self._cursor:
             old = self._cursor
@@ -1544,6 +1551,11 @@ class RenamerApp(App[None]):
             self._paint_rows(old_block.symmetric_difference(new_block))
             return
         self._cursor = row
+        self._refresh_side_panels()
+
+    def _refresh_side_panels(self) -> None:
+        if not self.is_mounted:
+            return
         self._update_detail()
         self._update_timeline()
         self._update_status()
