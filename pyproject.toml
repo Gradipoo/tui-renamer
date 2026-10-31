@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tui-renamer"
+version = "0.1.0"
+description = "A fast, keyboard-driven terminal UI for batch renaming photos and files by EXIF date, timezone, and geodata, with live preview and undo."
+readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Gradipoo" }]
+keywords = ["rename", "exif", "tui", "photos"]
+classifiers = [
+  "Environment :: Console",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Graphics",
+]
+dependencies = [
+  "textual>=3",
+  "pillow>=10.3",
+  "piexif>=1.1",
+  "tzdata",
+  "textual-image[textual]>=0.14.2",
+]
+
+[project.optional-dependencies]
+heif = [
+  "pillow-heif>=1.0",
+]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+rn = "tui_renamer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Gradipoo/tui-renamer"
+Repository = "https://github.com/Gradipoo/tui-renamer"
+Issues = "https://github.com/Gradipoo/tui-renamer/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
