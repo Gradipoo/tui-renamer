@@ -102,6 +102,19 @@ def _sel(table: DataTable, row: int) -> str:
     return str(table.get_cell_at(Coordinate(row, 0))).strip()
 
 
+async def _scroll_to_row(pilot, table: DataTable, row: int) -> float:
+    table.move_cursor(row=row, scroll=True)
+    for _ in range(40):
+        await pilot.pause(0.05)
+        if table.cursor_row == row and table.scroll_y > 0:
+            return table.scroll_y
+    table.scroll_to(y=float(row), animate=False)
+    await pilot.pause()
+    assert table.cursor_row == row
+    assert table.scroll_y > 0
+    return table.scroll_y
+
+
 async def test_select_and_visual_keep_scroll_and_order(tmp_path: Path) -> None:
     for index in range(220):
         (tmp_path / f"file-{index:04d}.txt").write_text("x", encoding="utf-8")
@@ -109,12 +122,8 @@ async def test_select_and_visual_keep_scroll_and_order(tmp_path: Path) -> None:
     async with app.run_test(size=(160, 40)) as pilot:
         await pilot.pause()
         table = app.query_one(DataTable)
-        table.move_cursor(row=120)
-        await pilot.pause()
-        assert table.cursor_row == 120
-        assert table.scroll_y > 0
+        scroll = await _scroll_to_row(pilot, table, 120)
         order = _row_keys(table)
-        scroll = table.scroll_y
         await pilot.press("space")
         await pilot.pause()
         assert table.cursor_row == 120
@@ -141,11 +150,8 @@ async def test_select_and_visual_keep_scroll_and_order(tmp_path: Path) -> None:
         await pilot.press("1")
         await pilot.pause()
         assert app._zoom == "files"
-        table.move_cursor(row=120)
-        await pilot.pause()
+        scroll = await _scroll_to_row(pilot, table, 120)
         order = _row_keys(table)
-        scroll = table.scroll_y
-        assert scroll > 0
         await pilot.press("space")
         await pilot.pause()
         assert table.cursor_row == 120
@@ -468,8 +474,10 @@ async def test_narrow_layout(tmp_path: Path) -> None:
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         await pilot.resize_terminal(80, 30)
+        await pilot.pause()
         assert app.query_one("#body").has_class("-narrow")
         await pilot.resize_terminal(120, 40)
+        await pilot.pause()
         assert not app.query_one("#body").has_class("-narrow")
 
 

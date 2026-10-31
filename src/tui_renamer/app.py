@@ -782,6 +782,7 @@ class RenamerApp(App[None]):
         self._message = ""
         self._rebuilding = False
         self._rebuild_depth = 0
+        self._scroll_restore_gen = 0
         self._changing: set[int] = set()
         self._neighbors: list[str] = []
         self.exiftool = find_exiftool()
@@ -1171,7 +1172,9 @@ class RenamerApp(App[None]):
             self._rebuild_depth = 0
             self._rebuilding = False
 
-    def _restore_table_scroll(self, x: float, y: float) -> None:
+    def _restore_table_scroll(self, x: float, y: float, gen: int) -> None:
+        if gen != self._scroll_restore_gen:
+            return
         try:
             table = self.query_one(FileTable)
         except NoMatches:
@@ -1197,8 +1200,13 @@ class RenamerApp(App[None]):
             table.move_cursor(row=self._cursor, scroll=False)
         else:
             self._cursor = 0
-        # After the cursor watcher scrolls the row into view.
-        table.call_after_refresh(self._restore_table_scroll, scroll_x, scroll_y)
+        # Skip a no-op restore of (0, 0). A deferred one can wipe a later scroll.
+        if scroll_x or scroll_y:
+            self._scroll_restore_gen += 1
+            gen = self._scroll_restore_gen
+            table.scroll_to(scroll_x, scroll_y, animate=False)
+            # After the cursor watcher scrolls the row into view.
+            table.call_after_refresh(self._restore_table_scroll, scroll_x, scroll_y, gen)
         self.call_after_refresh(self._end_rebuild)
 
     def _paint_rows(self, indexes: Iterable[int]) -> None:
