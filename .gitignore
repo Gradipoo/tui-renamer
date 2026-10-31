@@ -9,3 +9,4 @@ dist/
 *.spec
 renamer_debug.log
 .DS_Store
+/scripts/demo/

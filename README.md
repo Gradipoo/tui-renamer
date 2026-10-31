@@ -6,6 +6,8 @@
 
 A fast, keyboard-driven terminal UI for batch renaming photos and files by EXIF date, timezone, and geodata, with live preview and undo.
 
+![rn showing the file table, flags, options strip, and a color picture preview](docs/screenshot.png)
+
 Run it inside the folder you want to rename, or pass a path. `rn` works on macOS, Linux, and Windows.
 
 ## Install
@@ -23,6 +25,29 @@ On Windows, if `python3` is missing, use the launcher:
 ```powershell
 py -3.12 --version
 ```
+
+### Download a release
+
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.0` is pushed.
+
+| File | System |
+| --- | --- |
+| `rn-linux-x86_64` | Linux, 64-bit |
+| `rn-windows-x64.exe` | Windows, 64-bit |
+| `rn-macos-arm64` | macOS, Apple Silicon |
+
+The Linux file is built on GitHub's current Ubuntu runner, so it needs a similarly recent glibc. Older distributions should use pipx or uv instead.
+
+The macOS build is not signed or notarized. The first open is blocked until you allow it:
+
+1. In Finder, right-click `rn-macos-arm64` and choose Open, then Open again.
+2. Or, in Terminal: `xattr -d com.apple.quarantine rn-macos-arm64`
+
+Windows SmartScreen may warn on the first launch because the file is not signed. Choose More info, then Run anyway.
+
+Intel Macs are not in the release build. Use pipx or uv on those machines.
+
+Make the Linux and macOS files executable (`chmod +x`) if the download did not keep that bit.
 
 ### macOS
 
