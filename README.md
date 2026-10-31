@@ -28,7 +28,7 @@ py -3.12 --version
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.0` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.1` is pushed.
 
 | File | System |
 | --- | --- |
@@ -155,7 +155,7 @@ On Windows, activate with `.venv\Scripts\activate`. Use Python 3.12 or newer for
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.0` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.1` is pushed.
 
 | File | System |
 | --- | --- |
