@@ -7,7 +7,14 @@ class Rn < Formula
   sha256 "d2f0f89b3445642c47cadebc34029bb872706115207dd7895a2136954d4936ce"
   license "GPL-3.0-only"
 
+  depends_on "cmake" => :build
+  depends_on "pkgconf" => :build
+  depends_on "jpeg-turbo"
+  depends_on "libheif"
+  depends_on "libtiff"
+  depends_on "little-cms2"
   depends_on "python@3.12"
+  depends_on "webp"
 
   # BEGIN resources
   resource "linkify-it-py" do
