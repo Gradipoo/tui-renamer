@@ -325,18 +325,32 @@ def test_list_files_skips_hidden_json_and_directories(tmp_path: Path) -> None:
     assert list_files(tmp_path / "missing") == []
 
 
+def _has_name(names: list[str], wanted: str) -> bool:
+    """True if a candidate spelling matches, even when the volume folds case."""
+    return any(name.casefold() == wanted.casefold() for name in names)
+
+
 def test_json_candidate_order(tmp_path: Path) -> None:
     path = tmp_path / "Photo.JPG"
+    path.write_bytes(b"jpeg")
     names = [item.name for item in json_candidates(path)]
     assert names[0] == "Photo.JPG.json"
-    assert "Photo.json" in names
-    assert "Photo.jpg.json" in names
-    assert "photo.jpg.json" in names
+    assert _has_name(names, "Photo.json")
+    assert _has_name(names, "Photo.jpg.json")
+    assert _has_name(names, "photo.jpg.json")
+    sidecar = tmp_path / "photo.jpg.json"
+    sidecar.write_text('{"photoTakenTime": {"timestamp": "1600000000"}}', encoding="utf-8")
+    found = next((item for item in json_candidates(path) if item.exists()), None)
+    assert found is not None
+    assert found.name.casefold() == "photo.jpg.json"
+    facts = load_facts(path, RenameRules(use_json_data=True), UTC)
+    assert facts.sidecar is not None
+    assert facts.sidecar.exists()
     numbered = tmp_path / "photo(1).jpg"
     numbered_names = [item.name for item in json_candidates(numbered)]
-    assert "photo.jpg.json" in numbered_names
+    assert _has_name(numbered_names, "photo.jpg.json")
     stamped = tmp_path / "2020-01-02-030405-photo.jpg"
-    assert "photo.jpg.json" in [item.name for item in json_candidates(stamped)]
+    assert _has_name([item.name for item in json_candidates(stamped)], "photo.jpg.json")
 
 
 def test_takeout_time_and_geodata() -> None:

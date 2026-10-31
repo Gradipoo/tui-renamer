@@ -530,10 +530,13 @@ def json_candidates(file_path: Path) -> list[Path]:
     if no_date != filename:
         raw.append(file_path.with_name(no_date + ".json"))
     found: list[Path] = []
-    seen: set[Path] = set()
+    # Path equality is case-insensitive on Windows. Keep each spelling so a
+    # lowercase sidecar is still tried after Photo.JPG.json.
+    seen: set[str] = set()
     for candidate in raw:
-        if candidate not in seen:
-            seen.add(candidate)
+        key = os.fspath(candidate)
+        if key not in seen:
+            seen.add(key)
             found.append(candidate)
     return found
 
