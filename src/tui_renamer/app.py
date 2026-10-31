@@ -109,6 +109,34 @@ TOGGLE_FIELDS = {
     ".": "replace_dots",
 }
 
+TOGGLE_TIPS = {
+    "add_datetime": "Add today's date and time",
+    "add_modtime": "Add the modified time",
+    "add_origtime": "Add the original time",
+    "use_json_data": "Read a sidecar JSON file",
+    "add_geodata": "Add JSON location to the name",
+    "use_prefix": "Times at the start when on",
+    "strip_original_name": "Drop the original name",
+    "strip_to_text": "Keep letters and spaces",
+    "remove_caps": "Lowercase the name",
+    "remove_special": "Remove symbols",
+    "replace_spaces": "Spaces become dashes",
+    "replace_dots": "Dots to dashes",
+    "date_mode": "Set dates from filenames",
+    "mtime_mode": "Set mtime mode",
+    "preview": "Show or hide the preview",
+}
+
+BUTTON_TIPS = {
+    "act-apply": "Apply the current mode",
+    "act-undo": "Undo the last batch",
+    "act-zone": "Choose a timezone",
+    "act-write-zone": "Write date and timezone offset",
+    "act-gps": "Write JSON location into EXIF",
+    "act-refresh": "Reload the folder",
+    "act-reset": "Reset name options",
+}
+
 
 OPTION_FIELDS = (
     ("d", "add_datetime", "Date"),
@@ -422,7 +450,9 @@ class DetailPane(Vertical):
 
 
 class OptionToggle(Static):
-    """One line, such as `[x] d Date`. A click assigns the other state."""
+    """One-line chip, such as ` d Date `. A click assigns the other state."""
+
+    can_focus = True
 
     class Changed(Message):
         def __init__(self, toggle: OptionToggle, value: bool) -> None:
@@ -431,31 +461,43 @@ class OptionToggle(Static):
             self.value = value
 
     def __init__(
-        self, key: str, caption: str, value: bool = False, *, id: str | None = None
+        self,
+        key: str,
+        caption: str,
+        value: bool = False,
+        *,
+        tooltip: str = "",
+        id: str | None = None,
     ) -> None:
         self.key_name = key
         self.caption = caption
         self._value = value
-        super().__init__(self._line(), id=id, markup=False)
+        super().__init__(self._chip(), id=id, markup=False)
+        if value:
+            self.add_class("-on")
+        if tooltip:
+            self.tooltip = tooltip
 
     @property
     def value(self) -> bool:
         return self._value
 
-    def _line(self) -> str:
-        mark = "[x]" if self._value else "[ ]"
-        return f"{mark} {self.key_name} {self.caption}"
+    def _chip(self) -> Text:
+        text = Text()
+        text.append(" ")
+        text.append(self.key_name, style="bold underline")
+        text.append(f" {self.caption} ")
+        return text
 
     def set_value(self, value: bool) -> None:
         """Show `value` without posting Changed, so a refresh cannot toggle twice."""
-        if self._value == value:
-            return
         self._value = value
-        self.update(self._line())
+        self.set_class(value, "-on")
+        self.update(self._chip())
 
     def get_content_width(self, container: Size, viewport: Size) -> int:
         del container, viewport
-        return len(self._line())
+        return 1 + len(self.key_name) + 1 + len(self.caption) + 1
 
     def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
         del container, viewport, width
@@ -463,8 +505,7 @@ class OptionToggle(Static):
 
     def on_click(self, event: Click) -> None:
         event.stop()
-        self._value = not self._value
-        self.update(self._line())
+        self.set_value(not self._value)
         self.post_message(self.Changed(self, self._value))
 
 
@@ -493,19 +534,36 @@ class OptionsPane(Vertical):
     def compose(self) -> ComposeResult:
         with WrappingRow(id="opt-toggles"):
             for key, field, label in OPTION_FIELDS:
-                yield OptionToggle(key, label, id=f"opt-{field}")
+                yield OptionToggle(key, label, tooltip=TOGGLE_TIPS[field], id=f"opt-{field}")
         with WrappingRow(id="opt-modes"):
-            yield OptionToggle("D", "Filename date", id="opt-date_mode")
-            yield OptionToggle("M", "mtime", id="opt-mtime_mode")
-            yield OptionToggle("P", "Preview", value=True, id="opt-preview")
+            yield OptionToggle(
+                "D", "Filename date", tooltip=TOGGLE_TIPS["date_mode"], id="opt-date_mode"
+            )
+            yield OptionToggle("M", "mtime", tooltip=TOGGLE_TIPS["mtime_mode"], id="opt-mtime_mode")
+            yield OptionToggle(
+                "P",
+                "Preview",
+                value=True,
+                tooltip=TOGGLE_TIPS["preview"],
+                id="opt-preview",
+            )
         with WrappingRow(id="opt-actions"):
-            yield Button("Enter Apply", id="act-apply", compact=True)
-            yield Button("u Undo", id="act-undo", compact=True)
-            yield Button("T Local", id="act-zone", compact=True)
-            yield Button("W Write zone", id="act-write-zone", compact=True)
-            yield Button("B GPS", id="act-gps", compact=True)
-            yield Button("r Refresh", id="act-refresh", compact=True)
-            yield Button("0 Reset", id="act-reset", compact=True)
+            yield Button(
+                "Enter Apply", id="act-apply", compact=True, tooltip=BUTTON_TIPS["act-apply"]
+            )
+            yield Button("u Undo", id="act-undo", compact=True, tooltip=BUTTON_TIPS["act-undo"])
+            yield Button("T Local", id="act-zone", compact=True, tooltip=BUTTON_TIPS["act-zone"])
+            yield Button(
+                "W Write zone",
+                id="act-write-zone",
+                compact=True,
+                tooltip=BUTTON_TIPS["act-write-zone"],
+            )
+            yield Button("B GPS", id="act-gps", compact=True, tooltip=BUTTON_TIPS["act-gps"])
+            yield Button(
+                "r Refresh", id="act-refresh", compact=True, tooltip=BUTTON_TIPS["act-refresh"]
+            )
+            yield Button("0 Reset", id="act-reset", compact=True, tooltip=BUTTON_TIPS["act-reset"])
 
 
 SOURCE_STYLE = {
@@ -580,12 +638,33 @@ class RenamerApp(App[None]):
         margin: 0;
         padding: 0;
         border: none;
+        background: $surface;
+        color: $text-muted;
         content-align: left middle;
+        pointer: pointer;
     }
-    #options Button:hover, #options Button:focus {
+    #options OptionToggle.-on {
+        background: $accent;
+        color: $text;
+        text-style: bold;
+    }
+    #options OptionToggle:hover, #options Button:hover {
+        background: $primary;
+        color: $text;
         height: 1;
         border: none;
-        padding: 0;
+    }
+    #options OptionToggle.-on:hover {
+        background: $accent-lighten-1;
+        color: $text;
+        text-style: bold;
+    }
+    #options OptionToggle:focus, #options Button:focus {
+        background: $primary-darken-1;
+        color: $text;
+        text-style: bold;
+        height: 1;
+        border: none;
     }
     #timeline { height: 1; padding: 0 1; }
     #status { height: auto; max-height: 3; padding: 0 1; }

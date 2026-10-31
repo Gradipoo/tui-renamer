@@ -119,6 +119,16 @@ def _painted(widget) -> str:
     return "".join(line.text for line in widget.render_lines(crop))
 
 
+def _background(widget) -> str:
+    crop = Region(0, 0, max(widget.size.width, 1), 1)
+    for line in widget.render_lines(crop):
+        for segment in line:
+            style = segment.style
+            if style is not None and style.bgcolor is not None:
+                return style.bgcolor.name or str(style.bgcolor)
+    return ""
+
+
 async def test_date_toggle_checks_the_option(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
@@ -143,17 +153,30 @@ async def test_options_strip_shows_each_toggle_on_one_line(tmp_path: Path) -> No
         await pilot.pause()
         options = app.query_one("#options")
         inner = options.content_region
+        on = app.query_one("#opt-add_datetime", OptionToggle)
+        off = app.query_one("#opt-add_modtime", OptionToggle)
+        assert on.has_class("-on")
+        assert not off.has_class("-on")
+        assert _background(on) != _background(off)
         for toggle in app.query(OptionToggle):
             assert toggle.size.height == 1
             assert inner.contains_region(toggle.region)
             assert f"{toggle.key_name} {toggle.caption}" in _painted(toggle)
-        assert "[x] d Date" in _painted(app.query_one("#opt-add_datetime"))
-        assert "[ ] m Mod" in _painted(app.query_one("#opt-add_modtime"))
-        assert "[x] P Preview" in _painted(app.query_one("#opt-preview"))
+            assert toggle.tooltip
+            chip = toggle.render()
+            assert any("underline" in str(span.style) for span in chip.spans)
         for button in app.query("#opt-actions Button"):
             assert button.size.height == 1
             assert inner.contains_region(button.region)
             assert str(button.label) in _painted(button)
+            assert button.tooltip
+        idle = _background(off)
+        assert await pilot.hover("#opt-add_modtime")
+        await pilot.pause()
+        assert _background(off) != idle
+        off.focus()
+        await pilot.pause()
+        assert _background(off) != idle
         assert app.query_one("#opt-toggles").size.height == 1
         await pilot.resize_terminal(72, 40)
         await pilot.pause()
