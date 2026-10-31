@@ -94,6 +94,66 @@ async def test_number_keys_zoom_panes(tmp_path: Path) -> None:
         assert app._zoom is None
 
 
+def _row_keys(table: DataTable) -> list[str]:
+    return [str(row.key.value) for row in table.ordered_rows]
+
+
+def _sel(table: DataTable, row: int) -> str:
+    return str(table.get_cell_at(Coordinate(row, 0))).strip()
+
+
+async def test_select_and_visual_keep_scroll_and_order(tmp_path: Path) -> None:
+    for index in range(220):
+        (tmp_path / f"file-{index:04d}.txt").write_text("x", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one(DataTable)
+        table.move_cursor(row=120)
+        await pilot.pause()
+        assert table.cursor_row == 120
+        assert table.scroll_y > 0
+        order = _row_keys(table)
+        scroll = table.scroll_y
+        await pilot.press("space")
+        await pilot.pause()
+        assert table.cursor_row == 120
+        assert table.scroll_y == scroll
+        assert _row_keys(table) == order
+        assert _sel(table, 120) == "*"
+        assert _sel(table, 119) == ""
+        assert _sel(table, 121) == ""
+        await pilot.press("v")
+        for _ in range(4):
+            await pilot.press("j")
+        await pilot.pause()
+        assert table.cursor_row == 124
+        assert table.scroll_y > 0
+        assert _row_keys(table) == order
+        assert app.selected == set(range(120, 125))
+        assert _sel(table, 120) == "*"
+        assert _sel(table, 124) == "*"
+        assert _sel(table, 125) == ""
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+        assert app._zoom == "files"
+        table.move_cursor(row=120)
+        await pilot.pause()
+        order = _row_keys(table)
+        scroll = table.scroll_y
+        assert scroll > 0
+        await pilot.press("space")
+        await pilot.pause()
+        assert table.cursor_row == 120
+        assert table.scroll_y == scroll
+        assert _row_keys(table) == order
+        assert _sel(table, 120) == "*"
+
+
 async def test_files_zoom_shows_full_names_then_narrows(tmp_path: Path) -> None:
     name = "summer-hike-along-the-ridge-trail.jpg"
     (tmp_path / name).write_text("x", encoding="utf-8")
