@@ -10,7 +10,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -31,6 +31,15 @@ FILENAME_DATE_RE = re.compile(
 )
 
 EXCLUDED_TZ_PREFIXES = ("Etc/", "posix/", "right/", "SystemV/")
+
+# Capture clocks further apart than this are a disagreement.
+DISAGREE_SECONDS = 120
+# A shift within this many seconds of a whole hour looks like a timezone miss.
+HOUR_SLOP_SECONDS = 90
+HOUR_LIMIT = 14
+# A file this far from both dated neighbors, and between them, is an outlier.
+NEIGHBOR_GAP = timedelta(days=30)
+MIN_SANE_YEAR = 1990
 
 
 @dataclass
@@ -68,6 +77,9 @@ class DateCandidate:
 
     label: str
     text: str
+    instant: datetime | None = None
+    precision: str = "second"
+    capture: bool = False
 
 
 @dataclass
@@ -84,6 +96,20 @@ class FileFacts:
     sidecar: Path | None = None
     candidates: list[DateCandidate] = field(default_factory=list)
     json_error: bool = False
+    winner_source: str = ""
+    winner_instant: datetime | None = None
+    has_exif: bool = False
+    has_offset: bool = False
+    has_gps: bool = False
+
+
+@dataclass(frozen=True)
+class Disagreement:
+    """One capture clock that does not match the winner."""
+
+    code: str
+    label: str
+    delta_seconds: float
 
 
 @dataclass
@@ -575,6 +601,62 @@ def _fs_times(path: Path) -> tuple[datetime | None, datetime | None]:
     return modified, birth
 
 
+def _add_filename_candidate(
+    facts: FileFacts,
+    filename_dt: datetime | None,
+    filename_prec: str | None,
+    zone: tzinfo,
+) -> datetime | None:
+    if filename_dt is None:
+        return None
+    instant = filename_dt.replace(tzinfo=zone)
+    note = filename_prec or "date"
+    facts.candidates.append(
+        DateCandidate(
+            "Filename",
+            f"{filename_dt.strftime('%Y-%m-%d %H:%M:%S')} ({note})",
+            instant=instant,
+            precision=filename_prec or "date",
+            capture=True,
+        )
+    )
+    return instant
+
+
+def _mark_json_error(facts: FileFacts, filename_instant: datetime | None) -> None:
+    facts.source = "json_err"
+    facts.json_error = True
+    if filename_instant is not None:
+        facts.winner_source = "F"
+        facts.winner_instant = filename_instant
+
+
+def _set_winner(
+    facts: FileFacts,
+    json_orig: datetime | None,
+    exif_utc: datetime | None,
+    fs_birth: datetime | None,
+    final_mod: datetime | None,
+    filename_instant: datetime | None,
+) -> None:
+    """Letter for the clock datetime_for_write would use."""
+    if json_orig is not None:
+        facts.winner_source = "J"
+        facts.winner_instant = json_orig
+    elif exif_utc is not None:
+        facts.winner_source = "E"
+        facts.winner_instant = exif_utc
+    elif fs_birth is not None:
+        facts.winner_source = "B"
+        facts.winner_instant = fs_birth
+    elif final_mod is not None:
+        facts.winner_source = "M"
+        facts.winner_instant = final_mod
+    elif filename_instant is not None:
+        facts.winner_source = "F"
+        facts.winner_instant = filename_instant
+
+
 def load_facts(
     path: Path,
     rules: RenameRules,
@@ -583,19 +665,16 @@ def load_facts(
     exif_offset: tzinfo | None = None,
     exif_label: str = "EXIF DateTimeOriginal",
     exif_offset_text: str = "",
+    has_gps: bool = False,
 ) -> FileFacts:
     """Pick original and modified times the way the curses script did.
 
     JSON wins only while JSON mode is on. A JSON parse error hides EXIF and
     filesystem times. A missing offset uses the selected zone.
     """
-    facts = FileFacts()
+    facts = FileFacts(has_gps=has_gps)
     filename_dt, filename_prec = parse_filename_datetime(path.name)
-    if filename_dt is not None:
-        note = filename_prec or "date"
-        facts.candidates.append(
-            DateCandidate("Filename", f"{filename_dt.strftime('%Y-%m-%d %H:%M:%S')} ({note})")
-        )
+    filename_instant = _add_filename_candidate(facts, filename_dt, filename_prec, zone)
 
     json_orig: datetime | None = None
     json_mod: datetime | None = None
@@ -608,12 +687,10 @@ def load_facts(
             try:
                 data = json.loads(sidecar.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError, UnicodeError):
-                facts.source = "json_err"
-                facts.json_error = True
+                _mark_json_error(facts, filename_instant)
                 return facts
             if not isinstance(data, dict):
-                facts.source = "json_err"
-                facts.json_error = True
+                _mark_json_error(facts, filename_instant)
                 return facts
             json_photo = parse_json_time_field(data.get("photoTakenTime"))
             json_created = parse_json_time_field(data.get("creationTime"))
@@ -622,15 +699,25 @@ def load_facts(
             facts.geodata, facts.geodata_raw = parse_json_geodata(data)
             if json_photo is not None:
                 facts.candidates.append(
-                    DateCandidate("JSON photoTakenTime", _show(json_photo, zone))
+                    DateCandidate(
+                        "JSON photoTakenTime",
+                        _show(json_photo, zone),
+                        instant=json_photo,
+                        capture=True,
+                    )
                 )
             if json_created is not None:
                 facts.candidates.append(
-                    DateCandidate("JSON creationTime", _show(json_created, zone))
+                    DateCandidate(
+                        "JSON creationTime",
+                        _show(json_created, zone),
+                        instant=json_created,
+                        capture=True,
+                    )
                 )
             if json_mod is not None:
                 facts.candidates.append(
-                    DateCandidate("JSON modificationTime", _show(json_mod, zone))
+                    DateCandidate("JSON modificationTime", _show(json_mod, zone), instant=json_mod)
                 )
             if facts.geodata:
                 facts.candidates.append(DateCandidate("Geodata", facts.geodata))
@@ -642,13 +729,17 @@ def load_facts(
         label = exif_label
         if exif_offset_text:
             label = f"{exif_label} {exif_offset_text}"
-        facts.candidates.append(DateCandidate(label, _show(exif_utc, zone)))
+        facts.has_exif = True
+        facts.has_offset = bool(exif_offset_text)
+        facts.candidates.append(
+            DateCandidate(label, _show(exif_utc, zone), instant=exif_utc, capture=True)
+        )
 
     fs_mod, fs_birth = _fs_times(path)
     if fs_mod is not None:
-        facts.candidates.append(DateCandidate("mtime", _show(fs_mod, zone)))
+        facts.candidates.append(DateCandidate("mtime", _show(fs_mod, zone), instant=fs_mod))
     if fs_birth is not None:
-        facts.candidates.append(DateCandidate("birth", _show(fs_birth, zone)))
+        facts.candidates.append(DateCandidate("birth", _show(fs_birth, zone), instant=fs_birth))
 
     if rules.use_json_data and (json_orig or json_mod or facts.geodata):
         facts.source = "json"
@@ -662,6 +753,14 @@ def load_facts(
         aware = final_mod.astimezone(zone)
         facts.modtime = aware
         facts.modtime_text = aware.strftime("%Y-%m-%d-%H%M%S")
+    _set_winner(
+        facts,
+        json_orig if rules.use_json_data else None,
+        exif_utc,
+        fs_birth,
+        final_mod,
+        filename_instant,
+    )
     return facts
 
 
@@ -682,3 +781,198 @@ def datetime_for_write(path: Path, facts: FileFacts, zone: tzinfo) -> datetime |
     except OSError:
         return None
     return datetime.fromtimestamp(current, tz=zone)
+
+
+def date_source(facts: FileFacts) -> str:
+    """Letter for the clock a write would use. Blank when there is no clock."""
+    return facts.winner_source
+
+
+def _whole_hours(delta_seconds: float) -> int | None:
+    if abs(delta_seconds) < 3600 - HOUR_SLOP_SECONDS:
+        return None
+    hours = round(delta_seconds / 3600)
+    if hours == 0 or abs(hours) > HOUR_LIMIT:
+        return None
+    if abs(delta_seconds - hours * 3600) <= HOUR_SLOP_SECONDS:
+        return hours
+    return None
+
+
+def _same_calendar_day(left: datetime, right: datetime) -> bool:
+    if left.tzinfo is not None and right.tzinfo is not None:
+        return left.astimezone(right.tzinfo).date() == right.date()
+    return left.date() == right.date()
+
+
+def disagreements(facts: FileFacts) -> list[Disagreement]:
+    """Capture clocks that do not match the winner.
+
+    mtime and birth are not capture clocks. A filesystem winner is compared
+    to a filename only by calendar day. Date-only filenames do the same.
+    """
+    winner = facts.winner_instant
+    if winner is None:
+        return []
+    filesystem_winner = facts.winner_source in {"M", "B"}
+    found: list[Disagreement] = []
+    for candidate in facts.candidates:
+        if not candidate.capture or candidate.instant is None:
+            continue
+        if filesystem_winner and candidate.label != "Filename":
+            continue
+        if candidate.precision == "date" or filesystem_winner:
+            if not _same_calendar_day(candidate.instant, winner):
+                delta = (candidate.instant - winner).total_seconds()
+                found.append(Disagreement("!", candidate.label, delta))
+            continue
+        delta = (candidate.instant - winner).total_seconds()
+        if _whole_hours(delta) is not None:
+            found.append(Disagreement("H", candidate.label, delta))
+        elif abs(delta) > DISAGREE_SECONDS:
+            found.append(Disagreement("!", candidate.label, delta))
+    return found
+
+
+def looks_like_timezone(facts: FileFacts) -> bool:
+    return any(item.code == "H" for item in disagreements(facts))
+
+
+def delta_text(winner: datetime | None, candidate: DateCandidate) -> str:
+    """Short gap between a candidate and the winner."""
+    if winner is None or candidate.instant is None:
+        return ""
+    if candidate.precision == "date":
+        if _same_calendar_day(candidate.instant, winner):
+            return "same day"
+        return "day differs"
+    delta = (candidate.instant - winner).total_seconds()
+    if abs(delta) <= 60:
+        return "same"
+    sign = "+" if delta > 0 else "-"
+    hours = _whole_hours(delta)
+    if hours is not None:
+        return f"{sign}{abs(hours)}h"
+    seconds = abs(int(delta))
+    days, rem = divmod(seconds, 86400)
+    hour_part, rem = divmod(rem, 3600)
+    minutes, _rest = divmod(rem, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hour_part:
+        parts.append(f"{hour_part}h")
+    if minutes and not days:
+        parts.append(f"{minutes}m")
+    if not parts:
+        parts.append(f"{seconds}s")
+    return sign + " ".join(parts)
+
+
+def neighbor_flags(instants: list[datetime | None], now: datetime) -> list[str]:
+    """Y for an impossible year, G for a spike between two closer neighbors."""
+    flags = [""] * len(instants)
+    dated = [(index, moment) for index, moment in enumerate(instants) if moment is not None]
+    for pos, (index, moment) in enumerate(dated):
+        if moment.year < MIN_SANE_YEAR or moment.year > now.year + 1:
+            flags[index] = "Y"
+            continue
+        if pos == 0 or pos == len(dated) - 1:
+            continue
+        prev_moment = dated[pos - 1][1]
+        next_moment = dated[pos + 1][1]
+        gap_prev = abs(moment - prev_moment)
+        gap_next = abs(moment - next_moment)
+        closer = min(gap_prev, gap_next)
+        between = abs(prev_moment - next_moment)
+        if closer > NEIGHBOR_GAP and between < gap_prev and between < gap_next:
+            flags[index] = "G"
+    return flags
+
+
+def missing_marks(
+    *,
+    is_image: bool,
+    has_exif: bool,
+    has_offset: bool,
+    has_gps: bool,
+    has_sidecar_geo: bool,
+    json_mode: bool,
+    sidecar_found: bool,
+    json_error: bool,
+) -> str:
+    """Dim ASCII marks for data that is absent. J means the sidecar is broken."""
+    if json_error:
+        return "J"
+    marks: list[str] = []
+    if is_image and not has_exif:
+        marks.append("e")
+    elif is_image and has_exif and not has_offset:
+        marks.append("z")
+    if is_image and not has_gps and not has_sidecar_geo:
+        marks.append("g")
+    if json_mode and not sidecar_found:
+        marks.append("j")
+    return "".join(marks)
+
+
+def flag_letter(facts: FileFacts, neighbor: str) -> str:
+    """One mark. Priority is H, then Y, then G, then !."""
+    codes = {item.code for item in disagreements(facts)}
+    if "H" in codes:
+        return "H"
+    if neighbor == "Y":
+        return "Y"
+    if neighbor == "G":
+        return "G"
+    if "!" in codes:
+        return "!"
+    return ""
+
+
+def is_warning(facts: FileFacts, neighbor: str) -> bool:
+    return bool(flag_letter(facts, neighbor)) or facts.json_error
+
+
+def timeline_bins(
+    instants: list[datetime | None],
+    width: int,
+    highlight: int | None,
+) -> str:
+    """One ASCII row. Space is empty, dot is one, colon is a few, bar is many.
+
+    The highlighted file's bin is #. Files with no clock are left out.
+    """
+    if width <= 0:
+        return ""
+    present = [(index, moment) for index, moment in enumerate(instants) if moment is not None]
+    if not present:
+        return ""
+    earliest = min(moment for _index, moment in present)
+    latest = max(moment for _index, moment in present)
+    span = (latest - earliest).total_seconds()
+    counts = [0] * width
+    mark: int | None = None
+    for index, moment in present:
+        if span <= 0:
+            bin_index = width // 2
+        else:
+            pos = (moment - earliest).total_seconds() / span
+            bin_index = int(pos * (width - 1))
+            bin_index = max(0, min(width - 1, bin_index))
+        counts[bin_index] += 1
+        if highlight is not None and index == highlight:
+            mark = bin_index
+    chars: list[str] = []
+    for index, count in enumerate(counts):
+        if index == mark:
+            chars.append("#")
+        elif count <= 0:
+            chars.append(" ")
+        elif count == 1:
+            chars.append(".")
+        elif count <= 3:
+            chars.append(":")
+        else:
+            chars.append("|")
+    return "".join(chars)

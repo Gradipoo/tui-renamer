@@ -12,17 +12,24 @@ from tui_renamer.core import (
     RenameRules,
     active_steps,
     conflict_destination,
+    date_source,
     datetime_for_write,
+    delta_text,
+    disagreements,
     filter_timezones,
     fit_middle,
+    flag_letter,
     format_offset,
+    is_warning,
     json_candidates,
     list_files,
     list_timezones,
     load_facts,
+    missing_marks,
     mtime_source,
     naive_to_ts,
     name_diff_ops,
+    neighbor_flags,
     parse_filename_datetime,
     parse_json_geodata,
     parse_json_time_field,
@@ -33,6 +40,7 @@ from tui_renamer.core import (
     resolve_tz,
     show_not_oldest_warning,
     strip_existing_timestamps,
+    timeline_bins,
 )
 
 UTC = timezone.utc
@@ -453,3 +461,184 @@ def test_resolve_and_format_offset() -> None:
     assert format_offset(moment) == "+05:30"
     negative = datetime(2024, 1, 15, 12, tzinfo=timezone(timedelta(hours=-8)))
     assert format_offset(negative) == "-08:00"
+
+
+def _touch(path: Path) -> None:
+    path.write_bytes(b"x")
+
+
+def test_source_letters(tmp_path: Path, monkeypatch) -> None:
+    image = tmp_path / "photo.jpg"
+    _touch(image)
+    exif = datetime(2020, 6, 1, 15, 0, 0)
+    facts = load_facts(
+        image,
+        RenameRules(),
+        UTC,
+        exif_naive=exif,
+        exif_offset=UTC,
+        exif_offset_text="+00:00",
+    )
+    assert date_source(facts) == "E"
+
+    sidecar = tmp_path / "photo.jpg.json"
+    sidecar.write_text('{"photoTakenTime": {"timestamp": "1600000000"}}', encoding="utf-8")
+    facts = load_facts(
+        image,
+        RenameRules(use_json_data=True),
+        UTC,
+        exif_naive=exif,
+        exif_offset=UTC,
+        exif_offset_text="+00:00",
+    )
+    assert date_source(facts) == "J"
+
+    plain = tmp_path / "note.txt"
+    _touch(plain)
+    assert date_source(load_facts(plain, RenameRules(), UTC)) == "B"
+
+    ghost = tmp_path / "2020-01-01-120000-missing.jpg"
+    assert date_source(load_facts(ghost, RenameRules(), UTC)) == "F"
+
+    mod = datetime(2020, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr("tui_renamer.core._fs_times", lambda _path: (mod, None))
+    assert date_source(load_facts(plain, RenameRules(), UTC)) == "M"
+
+
+def test_hour_shift_is_h_and_mtime_is_not_a_warning(tmp_path: Path) -> None:
+    path = tmp_path / "2020-06-01-120000-photo.jpg"
+    _touch(path)
+    facts = load_facts(
+        path,
+        RenameRules(),
+        UTC,
+        exif_naive=datetime(2020, 6, 1, 17, 0, 0),
+        exif_offset=UTC,
+        exif_offset_text="+00:00",
+    )
+    assert flag_letter(facts, "") == "H"
+    assert flag_letter(facts, "Y") == "H"
+    labels = [item.label for item in disagreements(facts)]
+    assert labels == ["Filename"]
+    filename = next(item for item in facts.candidates if item.label == "Filename")
+    assert delta_text(facts.winner_instant, filename) == "-5h"
+
+
+def test_ten_minutes_is_a_plain_disagreement(tmp_path: Path) -> None:
+    path = tmp_path / "2020-06-01-120000-photo.jpg"
+    _touch(path)
+    facts = load_facts(
+        path,
+        RenameRules(),
+        UTC,
+        exif_naive=datetime(2020, 6, 1, 12, 10, 1),
+        exif_offset=UTC,
+        exif_offset_text="+00:00",
+    )
+    assert flag_letter(facts, "") == "!"
+
+
+def test_birth_winner_flags_only_a_different_filename_day(tmp_path: Path, monkeypatch) -> None:
+    birth = datetime(2020, 6, 1, 15, tzinfo=UTC)
+    monkeypatch.setattr("tui_renamer.core._fs_times", lambda _path: (birth, birth))
+    same = tmp_path / "20200601-same.jpg"
+    _touch(same)
+    quiet = load_facts(same, RenameRules(), UTC)
+    assert quiet.winner_source == "B"
+    assert disagreements(quiet) == []
+    other = tmp_path / "20200602-other.jpg"
+    _touch(other)
+    flagged = load_facts(other, RenameRules(), UTC)
+    assert flag_letter(flagged, "") == "!"
+
+
+def test_date_only_filename_ignores_the_clock(tmp_path: Path) -> None:
+    path = tmp_path / "20200601-photo.jpg"
+    _touch(path)
+    facts = load_facts(
+        path,
+        RenameRules(),
+        UTC,
+        exif_naive=datetime(2020, 6, 1, 15, 0, 0),
+        exif_offset=UTC,
+        exif_offset_text="+00:00",
+    )
+    assert disagreements(facts) == []
+    other = tmp_path / "20200602-other.jpg"
+    _touch(other)
+    facts = load_facts(
+        other,
+        RenameRules(),
+        UTC,
+        exif_naive=datetime(2020, 6, 1, 15, 0, 0),
+        exif_offset=UTC,
+        exif_offset_text="+00:00",
+    )
+    assert flag_letter(facts, "") == "!"
+
+
+def test_neighbor_flags_skip_a_steady_step_and_catch_a_spike() -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    june_2023 = datetime(2023, 6, 1, tzinfo=UTC)
+    june_2024 = datetime(2024, 6, 1, tzinfo=UTC)
+    next_day = datetime(2024, 6, 2, tzinfo=UTC)
+    assert neighbor_flags([june_2023, june_2024, next_day], now) == ["", "", ""]
+    year_2010 = datetime(2010, 6, 1, tzinfo=UTC)
+    assert neighbor_flags([june_2024, year_2010, june_2024], now)[1] == "G"
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    assert neighbor_flags([june_2024, epoch, june_2024], now)[1] == "Y"
+
+
+def test_missing_marks_and_warning_priority() -> None:
+    assert (
+        missing_marks(
+            is_image=True,
+            has_exif=False,
+            has_offset=False,
+            has_gps=False,
+            has_sidecar_geo=False,
+            json_mode=False,
+            sidecar_found=False,
+            json_error=False,
+        )
+        == "eg"
+    )
+    assert (
+        missing_marks(
+            is_image=True,
+            has_exif=True,
+            has_offset=False,
+            has_gps=True,
+            has_sidecar_geo=False,
+            json_mode=True,
+            sidecar_found=False,
+            json_error=False,
+        )
+        == "zj"
+    )
+    assert (
+        missing_marks(
+            is_image=False,
+            has_exif=False,
+            has_offset=False,
+            has_gps=False,
+            has_sidecar_geo=False,
+            json_mode=False,
+            sidecar_found=False,
+            json_error=True,
+        )
+        == "J"
+    )
+    assert flag_letter(FileFacts(winner_source="E"), "Y") == "Y"
+    assert is_warning(FileFacts(json_error=True), "") is True
+
+
+def test_timeline_bins_mark_the_highlight_and_skip_empty_clocks() -> None:
+    early = datetime(2020, 1, 1, tzinfo=UTC)
+    late = datetime(2024, 1, 1, tzinfo=UTC)
+    line = timeline_bins([early, None, late], 5, 0)
+    assert len(line) == 5
+    assert line[0] == "#"
+    assert timeline_bins([None, None], 4, 0) == ""
+    crowded = timeline_bins([early, early, early, early, early], 3, 1)
+    assert "#" in crowded

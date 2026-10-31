@@ -34,6 +34,7 @@ except ImportError:  # pragma: no cover - installed with the package
     PIEXIF_AVAILABLE = False
 
 EXIF_IFD = 0x8769
+GPS_IFD = 0x8825
 OFFSET_TIME = 36880
 OFFSET_TIME_ORIGINAL = 36881
 OFFSET_TIME_DIGITIZED = 36882
@@ -53,6 +54,7 @@ class ExifClock:
     offset: tzinfo | None
     label: str
     offset_text: str
+    has_gps: bool = False
 
 
 @dataclass
@@ -95,11 +97,16 @@ def read_exif(path: Path) -> ExifClock:
     empty = ExifClock(None, None, "", "")
     if path.suffix.lower() not in IMAGE_EXTENSIONS or not PILLOW_AVAILABLE or Image is None:
         return empty
+    has_gps = False
     try:
         with Image.open(path) as image:
             exif = image.getexif()
             ifd = exif.get_ifd(EXIF_IFD)
             base = dict(exif)
+            try:
+                has_gps = bool(exif.get_ifd(GPS_IFD))
+            except Exception:
+                has_gps = False
     except Exception:
         return empty
     original = _text(ifd.get(DATETIME_ORIGINAL))
@@ -114,9 +121,9 @@ def read_exif(path: Path) -> ExifClock:
     offset_text = _text(ifd.get(OFFSET_TIME_ORIGINAL)) or _text(ifd.get(OFFSET_TIME)) or ""
     offset = parse_offset(offset_text) if offset_text else None
     if naive is None:
-        return ExifClock(None, offset, "", offset_text)
+        return ExifClock(None, offset, "", offset_text, has_gps)
     label = "EXIF DateTimeOriginal" if original else "EXIF DateTime"
-    return ExifClock(naive, offset, label, offset_text)
+    return ExifClock(naive, offset, label, offset_text, has_gps)
 
 
 def inspect_file(path: Path, rules: RenameRules, zone: tzinfo) -> FileFacts:
@@ -129,6 +136,7 @@ def inspect_file(path: Path, rules: RenameRules, zone: tzinfo) -> FileFacts:
         exif_offset=clock.offset,
         exif_label=clock.label or "EXIF DateTimeOriginal",
         exif_offset_text=clock.offset_text,
+        has_gps=clock.has_gps,
     )
 
 

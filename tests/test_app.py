@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.style import Style
@@ -141,13 +141,13 @@ async def test_change_overview(tmp_path: Path) -> None:
         await pilot.pause()
         assert "1 of 2 will change" in app.sub_title
         table = app.query_one(DataTable)
-        plain = table.get_cell_at(Coordinate(1, 1))
+        plain = table.get_cell_at(Coordinate(1, 4))
         assert _is_dim(plain)
         await pilot.press("j")
         assert table.cursor_row == 1
         await pilot.press("n")
         assert table.cursor_row == 0
-        shown = table.get_cell_at(Coordinate(0, 2))
+        shown = table.get_cell_at(Coordinate(0, 5))
         assert isinstance(shown, Text)
         assert "..." in shown.plain
         assert shown.plain != f"{stem}.jpg"
@@ -157,6 +157,36 @@ async def test_change_overview(tmp_path: Path) -> None:
         await pilot.pause()
         assert (tmp_path / f"{stem}.jpg").exists()
         assert not (tmp_path / source_name).exists()
+
+
+async def test_warning_jump_timeline_and_detail(tmp_path: Path) -> None:
+    from PIL import Image
+
+    from tui_renamer.metadata import write_image_exif_datetime
+
+    photo = tmp_path / "2020-06-01-120000-photo.jpg"
+    Image.new("RGB", (8, 8), (20, 30, 40)).save(photo, format="JPEG")
+    write_image_exif_datetime(photo, datetime(2020, 6, 1, 17, 0, tzinfo=timezone.utc))
+    (tmp_path / "plain.txt").write_text("x", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.rules.source_tz = "UTC"
+        app._facts.clear()
+        app.refresh_view()
+        await pilot.pause()
+        assert "W:1" in app.sub_title
+        table = app.query_one(DataTable)
+        assert table.get_cell_at(Coordinate(0, 1)).plain == "E"
+        assert table.get_cell_at(Coordinate(0, 2)).plain == "H"
+        await pilot.press("j")
+        assert table.cursor_row == 1
+        await pilot.press("!")
+        assert table.cursor_row == 0
+        detail = str(app.query_one("#detail-body").render())
+        assert "timezone" in detail.lower()
+        assert "-5h" in detail
+        assert "#" in str(app.query_one("#timeline").render())
 
 
 async def test_rename_and_undo(tmp_path: Path, monkeypatch) -> None:

@@ -25,15 +25,22 @@ from tui_renamer.core import (
     RenameRules,
     Step,
     active_steps,
+    date_source,
     datetime_for_write,
+    delta_text,
     filter_timezones,
     fit_middle,
+    flag_letter,
     format_offset,
     format_tz_display,
+    is_warning,
     list_files,
     list_timezones,
+    looks_like_timezone,
+    missing_marks,
     mtime_source,
     name_diff_ops,
+    neighbor_flags,
     parse_filename_datetime,
     plan_filename_dates,
     preview_name,
@@ -41,6 +48,7 @@ from tui_renamer.core import (
     reset_name_rules,
     resolve_tz,
     show_not_oldest_warning,
+    timeline_bins,
 )
 from tui_renamer.journal import Batch, Journal, RenameOp
 from tui_renamer.metadata import (
@@ -105,6 +113,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     _spec("Move", "G", "Bottom", "Jump to the last file", "goto_end"),
     _spec("Move", "n", "Next change", "Next file that will change", "next_change"),
     _spec("Move", "N", "Previous change", "Previous file that will change", "prev_change"),
+    _spec("Move", "!", "Next warning", "Next warning", "next_warning"),
     _spec("Select", "space", "Select", "Select or clear this file", "toggle_select"),
     _spec("Select", "v", "Visual", "Select a range", "visual", "visual"),
     _spec("Select", "a", "All", "Select all", "select_all"),
@@ -498,6 +507,46 @@ class RulesPane(Static):
         app.action_chip()
 
 
+SOURCE_STYLE = {
+    "E": "green",
+    "J": "magenta",
+    "B": "blue",
+    "M": "yellow",
+    "F": "cyan",
+}
+FLAG_STYLE = {
+    "H": "bold yellow",
+    "Y": "red",
+    "G": "yellow",
+    "!": "bold red",
+}
+STATUS_SHORT = {
+    "UNCHANGED": "---",
+    "MODIFIED": "MOD",
+    "SELECTED": "SEL",
+    "MANUAL": "MAN",
+    "LOCKED": "LCK",
+    "JSON ERR": "ERR",
+    "NO DATE": "NOD",
+    "UPDATE": "UPD",
+    "ERR": "ERR",
+}
+SOURCE_NAME = {
+    "E": "EXIF",
+    "J": "JSON sidecar",
+    "B": "birth or ctime",
+    "M": "mtime",
+    "F": "filename",
+}
+MISSING_NAME = {
+    "e": "no EXIF date",
+    "z": "no timezone offset",
+    "g": "no GPS",
+    "j": "no sidecar",
+    "J": "sidecar could not be read",
+}
+
+
 class RenamerApp(App[None]):
     """Batch renamer. Keys match the original curses script."""
 
@@ -508,6 +557,7 @@ class RenamerApp(App[None]):
     #files { width: 1fr; height: 100%; }
     #detail { width: 1fr; height: 100%; }
     #rules { height: auto; max-height: 5; padding: 0 1; }
+    #timeline { height: 1; padding: 0 1; }
     #status { height: auto; max-height: 3; padding: 0 1; }
     #files, #detail, #rules { border: solid $primary; }
     ConfirmScreen, HelpScreen, TimezoneScreen, InsertScreen { align: center middle; }
@@ -546,6 +596,7 @@ class RenamerApp(App[None]):
         Binding("G", "goto_end", show=False),
         Binding("n", "next_change", show=False),
         Binding("N", "prev_change", show=False),
+        Binding("!", "next_warning", show=False),
         Binding("v", "visual", show=False),
         Binding("a", "select_all", show=False),
         Binding("A", "select_none", show=False),
@@ -593,6 +644,7 @@ class RenamerApp(App[None]):
         self._message = ""
         self._rebuilding = False
         self._changing: set[int] = set()
+        self._neighbors: list[str] = []
         self.exiftool = find_exiftool()
         self.setfile = find_setfile()
         self.journal = Journal(Path(tempfile.mkdtemp(prefix="rn-undo-")))
@@ -601,6 +653,7 @@ class RenamerApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Static("", id="timeline")
         with Horizontal(id="body"):
             yield FileTable(id="files")
             yield DetailPane(id="detail")
@@ -710,9 +763,11 @@ class RenamerApp(App[None]):
         self._rebuilding = True
         try:
             self._recompute_changing()
+            self._recompute_neighbors()
             self._fill_table()
             self.query_one(RulesPane).set_steps(active_steps(self.rules))
             self._update_detail()
+            self._update_timeline()
             self._update_status()
             self._update_subtitle()
         finally:
@@ -745,6 +800,54 @@ class RenamerApp(App[None]):
         for index, path in enumerate(self.files):
             if self.preview_for(index) != path.name:
                 self._changing.add(index)
+
+    def _recompute_neighbors(self) -> None:
+        instants = [self.facts_for(path).winner_instant for path in self.files]
+        self._neighbors = neighbor_flags(instants, datetime.now(self.target_zone()))
+
+    def _neighbor_at(self, index: int) -> str:
+        if 0 <= index < len(self._neighbors):
+            return self._neighbors[index]
+        return ""
+
+    def _mark_cells(self, index: int, path: Path) -> tuple[Text, Text, Text]:
+        facts = self.facts_for(path)
+        letter = date_source(facts)
+        source = Text(letter, style=SOURCE_STYLE.get(letter, ""))
+        flag = flag_letter(facts, self._neighbor_at(index))
+        flag_text = Text(flag, style=FLAG_STYLE.get(flag, ""))
+        marks = missing_marks(
+            is_image=path.suffix.lower() in IMAGE_EXTENSIONS,
+            has_exif=facts.has_exif,
+            has_offset=facts.has_offset,
+            has_gps=facts.has_gps,
+            has_sidecar_geo=bool(facts.geodata_raw),
+            json_mode=self.rules.use_json_data,
+            sidecar_found=facts.sidecar is not None,
+            json_error=facts.json_error,
+        )
+        missing = Text()
+        for char in marks:
+            missing.append(char, style="red" if char == "J" else "dim")
+        if len(marks) < 4:
+            missing.append(" " * (4 - len(marks)))
+        return source, flag_text, missing
+
+    def _short_status(self, status: str) -> str:
+        return STATUS_SHORT.get(status, status[:3])
+
+    def _update_timeline(self) -> None:
+        widget = self.query_one("#timeline", Static)
+        width = widget.size.width or self.size.width
+        if width <= 0:
+            width = 80
+        instants = [self.facts_for(path).winner_instant for path in self.files]
+        highlight = self._cursor if self.files else None
+        line = timeline_bins(instants, width, highlight)
+        if not line:
+            widget.update(Text("no dates", style="dim"))
+        else:
+            widget.update(line)
 
     def _flex_width(self, fixed_content: int, column_count: int, flex_count: int) -> int:
         """Content width for each flexible column so the row fits the pane."""
@@ -782,38 +885,47 @@ class RenamerApp(App[None]):
             self._cursor = 0
 
     def _add_rename_columns(self, table: FileTable) -> None:
-        width = self._flex_width(fixed_content=12, column_count=4, flex_count=2)
+        width = self._flex_width(fixed_content=11, column_count=7, flex_count=2)
         table.add_column("", key="mark", width=2)
+        table.add_column("S", key="src", width=1)
+        table.add_column("F", key="flag", width=1)
+        table.add_column("Miss", key="miss", width=4)
         table.add_column("Name", key="name", width=width)
         table.add_column("New", key="new", width=width)
-        table.add_column("Status", key="status", width=10)
+        table.add_column("St", key="status", width=3)
         self._name_width = width
         self._new_width = width
 
     def _add_date_columns(self, table: FileTable) -> None:
-        width = self._flex_width(fixed_content=50, column_count=5, flex_count=1)
+        width = self._flex_width(fixed_content=49, column_count=8, flex_count=1)
         table.add_column("", key="mark", width=2)
+        table.add_column("S", key="src", width=1)
+        table.add_column("F", key="flag", width=1)
+        table.add_column("Miss", key="miss", width=4)
         table.add_column("File", key="file", width=width)
         table.add_column("Current", key="cur", width=19)
         table.add_column("New", key="new", width=19)
-        table.add_column("Status", key="status", width=10)
+        table.add_column("St", key="status", width=3)
         self._name_width = width
         self._new_width = 19
 
     def _add_mtime_columns(self, table: FileTable) -> None:
-        width = self._flex_width(fixed_content=31, column_count=4, flex_count=1)
+        width = self._flex_width(fixed_content=30, column_count=7, flex_count=1)
         table.add_column("", key="mark", width=2)
+        table.add_column("S", key="src", width=1)
+        table.add_column("F", key="flag", width=1)
+        table.add_column("Miss", key="miss", width=4)
         table.add_column("Name", key="name", width=width)
         table.add_column("New mtime", key="mtime", width=19)
-        table.add_column("Status", key="status", width=10)
+        table.add_column("St", key="status", width=3)
         self._name_width = width
         self._new_width = 19
 
     def _mark(self, index: int) -> str:
         return "*" if index in self.selected else ""
 
-    def _rename_rows(self) -> list[tuple[str, Text, Text, str]]:
-        rows: list[tuple[str, Text, Text, str]] = []
+    def _rename_rows(self) -> list[tuple[str, Text, Text, Text, Text, Text, str]]:
+        rows: list[tuple[str, Text, Text, Text, Text, Text, str]] = []
         name_w = self._name_width
         new_w = self._new_width
         for index, path in enumerate(self.files):
@@ -828,12 +940,16 @@ class RenamerApp(App[None]):
             else:
                 new_style = "dim"
             name_style = "" if changing else "dim"
+            source, flag, missing = self._mark_cells(index, path)
             rows.append(
                 (
                     self._mark(index),
+                    source,
+                    flag,
+                    missing,
                     self._styled(path.name, name_w, name_style),
                     self._styled(new_name, new_w, new_style),
-                    self._rename_status(index, new_name),
+                    self._short_status(self._rename_status(index, new_name)),
                 )
             )
         return rows
@@ -852,11 +968,11 @@ class RenamerApp(App[None]):
             return "MODIFIED"
         return "UNCHANGED"
 
-    def _date_rows(self) -> list[tuple[str, Text, str, Text, str]]:
+    def _date_rows(self) -> list[tuple[str, Text, Text, Text, Text, str, Text, str]]:
         plan = plan_filename_dates(self.files, self.plan_zone())
         by_path = {item.path: item for item in plan.todo + plan.same}
         zone = self.plan_zone()
-        rows: list[tuple[str, Text, str, Text, str]] = []
+        rows: list[tuple[str, Text, Text, Text, Text, str, Text, str]] = []
         for index, path in enumerate(self.files):
             item = by_path.get(path)
             current = self._clock(path, zone)
@@ -871,30 +987,38 @@ class RenamerApp(App[None]):
                 status = "SELECTED"
             file_style = "" if index in self._changing else "dim"
             new_style = "" if index in self._changing else "dim"
+            source, flag, missing = self._mark_cells(index, path)
             rows.append(
                 (
                     self._mark(index),
+                    source,
+                    flag,
+                    missing,
                     self._styled(path.name, self._name_width, file_style),
                     current,
                     self._styled(new, self._new_width, new_style),
-                    status,
+                    self._short_status(status),
                 )
             )
         return rows
 
-    def _mtime_rows(self) -> list[tuple[str, Text, str, str]]:
+    def _mtime_rows(self) -> list[tuple[str, Text, Text, Text, Text, str, str]]:
         local = _local_zone()
-        rows: list[tuple[str, Text, str, str]] = []
+        rows: list[tuple[str, Text, Text, Text, Text, str, str]] = []
         for index, path in enumerate(self.files):
             label, _moment = mtime_source(self.facts_for(path), self.rules, local)
             status = "SELECTED" if index in self.selected else "UNCHANGED"
             name_style = "" if index in self._changing else "dim"
+            source, flag, missing = self._mark_cells(index, path)
             rows.append(
                 (
                     self._mark(index),
+                    source,
+                    flag,
+                    missing,
                     self._styled(path.name, self._name_width, name_style),
                     label,
-                    status,
+                    self._short_status(status),
                 )
             )
         return rows
@@ -938,8 +1062,18 @@ class RenamerApp(App[None]):
         else:
             text.append("  none\n", style="dim")
         text.append("\nWinner\n", style="bold")
+        source_name = SOURCE_NAME.get(facts.winner_source, "none")
         text.append(f"  original  {facts.origtime_text or 'none'}\n")
         text.append(f"  modified  {facts.modtime_text or 'none'}\n")
+        text.append(f"  source  {source_name}\n")
+        self._append_deltas(text, facts, path)
+        neighbor = self._neighbor_at(self._cursor)
+        if neighbor == "Y":
+            text.append("This year is outside 1990 through next year.\n", style="red")
+        elif neighbor == "G":
+            text.append("This date sits far from the files on either side.\n", style="yellow")
+        if looks_like_timezone(facts):
+            text.append("Looks like a timezone offset.\n", style="bold yellow")
         zone_name = self.rules.source_tz or "Local"
         offset = format_offset(datetime.now(self.target_zone()))
         text.append(f"\nZone  {zone_name} ({offset})\n")
@@ -954,6 +1088,32 @@ class RenamerApp(App[None]):
         if show_not_oldest_warning(facts, self.rules):
             text.append("\n! Chosen time is not the oldest\n", style="bold yellow")
         return text
+
+    def _append_deltas(self, text: Text, facts: FileFacts, path: Path) -> None:
+        text.append("\nDeltas\n", style="bold")
+        wrote = False
+        for candidate in facts.candidates:
+            if candidate.label == "Geodata":
+                continue
+            delta = delta_text(facts.winner_instant, candidate)
+            suffix = f"  {delta}" if delta else ""
+            text.append(f"  {candidate.label}\n    {candidate.text}{suffix}\n")
+            wrote = True
+        if not wrote:
+            text.append("  none\n", style="dim")
+        marks = missing_marks(
+            is_image=path.suffix.lower() in IMAGE_EXTENSIONS,
+            has_exif=facts.has_exif,
+            has_offset=facts.has_offset,
+            has_gps=facts.has_gps,
+            has_sidecar_geo=bool(facts.geodata_raw),
+            json_mode=self.rules.use_json_data,
+            sidecar_found=facts.sidecar is not None,
+            json_error=facts.json_error,
+        )
+        if marks:
+            words = [MISSING_NAME[char] for char in marks if char in MISSING_NAME]
+            text.append("Missing  " + ", ".join(words) + "\n")
 
     def _update_status(self) -> None:
         widget = self.query_one("#status", Static)
@@ -1000,7 +1160,13 @@ class RenamerApp(App[None]):
         tail = ("  " + " ".join(extra)) if extra else ""
         changing = len(self._changing)
         count = f"{changing} of {total} will change"
-        self.sub_title = f"{mode}  {pos}/{total}  {place}  {zone}  {count}{tail}"
+        warnings = sum(
+            1
+            for index, file_path in enumerate(self.files)
+            if is_warning(self.facts_for(file_path), self._neighbor_at(index))
+        )
+        warning = f"  W:{warnings}" if warnings else ""
+        self.sub_title = f"{mode}  {pos}/{total}  {place}  {zone}  {count}{warning}{tail}"
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if self._rebuilding:
@@ -1021,6 +1187,7 @@ class RenamerApp(App[None]):
         else:
             self._cursor = row
         self._update_detail()
+        self._update_timeline()
         self._update_status()
         self._update_subtitle()
 
@@ -1130,16 +1297,25 @@ class RenamerApp(App[None]):
             self._move_to(len(self.files) - 1)
 
     def action_next_change(self) -> None:
-        self._jump_change(1)
+        hits = [index for index in range(len(self.files)) if index in self._changing]
+        self._jump_hits(hits, 1, "No files will change.", "No other file will change.")
 
     def action_prev_change(self) -> None:
-        self._jump_change(-1)
-
-    def _jump_change(self, step: int) -> None:
-        self._begin()
         hits = [index for index in range(len(self.files)) if index in self._changing]
+        self._jump_hits(hits, -1, "No files will change.", "No other file will change.")
+
+    def action_next_warning(self) -> None:
+        hits = [
+            index
+            for index, path in enumerate(self.files)
+            if is_warning(self.facts_for(path), self._neighbor_at(index))
+        ]
+        self._jump_hits(hits, 1, "No warnings.", "No other warning.")
+
+    def _jump_hits(self, hits: list[int], step: int, none_msg: str, only_msg: str) -> None:
+        self._begin()
         if not hits:
-            self.set_status("No files will change.")
+            self.set_status(none_msg)
             self._update_status()
             return
         if step > 0:
@@ -1149,7 +1325,7 @@ class RenamerApp(App[None]):
             earlier = [index for index in hits if index < self._cursor]
             target = earlier[-1] if earlier else hits[-1]
         if target == self._cursor:
-            self.set_status("No other file will change.")
+            self.set_status(only_msg)
             self._update_status()
             return
         self._move_to(target)
