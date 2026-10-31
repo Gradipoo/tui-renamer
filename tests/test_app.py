@@ -9,11 +9,10 @@ from pathlib import Path
 
 from rich.style import Style
 from rich.text import Text
-from textual.command import CommandPalette
 from textual.coordinate import Coordinate
-from textual.widgets import DataTable, Input, Static
+from textual.widgets import Checkbox, DataTable, Input, Static
 
-from tui_renamer.app import RenamerApp, RulesPane, linux_stdin_deleted
+from tui_renamer.app import CommandScreen, RenamerApp, TimezoneScreen, linux_stdin_deleted
 
 
 class FrozenDate(datetime):
@@ -51,42 +50,101 @@ async def test_empty_folder_opens(tmp_path: Path) -> None:
         assert "No files" in detail
 
 
-async def test_number_keys_focus_panes(tmp_path: Path) -> None:
+def _within(app: RenamerApp, widget_id: str) -> bool:
+    node = app.focused
+    while node is not None:
+        if getattr(node, "id", None) == widget_id:
+            return True
+        node = node.parent
+    return False
+
+
+async def test_number_keys_zoom_panes(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         await pilot.press("2")
-        assert app.focused is not None
-        assert app.focused.id == "detail"
+        assert app._zoom == "detail"
+        assert _within(app, "detail")
+        assert app.query_one("#files").display is False
         await pilot.press("3")
-        assert app.focused is not None
-        assert app.focused.id == "rules"
+        assert app._zoom == "options"
+        assert _within(app, "options")
+        await pilot.press("4")
+        assert app._zoom == "preview"
+        assert _within(app, "preview-slot")
+        assert app.query_one("#files").border_title == "1 Files"
+        assert app.query_one("#detail").border_title == "2 Detail"
+        assert app.query_one("#options").border_title == "3 Options"
+        assert app.query_one("#preview-slot").border_title == "4 Preview"
+        await pilot.press("4")
+        assert app._zoom is None
         await pilot.press("1")
+        assert app._zoom == "files"
         assert isinstance(app.focused, DataTable)
+        await pilot.press("escape")
+        assert app._zoom is None
 
 
-async def test_date_toggle_adds_a_chip(tmp_path: Path) -> None:
+async def test_escape_closes_find_then_zoom_then_mode(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
+        await pilot.press("v")
+        await pilot.press("2")
+        await pilot.press("/")
+        await pilot.press("escape")
+        assert app._find_open is False
+        assert app._zoom == "detail"
+        assert app.visual is True
+        await pilot.press("escape")
+        assert app._zoom is None
+        assert app.visual is True
+        await pilot.press("escape")
+        assert app.visual is False
+
+
+async def test_date_toggle_checks_the_option(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        box = app.query_one("#opt-add_datetime", Checkbox)
+        assert box.value is False
         await pilot.press("d")
-        pane = app.query_one(RulesPane)
-        assert any(step.label == "Date" for step in pane.steps)
+        assert box.value is True
         assert app.rules.add_datetime is True
+        await pilot.click("#opt-add_datetime")
+        assert app.rules.add_datetime is False
+        assert box.value is False
+        assert app.query_one("#options").size.height <= 5
 
 
-async def test_command_palette_opens_with_ctrl_p_and_colon(tmp_path: Path) -> None:
+async def test_commands_overlay_filters_and_closes(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
-        assert CommandPalette.is_open(app)
+        assert isinstance(app.screen, CommandScreen)
         await pilot.press("escape")
-        assert not CommandPalette.is_open(app)
+        assert len(app.screen_stack) == 1
         await pilot.press(":")
-        assert CommandPalette.is_open(app)
+        assert isinstance(app.screen, CommandScreen)
+        await pilot.press("u", "n", "d", "o")
+        screen = app.screen
+        assert isinstance(screen, CommandScreen)
+        assert any(reason == "nothing to undo" for _spec, reason in screen.shown)
+        await pilot.press("question_mark")
+        assert len(app.screen_stack) == 1
+        await pilot.press("?")
+        await pilot.press("t", "i", "m", "e", "z", "o", "n", "e")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, TimezoneScreen)
+        assert not any(isinstance(screen, CommandScreen) for screen in app.screen_stack)
 
 
 async def test_gg_and_end(tmp_path: Path) -> None:
@@ -141,6 +199,15 @@ async def test_change_overview(tmp_path: Path) -> None:
         await pilot.pause()
         assert "1 of 2 will change" in app.sub_title
         table = app.query_one(DataTable)
+        labels = [column.label.plain for column in table.columns.values()]
+        assert labels[:4] == ["Sel", "Src", "Flag", "Miss"]
+        assert labels[-1] == "Stat"
+        widths = {column.label.plain: column.width for column in table.columns.values()}
+        assert widths["Src"] == 3
+        assert widths["Flag"] == 4
+        assert widths["Miss"] == 4
+        assert widths["Stat"] == 4
+        assert widths["Sel"] == 3
         plain = table.get_cell_at(Coordinate(1, 4))
         assert _is_dim(plain)
         await pilot.press("j")
@@ -184,6 +251,8 @@ async def test_warning_jump_timeline_and_detail(tmp_path: Path) -> None:
         await pilot.press("!")
         assert table.cursor_row == 0
         detail = str(app.query_one("#detail-body").render())
+        assert "Src EXIF" in detail
+        assert "Flag looks like a timezone offset" in detail
         assert "timezone" in detail.lower()
         assert "-5h" in detail
         assert "#" in str(app.query_one("#timeline").render())

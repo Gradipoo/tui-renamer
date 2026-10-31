@@ -199,7 +199,7 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 
 | Key | Action |
 | --- | --- |
-| `1` / `2` / `3` | Focus files, detail, or rules |
+| `1` / `2` / `3` / `4` | Zoom files, detail, options, or preview. The same key, or Esc, restores the split |
 | Up/Down, `j`/`k` | Move |
 | `/` | Find in the current name and the new name. Smart case: lowercase ignores case |
 | Enter / Esc | Keep the match, or restore the row you started from |
@@ -229,15 +229,16 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `P` | Show or hide the preview |
 | `u` | Undo the last batch (this session only) |
 | `r` | Reload the folder |
-| `:` or Ctrl+P | Command palette |
-| `?`, `h`, F1 | Help |
+| `?`, `:`, Ctrl+P, `h`, F1 | Commands. Type to filter. `?` closes it, including from the filter |
 | `q` | Quit |
 
 While `g` is waiting, the status line shows `g then g: first file`.
 
-The rules strip is the pipeline that builds the new name. Only steps that are on are shown. In that pane, Left and Right move, and Enter toggles the highlighted step.
+The options strip under the file list shows the name toggles, the date, mtime, and preview modes, and the buttons for apply, undo, zone, write zone, GPS, refresh, and reset. A click sets the same value as the key.
 
-The detail pane shows every date candidate for the highlighted file, which one wins, the zone, geodata, and a character diff of the old and new name. Insertions are green. Deletions are red.
+The detail pane shows every date candidate for the highlighted file, which one wins, the zone, geodata, and a character diff of the old and new name. The line under the file name spells out the overview marks. Insertions are green. Deletions are red.
+
+Esc closes find first, then leaves a zoomed pane, then leaves visual, filename date, or mtime mode.
 
 `!` means the timestamp you chose is not the oldest of modified and original.
 

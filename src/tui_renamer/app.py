@@ -6,7 +6,6 @@ import os
 import sys
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from pathlib import Path
 
@@ -14,20 +13,33 @@ from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Footer, Header, Input, OptionList, Static
+from textual.widgets import (
+    Button,
+    Checkbox,
+    DataTable,
+    Footer,
+    Header,
+    Input,
+    OptionList,
+    Static,
+)
+from textual.widgets.option_list import Option
 
 from tui_renamer import preview as file_preview
+from tui_renamer.commands import (
+    COMMAND_SPECS,
+    CommandContext,
+    CommandSpec,
+    matching_commands,
+)
 from tui_renamer.core import (
     ZONEINFO_AVAILABLE,
     DatePlanItem,
     FileFacts,
     RenameRules,
-    Step,
-    active_steps,
     date_source,
     datetime_for_write,
     delta_text,
@@ -94,89 +106,20 @@ TOGGLE_FIELDS = {
 }
 
 
-@dataclass(frozen=True)
-class CommandSpec:
-    group: str
-    key: str
-    label: str
-    description: str
-    run: str
-    state: str = ""
-
-
-def _spec(
-    group: str,
-    key: str,
-    label: str,
-    description: str,
-    run: str,
-    state: str = "",
-) -> CommandSpec:
-    return CommandSpec(group, key, label, description, run, state)
-
-
-COMMAND_SPECS: tuple[CommandSpec, ...] = (
-    _spec("Move", "k / up", "Up", "Move up", "cursor_up"),
-    _spec("Move", "j / down", "Down", "Move down", "cursor_down"),
-    _spec("Move", "pageup", "Page up", "Page up", "page_up"),
-    _spec("Move", "pagedown", "Page down", "Page down", "page_down"),
-    _spec("Move", "g g", "Top", "Jump to the first file", "goto_top"),
-    _spec("Move", "G", "Bottom", "Jump to the last file", "goto_end"),
-    _spec("Move", "/", "Find", "Find in the current and new name", "find"),
-    _spec("Move", "n", "Next", "Next match, or the next file that will change", "next_change"),
-    _spec(
-        "Move",
-        "N",
-        "Previous",
-        "Previous match, or the previous file that will change",
-        "prev_change",
-    ),
-    _spec("Move", "]", "Next change", "Next file that will change", "next_changed"),
-    _spec("Move", "[", "Previous change", "Previous file that will change", "prev_changed"),
-    _spec("Move", "ctrl+g", "Find next", "Next search match", "search_again"),
-    _spec("Move", "!", "Next warning", "Next warning", "next_warning"),
-    _spec("Select", "space", "Select", "Select or clear this file", "toggle_select"),
-    _spec("Select", "v", "Visual", "Select a range", "visual", "visual"),
-    _spec("Select", "a", "All", "Select all", "select_all"),
-    _spec("Select", "A", "None", "Select none", "select_none"),
-    _spec("Name", "d", "Date", "Add today's date and time", "toggle:add_datetime", "add_datetime"),
-    _spec("Name", "m", "Mod", "Add the modified time", "toggle:add_modtime", "add_modtime"),
-    _spec("Name", "o", "Orig", "Add the original time", "toggle:add_origtime", "add_origtime"),
-    _spec("Name", "e", "JSON", "Read a sidecar JSON file", "toggle:use_json_data", "use_json_data"),
-    _spec("Name", "b", "Geo", "Add JSON location to the name", "toggle:add_geodata", "add_geodata"),
-    _spec("Name", "t", "Prefix", "Times at the start when on", "toggle:use_prefix", "use_prefix"),
-    _spec(
-        "Name",
-        "x",
-        "Strip",
-        "Drop the original name",
-        "toggle:strip_original_name",
-        "strip_original_name",
-    ),
-    _spec("Name", "y", "Text", "Keep letters and spaces", "toggle:strip_to_text", "strip_to_text"),
-    _spec("Name", "c", "lower", "Lowercase the name", "toggle:remove_caps", "remove_caps"),
-    _spec("Name", "s", "Symbols", "Remove symbols", "toggle:remove_special", "remove_special"),
-    _spec("Name", "p", "Dashes", "Spaces become dashes", "toggle:replace_spaces", "replace_spaces"),
-    _spec("Name", ".", "Dots", "Dots to dashes", "toggle:replace_dots", "replace_dots"),
-    _spec("Name", "0", "Reset", "Reset name options", "reset_rules"),
-    _spec("Edit", "i", "Edit", "Edit this name", "insert"),
-    _spec("Edit", "l", "Lock", "Lock this file", "lock"),
-    _spec("Edit", "L", "Lock all", "Lock selected files", "lock_selected"),
-    _spec("Edit", "U", "Unlock", "Unlock all", "unlock_all"),
-    _spec("Actions", "enter", "Apply", "Apply the current mode", "apply"),
-    _spec("Actions", "D", "Filename date", "Set dates from filenames", "date_mode", "date_mode"),
-    _spec("Actions", "W", "Write zone", "Write date and timezone offset", "write_timezone"),
-    _spec("Actions", "M", "mtime", "Set mtime mode", "mtime_mode", "mtime_mode"),
-    _spec("Actions", "B", "Write GPS", "Write JSON location into EXIF", "write_geodata"),
-    _spec("Actions", "T", "Timezone", "Choose a timezone", "timezone"),
-    _spec("Actions", "u", "Undo", "Undo the last batch", "undo"),
-    _spec("Actions", "P", "Preview", "Show or hide the preview", "preview", "preview_on"),
-    _spec("Actions", "r", "Refresh", "Reload the folder", "reload_files"),
-    _spec("Actions", "?", "Help", "Show commands", "help"),
-    _spec("Actions", "q", "Quit", "Quit", "quit"),
+OPTION_FIELDS = (
+    ("d", "add_datetime", "Date"),
+    ("m", "add_modtime", "Mod"),
+    ("o", "add_origtime", "Orig"),
+    ("e", "use_json_data", "JSON"),
+    ("b", "add_geodata", "Geo"),
+    ("t", "use_prefix", "Prefix"),
+    ("x", "strip_original_name", "Strip"),
+    ("y", "strip_to_text", "Text"),
+    ("c", "remove_caps", "lower"),
+    ("s", "remove_special", "Sym"),
+    ("p", "replace_spaces", "Dash"),
+    (".", "replace_dots", "Dot"),
 )
-
-APP_FLAGS = {"visual", "date_mode", "mtime_mode", "preview_on"}
 
 
 def linux_stdin_deleted() -> bool:
@@ -201,76 +144,12 @@ def split_stem(filename: str) -> tuple[str, str]:
     return filename, ""
 
 
-def _flag(app: RenamerApp, name: str) -> bool | None:
-    if not name:
-        return None
-    if name in APP_FLAGS:
-        return bool(getattr(app, name))
-    return bool(getattr(app.rules, name))
-
-
-def help_text(app: RenamerApp) -> str:
-    lines: list[str] = []
-    group = ""
-    for spec in COMMAND_SPECS:
-        if spec.group != group:
-            if lines:
-                lines.append("")
-            lines.append(spec.group)
-            group = spec.group
-        flag = _flag(app, spec.state)
-        mark = ""
-        if flag is True:
-            mark = "[x] "
-        elif flag is False:
-            mark = "[ ] "
-        lines.append(f"  {spec.key:<14} {mark}{spec.description}")
-    lines.append("")
-    lines.append("Panes: 1 files, 2 detail, 3 rules. : or ctrl+p opens the command palette.")
-    return "\n".join(lines)
-
-
-def _invoke(app: RenamerApp, spec: CommandSpec) -> Callable[[], None]:
+def _invoke(app: RenamerApp, spec: CommandSpec) -> None:
     run = spec.run
-
-    def call(run: str = run, app: RenamerApp = app) -> None:
-        if run.startswith("toggle:"):
-            app.action_toggle(run.split(":", 1)[1])
-        else:
-            getattr(app, f"action_{run}")()
-
-    return call
-
-
-class RenamerCommands(Provider):
-    """Every rn action, for the command palette."""
-
-    async def discover(self) -> Hits:
-        app = self.app
-        assert isinstance(app, RenamerApp)
-        for spec in COMMAND_SPECS:
-            yield DiscoveryHit(
-                f"{spec.key}  {spec.label}",
-                _invoke(app, spec),
-                help=spec.description,
-                text=f"{spec.key} {spec.label} {spec.description}",
-            )
-
-    async def search(self, query: str) -> Hits:
-        app = self.app
-        assert isinstance(app, RenamerApp)
-        matcher = self.matcher(query)
-        for spec in COMMAND_SPECS:
-            blob = f"{spec.key} {spec.label} {spec.description} {spec.group}"
-            score = matcher.match(blob)
-            if score > 0:
-                yield Hit(
-                    score,
-                    matcher.highlight(f"{spec.key}  {spec.label}"),
-                    _invoke(app, spec),
-                    help=spec.description,
-                    text=blob,
-                )
+    if run.startswith("toggle:"):
+        app.action_toggle(run.split(":", 1)[1])
+    else:
+        getattr(app, f"action_{run}")()
 
 
 class DebugLog:
@@ -325,20 +204,78 @@ class ConfirmScreen(ModalScreen[bool]):
             self.dismiss(False)
 
 
-class HelpScreen(ModalScreen[None]):
-    BINDINGS = [Binding("escape,q,question_mark,h", "close", show=False)]
+class CommandFilter(Input):
+    """Filter box that leaves ? for the screen binding."""
 
-    def __init__(self, body: str) -> None:
+    def check_consume_key(self, key: str, character: str | None) -> bool:
+        if key == "question_mark":
+            return False
+        return super().check_consume_key(key, character)
+
+
+class CommandScreen(ModalScreen[str | None]):
+    """One list for help and for running a command. ? closes from the filter."""
+
+    BINDINGS = [
+        Binding("escape", "close", show=False),
+        Binding("question_mark", "close", show=False, priority=True),
+        Binding("up", "prev", show=False, priority=True),
+        Binding("down", "next", show=False, priority=True),
+        Binding("enter", "pick", show=False, priority=True),
+    ]
+
+    def __init__(self, ctx: CommandContext) -> None:
         super().__init__()
-        self.body = body
+        self.ctx = ctx
+        self.shown: list[tuple[CommandSpec, str]] = []
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="dialog"):
-            yield Static(self.body, markup=False)
-            yield Static("Esc, q, or ? closes.", markup=False)
+        with Vertical(id="dialog"):
+            yield Static("Commands", markup=False)
+            yield CommandFilter(placeholder="Filter", id="cmd-filter")
+            yield OptionList(id="cmd-list")
+            yield Static("? or Esc closes. Enter runs the highlighted command.", id="cmd-hint")
+
+    def on_mount(self) -> None:
+        self._refill("")
+        self.query_one("#cmd-filter", CommandFilter).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "cmd-filter":
+            self._refill(event.value)
+
+    def _refill(self, query: str) -> None:
+        self.shown = matching_commands(query, self.ctx)
+        options = self.query_one("#cmd-list", OptionList)
+        options.clear_options()
+        for spec, reason in self.shown:
+            label = f"{spec.key}  {spec.label}  {spec.description}"
+            if reason:
+                prompt = Text.assemble(label, "  ", (reason, "dim"))
+            else:
+                prompt = Text(label)
+            options.add_option(Option(prompt, disabled=bool(reason)))
+        options.highlighted = None
+        if any(not reason for _spec, reason in self.shown):
+            options.action_cursor_down()
+
+    def action_prev(self) -> None:
+        self.query_one("#cmd-list", OptionList).action_cursor_up()
+
+    def action_next(self) -> None:
+        self.query_one("#cmd-list", OptionList).action_cursor_down()
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+    def action_pick(self) -> None:
+        options = self.query_one("#cmd-list", OptionList)
+        if options.highlighted is None:
+            return
+        spec, reason = self.shown[options.highlighted]
+        if reason:
+            return
+        self.dismiss(spec.run)
 
 
 class InsertScreen(ModalScreen[tuple[str, str]]):
@@ -465,74 +402,42 @@ class FileTable(DataTable):
         super().__init__(cursor_type="row", zebra_stripes=True, **kwargs)  # type: ignore[arg-type]
 
 
+class PreviewSlot(Vertical):
+    can_focus = True
+
+
 class DetailPane(Vertical):
     can_focus = True
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="preview-slot"):
+        with PreviewSlot(id="preview-slot"):
             yield Static("", id="preview-caption")
             yield Static("", id="preview-fallback")
         with VerticalScroll(id="detail-scroll"):
             yield Static("", id="detail-body")
 
 
-class RulesPane(Static):
+class OptionsPane(Vertical):
+    """Checkboxes and buttons for the rules that used to be chips."""
+
     can_focus = True
-    BINDINGS = [
-        Binding("left", "prev_chip", show=False),
-        Binding("right", "next_chip", show=False),
-        Binding("enter", "toggle_chip", show=False),
-    ]
 
-    def __init__(self) -> None:
-        super().__init__(id="rules")
-        self.steps: list[Step] = []
-        self.index = 0
-
-    def set_steps(self, steps: list[Step]) -> None:
-        self.steps = steps
-        if self.steps:
-            self.index = min(self.index, len(self.steps) - 1)
-        else:
-            self.index = 0
-        self.redraw()
-
-    def redraw(self) -> None:
-        if not self.steps:
-            self.update(
-                "No rename steps. Letters such as d, m, and o turn them on. : lists commands."
-            )
-            return
-        text = Text()
-        for index, step in enumerate(self.steps):
-            if index == self.index and self.has_focus:
-                style = f"bold black on {step.color}"
-            else:
-                style = f"bold {step.color}"
-            text.append(f" {step.key} {step.label} ", style=style)
-            text.append(" ")
-        self.update(text)
-
-    def on_focus(self) -> None:
-        self.redraw()
-
-    def on_blur(self) -> None:
-        self.redraw()
-
-    def action_prev_chip(self) -> None:
-        if self.steps:
-            self.index = max(0, self.index - 1)
-            self.redraw()
-
-    def action_next_chip(self) -> None:
-        if self.steps:
-            self.index = min(len(self.steps) - 1, self.index + 1)
-            self.redraw()
-
-    def action_toggle_chip(self) -> None:
-        app = self.app
-        assert isinstance(app, RenamerApp)
-        app.action_chip()
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="opt-toggles"):
+            for key, field, label in OPTION_FIELDS:
+                yield Checkbox(f"{key} {label}", id=f"opt-{field}", value=False)
+        with Horizontal(id="opt-modes"):
+            yield Checkbox("D Filename date", id="opt-date_mode", value=False)
+            yield Checkbox("M mtime", id="opt-mtime_mode", value=False)
+            yield Checkbox("P Preview", id="opt-preview", value=True)
+        with Horizontal(id="opt-actions"):
+            yield Button("Enter Apply", id="act-apply")
+            yield Button("u Undo", id="act-undo")
+            yield Button("T Local", id="act-zone")
+            yield Button("W Write zone", id="act-write-zone")
+            yield Button("B GPS", id="act-gps")
+            yield Button("r Refresh", id="act-refresh")
+            yield Button("0 Reset", id="act-reset")
 
 
 SOURCE_STYLE = {
@@ -573,18 +478,35 @@ MISSING_NAME = {
     "j": "no sidecar",
     "J": "sidecar could not be read",
 }
+FLAG_NAME = {
+    "H": "looks like a timezone offset",
+    "Y": "year outside 1990 through next year",
+    "G": "far from the files on either side",
+    "!": "chosen time is not the oldest",
+}
 
 
 class RenamerApp(App[None]):
     """Batch renamer. Keys match the original curses script."""
 
     TITLE = "rn"
+    ENABLE_COMMAND_PALETTE = False
     CSS = """
     Screen { layout: vertical; }
     #body { height: 1fr; }
     #files { width: 1fr; height: 100%; }
     #detail { width: 1fr; height: 100%; }
-    #rules { height: auto; max-height: 5; padding: 0 1; }
+    #options { height: 5; padding: 0 1; }
+    #opt-toggles, #opt-modes, #opt-actions { height: 1; overflow: hidden; }
+    #options Checkbox { height: 1; width: auto; margin: 0 1 0 0; padding: 0; }
+    #options Button {
+        height: 1;
+        width: auto;
+        min-width: 0;
+        margin: 0 1 0 0;
+        padding: 0 1;
+        border: none;
+    }
     #timeline { height: 1; padding: 0 1; }
     #status { height: auto; max-height: 3; padding: 0 1; }
     #find { display: none; height: 1; margin: 0 1; }
@@ -596,8 +518,17 @@ class RenamerApp(App[None]):
     #preview-fallback { height: auto; max-height: 8; }
     #preview-image { height: 8; width: 100%; }
     #detail-scroll { height: 1fr; }
-    #files, #detail, #rules { border: solid $primary; }
-    ConfirmScreen, HelpScreen, TimezoneScreen, InsertScreen { align: center middle; }
+    #files, #detail, #options, #preview-slot { border: solid $primary; }
+    .-zoom-files #detail { display: none; }
+    .-zoom-detail #files { display: none; }
+    .-zoom-options #body { display: none; }
+    .-zoom-options #options { height: 1fr; }
+    .-zoom-preview #files { display: none; }
+    .-zoom-preview #options { display: none; }
+    .-zoom-preview #detail-scroll { display: none; }
+    .-zoom-preview #preview-slot { height: 1fr; max-height: 100%; }
+    .-zoom-preview #preview-image { height: 1fr; }
+    ConfirmScreen, CommandScreen, TimezoneScreen, InsertScreen { align: center middle; }
     #dialog {
         width: 72;
         max-width: 90%;
@@ -607,22 +538,24 @@ class RenamerApp(App[None]):
         border: thick $primary;
         padding: 1 2;
     }
+    CommandScreen #dialog { width: 84; height: 24; }
+    #cmd-list { height: 1fr; }
     #zones { height: 12; }
     """
-    COMMANDS = {RenamerCommands}
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("?", "help", "Help"),
+        Binding("?", "help", "Commands"),
         Binding("h", "help", show=False),
         Binding("f1", "help", show=False),
-        Binding("ctrl+p", "command_palette", "Commands", show=False),
-        Binding(":", "command_palette", "Commands"),
+        Binding("ctrl+p", "help", show=False),
+        Binding(":", "help", "Commands"),
         Binding("space", "toggle_select", "Select"),
         Binding("enter", "apply", "Apply"),
         Binding("escape", "escape", show=False),
         Binding("1", "focus_files", show=False),
         Binding("2", "focus_detail", show=False),
         Binding("3", "focus_rules", show=False),
+        Binding("4", "focus_preview", show=False),
         Binding("j", "cursor_down", show=False),
         Binding("k", "cursor_up", show=False),
         Binding("up", "cursor_up", show=False),
@@ -704,6 +637,8 @@ class RenamerApp(App[None]):
         self._search_nav = False
         self._name_width = 8
         self._new_width = 8
+        self._zoom: str | None = None
+        self._syncing = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -711,7 +646,7 @@ class RenamerApp(App[None]):
         with Horizontal(id="body"):
             yield FileTable(id="files")
             yield DetailPane(id="detail")
-        yield RulesPane()
+        yield OptionsPane(id="options")
         yield Input(placeholder="find", id="find", select_on_focus=True)
         yield Static("", id="status")
         yield Footer()
@@ -719,7 +654,8 @@ class RenamerApp(App[None]):
     def on_mount(self) -> None:
         self.query_one("#files").border_title = "1 Files"
         self.query_one("#detail").border_title = "2 Detail"
-        self.query_one("#rules").border_title = "3 Rules"
+        self.query_one("#options").border_title = "3 Options"
+        self.query_one("#preview-slot").border_title = "4 Preview"
         self.rules.datetime_stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         self.reload_files()
         if not self.exiftool:
@@ -823,7 +759,7 @@ class RenamerApp(App[None]):
             self._recompute_changing()
             self._recompute_neighbors()
             self._fill_table()
-            self.query_one(RulesPane).set_steps(active_steps(self.rules))
+            self._sync_options()
             self._update_detail()
             self._update_timeline()
             self._update_status()
@@ -893,6 +829,47 @@ class RenamerApp(App[None]):
 
     def _short_status(self, status: str) -> str:
         return STATUS_SHORT.get(status, status[:3])
+
+    def _status_code(self, index: int) -> str:
+        path = self.files[index]
+        if self.date_mode:
+            plan = plan_filename_dates(self.files, self.plan_zone())
+            by_path = {item.path: item for item in plan.todo + plan.same}
+            item = by_path.get(path)
+            if item is None:
+                parsed, _precision = parse_filename_datetime(path.name)
+                status = "NO DATE" if parsed is None else "ERR"
+            else:
+                status = "UPDATE" if item in plan.todo else "UNCHANGED"
+            if index in self.selected:
+                status = "SELECTED"
+            return status
+        if self.mtime_mode:
+            return "SELECTED" if index in self.selected else "UNCHANGED"
+        return self._rename_status(index, self.preview_for(index))
+
+    def _mark_sentence(self) -> str:
+        path = self.files[self._cursor]
+        facts = self.facts_for(path)
+        source = SOURCE_NAME.get(facts.winner_source, "none")
+        flag = flag_letter(facts, self._neighbor_at(self._cursor))
+        flag_name = FLAG_NAME.get(flag, "none")
+        marks = missing_marks(
+            is_image=path.suffix.lower() in IMAGE_EXTENSIONS,
+            has_exif=facts.has_exif,
+            has_offset=facts.has_offset,
+            has_gps=facts.has_gps,
+            has_sidecar_geo=bool(facts.geodata_raw),
+            json_mode=self.rules.use_json_data,
+            sidecar_found=facts.sidecar is not None,
+            json_error=facts.json_error,
+        )
+        if marks:
+            missing = ", ".join(MISSING_NAME.get(char, char) for char in marks)
+        else:
+            missing = "none"
+        stat = self._short_status(self._status_code(self._cursor))
+        return f"Src {source}. Flag {flag_name}. Miss {missing}. Stat {stat}."
 
     def _update_timeline(self) -> None:
         widget = self.query_one("#timeline", Static)
@@ -975,39 +952,39 @@ class RenamerApp(App[None]):
             self._cursor = 0
 
     def _add_rename_columns(self, table: FileTable) -> None:
-        width = self._flex_width(fixed_content=11, column_count=7, flex_count=2)
-        table.add_column("", key="mark", width=2)
-        table.add_column("S", key="src", width=1)
-        table.add_column("F", key="flag", width=1)
+        width = self._flex_width(fixed_content=18, column_count=7, flex_count=2)
+        table.add_column("Sel", key="mark", width=3)
+        table.add_column("Src", key="src", width=3)
+        table.add_column("Flag", key="flag", width=4)
         table.add_column("Miss", key="miss", width=4)
         table.add_column("Name", key="name", width=width)
         table.add_column("New", key="new", width=width)
-        table.add_column("St", key="status", width=3)
+        table.add_column("Stat", key="status", width=4)
         self._name_width = width
         self._new_width = width
 
     def _add_date_columns(self, table: FileTable) -> None:
-        width = self._flex_width(fixed_content=49, column_count=8, flex_count=1)
-        table.add_column("", key="mark", width=2)
-        table.add_column("S", key="src", width=1)
-        table.add_column("F", key="flag", width=1)
+        width = self._flex_width(fixed_content=56, column_count=8, flex_count=1)
+        table.add_column("Sel", key="mark", width=3)
+        table.add_column("Src", key="src", width=3)
+        table.add_column("Flag", key="flag", width=4)
         table.add_column("Miss", key="miss", width=4)
         table.add_column("File", key="file", width=width)
         table.add_column("Current", key="cur", width=19)
         table.add_column("New", key="new", width=19)
-        table.add_column("St", key="status", width=3)
+        table.add_column("Stat", key="status", width=4)
         self._name_width = width
         self._new_width = 19
 
     def _add_mtime_columns(self, table: FileTable) -> None:
-        width = self._flex_width(fixed_content=30, column_count=7, flex_count=1)
-        table.add_column("", key="mark", width=2)
-        table.add_column("S", key="src", width=1)
-        table.add_column("F", key="flag", width=1)
+        width = self._flex_width(fixed_content=37, column_count=7, flex_count=1)
+        table.add_column("Sel", key="mark", width=3)
+        table.add_column("Src", key="src", width=3)
+        table.add_column("Flag", key="flag", width=4)
         table.add_column("Miss", key="miss", width=4)
         table.add_column("Name", key="name", width=width)
         table.add_column("New mtime", key="mtime", width=19)
-        table.add_column("St", key="status", width=3)
+        table.add_column("Stat", key="status", width=4)
         self._name_width = width
         self._new_width = 19
 
@@ -1137,6 +1114,7 @@ class RenamerApp(App[None]):
         facts = self.facts_for(path)
         new_name = self.preview_for(self._cursor)
         text.append(path.name + "\n", style="bold")
+        text.append(self._mark_sentence() + "\n")
         if self._cursor in self.locked:
             text.append("locked\n", style="green")
         elif self._cursor in self.manual:
@@ -1352,24 +1330,58 @@ class RenamerApp(App[None]):
         if self._find_open:
             self._close_find(restore=True)
             return
+        if self._zoom:
+            self._set_zoom(None)
+            self.query_one(FileTable).focus()
+            return
         if self._cancel_modes_on_escape():
             self.refresh_view()
 
-    def action_focus_files(self) -> None:
+    def _set_zoom(self, which: str | None) -> None:
+        self._zoom = which
+        for name in ("files", "detail", "options", "preview"):
+            self.screen.set_class(which == name, f"-zoom-{name}")
+
+    def _zoom_to(self, which: str, target_id: str) -> None:
         self._begin()
-        self.query_one(FileTable).focus()
+        self._set_zoom(None if self._zoom == which else which)
+        if self._zoom is None:
+            self.query_one(FileTable).focus()
+        else:
+            self.query_one(f"#{target_id}").focus()
+
+    def action_focus_files(self) -> None:
+        self._zoom_to("files", "files")
 
     def action_focus_detail(self) -> None:
-        self._begin()
-        self.query_one("#detail").focus()
+        self._zoom_to("detail", "detail")
 
     def action_focus_rules(self) -> None:
-        self._begin()
-        self.query_one(RulesPane).focus()
+        self._zoom_to("options", "options")
+
+    def action_focus_preview(self) -> None:
+        self._zoom_to("preview", "preview-slot")
 
     def action_help(self) -> None:
         self._begin()
-        self.push_screen(HelpScreen(help_text(self)))
+
+        def done(run: str | None) -> None:
+            if not run:
+                return
+            spec = next(item for item in COMMAND_SPECS if item.run == run)
+            _invoke(self, spec)
+
+        self.push_screen(CommandScreen(self._command_context()), done)
+
+    def _command_context(self) -> CommandContext:
+        return CommandContext(
+            file_count=len(self.files),
+            selected=len(self.selected),
+            locked=len(self.locked),
+            undo_count=len(self.journal.batches),
+            date_mode=self.date_mode,
+            mtime_mode=self.mtime_mode,
+        )
 
     def action_cursor_down(self) -> None:
         self._begin()
@@ -1463,7 +1475,10 @@ class RenamerApp(App[None]):
 
     def action_preview(self) -> None:
         self._begin()
-        self.preview_on = not self.preview_on
+        self._set_preview(not self.preview_on)
+
+    def _set_preview(self, value: bool) -> None:
+        self.preview_on = value
         self.query_one("#preview-slot").set_class(not self.preview_on, "-off")
         self._preview_gen += 1
         if self.preview_on:
@@ -1471,6 +1486,7 @@ class RenamerApp(App[None]):
             self.set_status("Preview on")
         else:
             self.set_status("Preview off")
+        self._sync_options()
         self._update_status()
 
     def _open_find(self) -> None:
@@ -1726,7 +1742,10 @@ class RenamerApp(App[None]):
 
     def action_toggle(self, field: str) -> None:
         self._begin()
-        setattr(self.rules, field, not getattr(self.rules, field))
+        self._set_rule(field, not getattr(self.rules, field))
+
+    def _set_rule(self, field: str, value: bool) -> None:
+        setattr(self.rules, field, value)
         if field == "use_json_data":
             self._facts.clear()
             state = "on" if self.rules.use_json_data else "off"
@@ -1735,21 +1754,62 @@ class RenamerApp(App[None]):
             self.rules.datetime_stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         self.refresh_view()
 
-    def action_chip(self) -> None:
-        pane = self.query_one(RulesPane)
-        if not pane.steps:
+    def _sync_options(self) -> None:
+        self._syncing = True
+        try:
+            for _key, field, _label in OPTION_FIELDS:
+                self.query_one(f"#opt-{field}", Checkbox).value = bool(getattr(self.rules, field))
+            self.query_one("#opt-date_mode", Checkbox).value = self.date_mode
+            self.query_one("#opt-mtime_mode", Checkbox).value = self.mtime_mode
+            self.query_one("#opt-preview", Checkbox).value = self.preview_on
+            zone = self.rules.source_tz or "Local"
+            self.query_one("#act-zone", Button).label = f"T {zone}"
+        except NoMatches:
             return
-        step = pane.steps[pane.index]
-        if step.key == "T":
+        finally:
+            self._syncing = False
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if self._syncing:
+            return
+        box_id = event.checkbox.id or ""
+        if box_id == "opt-date_mode":
+            if event.value == self.date_mode:
+                return
             self._begin()
-            self.rules.source_tz = None
-            self._facts.clear()
-            self.set_status("Timezone override cleared.")
-            self.refresh_view()
+            self._assign_date_mode(event.value)
             return
-        field = TOGGLE_FIELDS.get(step.key)
-        if field:
-            self.action_toggle(field)
+        if box_id == "opt-mtime_mode":
+            if event.value == self.mtime_mode:
+                return
+            self._begin()
+            self._assign_mtime_mode(event.value)
+            return
+        if box_id == "opt-preview":
+            self._begin()
+            if event.value != self.preview_on:
+                self._set_preview(event.value)
+            return
+        field = box_id.removeprefix("opt-")
+        if field not in TOGGLE_FIELDS.values():
+            return
+        if getattr(self.rules, field) == event.value:
+            return
+        self._begin()
+        self._set_rule(field, event.value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        run = {
+            "act-apply": "apply",
+            "act-undo": "undo",
+            "act-zone": "timezone",
+            "act-write-zone": "write_timezone",
+            "act-gps": "write_geodata",
+            "act-refresh": "reload_files",
+            "act-reset": "reset_rules",
+        }.get(event.button.id or "")
+        if run:
+            getattr(self, f"action_{run}")()
 
     def action_reset_rules(self) -> None:
         self._begin()
@@ -1821,7 +1881,10 @@ class RenamerApp(App[None]):
 
     def action_date_mode(self) -> None:
         self._begin()
-        self.date_mode = not self.date_mode
+        self._assign_date_mode(not self.date_mode)
+
+    def _assign_date_mode(self, value: bool) -> None:
+        self.date_mode = value
         if self.date_mode:
             self.mtime_mode = False
         state = "on" if self.date_mode else "off"
@@ -1830,7 +1893,10 @@ class RenamerApp(App[None]):
 
     def action_mtime_mode(self) -> None:
         self._begin()
-        self.mtime_mode = not self.mtime_mode
+        self._assign_mtime_mode(not self.mtime_mode)
+
+    def _assign_mtime_mode(self, value: bool) -> None:
+        self.mtime_mode = value
         if self.mtime_mode:
             self.date_mode = False
         state = "on" if self.mtime_mode else "off"
