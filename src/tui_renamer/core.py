@@ -264,6 +264,19 @@ def mtime_source(
     return "N/A", None
 
 
+def fit_middle(text: str, width: int) -> str:
+    """Fit text to width, dropping the middle when it is too long."""
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    if width < 5:
+        return text[:width]
+    head = (width - 3) // 2
+    tail = width - 3 - head
+    return text[:head] + "..." + text[-tail:]
+
+
 def name_diff_ops(old: str, new: str) -> list[tuple[str, str]]:
     """Character diff as (equal|delete|insert, text) pairs."""
     if old == new:

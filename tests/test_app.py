@@ -7,7 +7,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from rich.style import Style
+from rich.text import Text
 from textual.command import CommandPalette
+from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
 from tui_renamer.app import RenamerApp, RulesPane, linux_stdin_deleted
@@ -112,6 +115,48 @@ async def test_enter_without_a_selection_does_not_rename(tmp_path: Path, monkeyp
         assert (tmp_path / "photo.txt").exists()
         assert not (tmp_path / "2020-01-02-030405-photo.txt").exists()
         assert "No changes" in app._message
+
+
+def _is_dim(cell: object) -> bool:
+    if not isinstance(cell, Text):
+        return False
+    style = cell.style
+    if isinstance(style, Style) and style.dim:
+        return True
+    if "dim" in str(style):
+        return True
+    for span in cell.spans:
+        if "dim" in str(span.style):
+            return True
+    return False
+
+
+async def test_change_overview(tmp_path: Path) -> None:
+    stem = "vacation-photo-from-the-camera-roll-extra-long-name-that-will-not-fit"
+    source_name = f"2020-01-02-030405-{stem}.jpg"
+    (tmp_path / "plain.txt").write_text("x", encoding="utf-8")
+    (tmp_path / source_name).write_bytes(b"jpeg")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert "1 of 2 will change" in app.sub_title
+        table = app.query_one(DataTable)
+        plain = table.get_cell_at(Coordinate(1, 1))
+        assert _is_dim(plain)
+        await pilot.press("j")
+        assert table.cursor_row == 1
+        await pilot.press("n")
+        assert table.cursor_row == 0
+        shown = table.get_cell_at(Coordinate(0, 2))
+        assert isinstance(shown, Text)
+        assert "..." in shown.plain
+        assert shown.plain != f"{stem}.jpg"
+        await pilot.press("space")
+        await pilot.press("enter")
+        await pilot.press("y")
+        await pilot.pause()
+        assert (tmp_path / f"{stem}.jpg").exists()
+        assert not (tmp_path / source_name).exists()
 
 
 async def test_rename_and_undo(tmp_path: Path, monkeypatch) -> None:

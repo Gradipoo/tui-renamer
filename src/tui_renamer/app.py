@@ -27,6 +27,7 @@ from tui_renamer.core import (
     active_steps,
     datetime_for_write,
     filter_timezones,
+    fit_middle,
     format_offset,
     format_tz_display,
     list_files,
@@ -102,6 +103,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     _spec("Move", "pagedown", "Page down", "Page down", "page_down"),
     _spec("Move", "g g", "Top", "Jump to the first file", "goto_top"),
     _spec("Move", "G", "Bottom", "Jump to the last file", "goto_end"),
+    _spec("Move", "n", "Next change", "Next file that will change", "next_change"),
+    _spec("Move", "N", "Previous change", "Previous file that will change", "prev_change"),
     _spec("Select", "space", "Select", "Select or clear this file", "toggle_select"),
     _spec("Select", "v", "Visual", "Select a range", "visual", "visual"),
     _spec("Select", "a", "All", "Select all", "select_all"),
@@ -541,6 +544,8 @@ class RenamerApp(App[None]):
         Binding("pagedown", "page_down", show=False),
         Binding("g", "leader_g", show=False),
         Binding("G", "goto_end", show=False),
+        Binding("n", "next_change", show=False),
+        Binding("N", "prev_change", show=False),
         Binding("v", "visual", show=False),
         Binding("a", "select_all", show=False),
         Binding("A", "select_none", show=False),
@@ -587,6 +592,7 @@ class RenamerApp(App[None]):
         self._leader = False
         self._message = ""
         self._rebuilding = False
+        self._changing: set[int] = set()
         self.exiftool = find_exiftool()
         self.setfile = find_setfile()
         self.journal = Journal(Path(tempfile.mkdtemp(prefix="rn-undo-")))
@@ -622,8 +628,9 @@ class RenamerApp(App[None]):
 
     def on_resize(self, event: object) -> None:
         width = getattr(getattr(event, "size", None), "width", self.size.width)
-        if self.is_mounted:
+        if self.is_mounted and not self._rebuilding:
             self._apply_layout(width)
+            self.refresh_view()
 
     def _apply_layout(self, width: int) -> None:
         body = self.query_one("#body")
@@ -702,6 +709,7 @@ class RenamerApp(App[None]):
     def refresh_view(self) -> None:
         self._rebuilding = True
         try:
+            self._recompute_changing()
             self._fill_table()
             self.query_one(RulesPane).set_steps(active_steps(self.rules))
             self._update_detail()
@@ -709,6 +717,49 @@ class RenamerApp(App[None]):
             self._update_subtitle()
         finally:
             self._rebuilding = False
+
+    def _recompute_changing(self) -> None:
+        """Indexes whose apply preview differs from the file as it is now."""
+        self._changing = set()
+        if not self.files:
+            return
+        if self.date_mode:
+            plan = plan_filename_dates(self.files, self.plan_zone())
+            todo = {item.path for item in plan.todo}
+            for index, path in enumerate(self.files):
+                if path not in todo:
+                    continue
+                if self.selected and index not in self.selected:
+                    continue
+                self._changing.add(index)
+            return
+        if self.mtime_mode:
+            local = _local_zone()
+            for index, path in enumerate(self.files):
+                if index not in self.selected:
+                    continue
+                _label, moment = mtime_source(self.facts_for(path), self.rules, local)
+                if moment is not None:
+                    self._changing.add(index)
+            return
+        for index, path in enumerate(self.files):
+            if self.preview_for(index) != path.name:
+                self._changing.add(index)
+
+    def _flex_width(self, fixed_content: int, column_count: int, flex_count: int) -> int:
+        """Content width for each flexible column so the row fits the pane."""
+        table = self.query_one(FileTable)
+        viewport = table.scrollable_content_region.width
+        if viewport <= 0:
+            viewport = max(table.size.width - 2, 64)
+        pad = 2 * table.cell_padding * column_count
+        remaining = viewport - fixed_content - pad
+        if flex_count <= 0:
+            return 8
+        return max(8, remaining // flex_count)
+
+    def _styled(self, value: str, width: int, style: str) -> Text:
+        return Text(fit_middle(value, width), style=style)
 
     def _fill_table(self) -> None:
         table = self.query_one(FileTable)
@@ -731,43 +782,57 @@ class RenamerApp(App[None]):
             self._cursor = 0
 
     def _add_rename_columns(self, table: FileTable) -> None:
+        width = self._flex_width(fixed_content=12, column_count=4, flex_count=2)
         table.add_column("", key="mark", width=2)
-        table.add_column("Name", key="name")
-        table.add_column("New", key="new")
+        table.add_column("Name", key="name", width=width)
+        table.add_column("New", key="new", width=width)
         table.add_column("Status", key="status", width=10)
+        self._name_width = width
+        self._new_width = width
 
     def _add_date_columns(self, table: FileTable) -> None:
+        width = self._flex_width(fixed_content=50, column_count=5, flex_count=1)
         table.add_column("", key="mark", width=2)
-        table.add_column("File", key="file")
+        table.add_column("File", key="file", width=width)
         table.add_column("Current", key="cur", width=19)
         table.add_column("New", key="new", width=19)
         table.add_column("Status", key="status", width=10)
+        self._name_width = width
+        self._new_width = 19
 
     def _add_mtime_columns(self, table: FileTable) -> None:
+        width = self._flex_width(fixed_content=31, column_count=4, flex_count=1)
         table.add_column("", key="mark", width=2)
-        table.add_column("Name", key="name")
+        table.add_column("Name", key="name", width=width)
         table.add_column("New mtime", key="mtime", width=19)
         table.add_column("Status", key="status", width=10)
+        self._name_width = width
+        self._new_width = 19
 
     def _mark(self, index: int) -> str:
         return "*" if index in self.selected else ""
 
-    def _rename_rows(self) -> list[tuple[str, str, Text, str]]:
-        rows: list[tuple[str, str, Text, str]] = []
+    def _rename_rows(self) -> list[tuple[str, Text, Text, str]]:
+        rows: list[tuple[str, Text, Text, str]] = []
+        name_w = self._name_width
+        new_w = self._new_width
         for index, path in enumerate(self.files):
             new_name = self.preview_for(index)
-            style = ""
+            changing = index in self._changing
             if index in self.locked:
-                style = "bold green"
+                new_style = "bold green"
             elif index in self.manual:
-                style = "bold yellow"
-            elif new_name != path.name:
-                style = "yellow"
+                new_style = "bold yellow"
+            elif changing:
+                new_style = "yellow"
+            else:
+                new_style = "dim"
+            name_style = "" if changing else "dim"
             rows.append(
                 (
                     self._mark(index),
-                    path.name,
-                    Text(new_name, style=style),
+                    self._styled(path.name, name_w, name_style),
+                    self._styled(new_name, new_w, new_style),
                     self._rename_status(index, new_name),
                 )
             )
@@ -787,11 +852,11 @@ class RenamerApp(App[None]):
             return "MODIFIED"
         return "UNCHANGED"
 
-    def _date_rows(self) -> list[tuple[str, str, str, str, str]]:
+    def _date_rows(self) -> list[tuple[str, Text, str, Text, str]]:
         plan = plan_filename_dates(self.files, self.plan_zone())
         by_path = {item.path: item for item in plan.todo + plan.same}
         zone = self.plan_zone()
-        rows: list[tuple[str, str, str, str, str]] = []
+        rows: list[tuple[str, Text, str, Text, str]] = []
         for index, path in enumerate(self.files):
             item = by_path.get(path)
             current = self._clock(path, zone)
@@ -804,16 +869,34 @@ class RenamerApp(App[None]):
                 status = "UPDATE" if item in plan.todo else "UNCHANGED"
             if index in self.selected:
                 status = "SELECTED"
-            rows.append((self._mark(index), path.name, current, new, status))
+            file_style = "" if index in self._changing else "dim"
+            new_style = "" if index in self._changing else "dim"
+            rows.append(
+                (
+                    self._mark(index),
+                    self._styled(path.name, self._name_width, file_style),
+                    current,
+                    self._styled(new, self._new_width, new_style),
+                    status,
+                )
+            )
         return rows
 
-    def _mtime_rows(self) -> list[tuple[str, str, str, str]]:
+    def _mtime_rows(self) -> list[tuple[str, Text, str, str]]:
         local = _local_zone()
-        rows: list[tuple[str, str, str, str]] = []
+        rows: list[tuple[str, Text, str, str]] = []
         for index, path in enumerate(self.files):
             label, _moment = mtime_source(self.facts_for(path), self.rules, local)
             status = "SELECTED" if index in self.selected else "UNCHANGED"
-            rows.append((self._mark(index), path.name, label, status))
+            name_style = "" if index in self._changing else "dim"
+            rows.append(
+                (
+                    self._mark(index),
+                    self._styled(path.name, self._name_width, name_style),
+                    label,
+                    status,
+                )
+            )
         return rows
 
     def _clock(self, path: Path, zone: tzinfo | None) -> str:
@@ -915,7 +998,9 @@ class RenamerApp(App[None]):
         if self.manual:
             extra.append(f"Man:{len(self.manual)}")
         tail = ("  " + " ".join(extra)) if extra else ""
-        self.sub_title = f"{mode}  {pos}/{total}  {place}  {zone}{tail}"
+        changing = len(self._changing)
+        count = f"{changing} of {total} will change"
+        self.sub_title = f"{mode}  {pos}/{total}  {place}  {zone}  {count}{tail}"
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if self._rebuilding:
@@ -1043,6 +1128,31 @@ class RenamerApp(App[None]):
         self._begin()
         if self.files:
             self._move_to(len(self.files) - 1)
+
+    def action_next_change(self) -> None:
+        self._jump_change(1)
+
+    def action_prev_change(self) -> None:
+        self._jump_change(-1)
+
+    def _jump_change(self, step: int) -> None:
+        self._begin()
+        hits = [index for index in range(len(self.files)) if index in self._changing]
+        if not hits:
+            self.set_status("No files will change.")
+            self._update_status()
+            return
+        if step > 0:
+            later = [index for index in hits if index > self._cursor]
+            target = later[0] if later else hits[0]
+        else:
+            earlier = [index for index in hits if index < self._cursor]
+            target = earlier[-1] if earlier else hits[-1]
+        if target == self._cursor:
+            self.set_status("No other file will change.")
+            self._update_status()
+            return
+        self._move_to(target)
 
     def action_toggle_select(self) -> None:
         self._begin()

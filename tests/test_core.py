@@ -14,6 +14,7 @@ from tui_renamer.core import (
     conflict_destination,
     datetime_for_write,
     filter_timezones,
+    fit_middle,
     format_offset,
     json_candidates,
     list_files,
@@ -167,6 +168,15 @@ def test_mtime_source_uses_the_system_zone_for_today() -> None:
     assert mtime_source(FileFacts(), RenameRules(), local) == ("N/A", None)
     bad = RenameRules(add_datetime=True, datetime_stamp="nope")
     assert mtime_source(facts, bad, local) == ("Invalid Date", None)
+
+
+def test_fit_middle_keeps_both_ends() -> None:
+    assert fit_middle("abcdefghij", 6) == "a...ij"
+    assert fit_middle("short", 10) == "short"
+    assert fit_middle("abcdef", 4) == "abcd"
+    assert fit_middle("abcdef", 0) == ""
+    assert len(fit_middle("vacation-photo-from-the-camera.jpg", 16)) == 16
+    assert fit_middle("vacation-photo-from-the-camera.jpg", 16).count("...") == 1
 
 
 def test_name_diff_marks_insert_and_delete() -> None:
