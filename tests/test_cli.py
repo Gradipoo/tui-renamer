@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tui_renamer import __version__
 from tui_renamer.cli import main
 
 
@@ -13,6 +14,16 @@ class _Stdin:
 
     def isatty(self) -> bool:
         return self._tty
+
+
+def test_version(capsys) -> None:
+    try:
+        main(["--version"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("--version should exit")
+    assert capsys.readouterr().out.strip() == f"rn {__version__}"
 
 
 def test_missing_directory(capsys) -> None:

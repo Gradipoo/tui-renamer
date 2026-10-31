@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from tui_renamer import __version__
 from tui_renamer.app import RenamerApp
 from tui_renamer.preview import warm_image_widget
 
@@ -26,6 +27,11 @@ def main(argv: list[str] | None = None) -> int:
         "--debug",
         action="store_true",
         help="Append a log to renamer_debug.log in that folder.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     args = parser.parse_args(argv)
     directory = Path(args.directory).expanduser()
