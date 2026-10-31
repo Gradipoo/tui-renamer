@@ -94,6 +94,52 @@ async def test_number_keys_zoom_panes(tmp_path: Path) -> None:
         assert app._zoom is None
 
 
+async def test_files_zoom_shows_full_names_then_narrows(tmp_path: Path) -> None:
+    name = "summer-hike-along-the-ridge-trail.jpg"
+    (tmp_path / name).write_text("x", encoding="utf-8")
+    (tmp_path / "short.txt").write_text("y", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one(DataTable)
+        table.move_cursor(row=1)
+        app._cursor = 1
+        app.selected.add(1)
+        app.refresh_view()
+        await pilot.pause()
+        shown = table.get_cell_at(Coordinate(1, 4))
+        assert isinstance(shown, Text)
+        assert "..." in shown.plain
+        assert shown.plain != name
+        narrow = app._name_width
+        await pilot.press("1")
+        await pilot.pause()
+        assert app._zoom == "files"
+        full = table.get_cell_at(Coordinate(1, 4))
+        assert isinstance(full, Text)
+        assert full.plain == name
+        assert "..." not in full.plain
+        assert app._name_width > narrow
+        assert str(table.get_cell_at(Coordinate(1, 0))).strip() == "*"
+        assert table.cursor_row == 1
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app._zoom is None
+        back = table.get_cell_at(Coordinate(1, 4))
+        assert isinstance(back, Text)
+        assert "..." in back.plain
+        assert app._name_width == narrow
+        assert table.cursor_row == 1
+        await pilot.press("1")
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+        assert app._zoom is None
+        again = table.get_cell_at(Coordinate(1, 4))
+        assert isinstance(again, Text)
+        assert "..." in again.plain
+
+
 async def test_escape_closes_find_then_zoom_then_mode(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
