@@ -709,3 +709,110 @@ async def test_preview_and_zoom_are_remembered(tmp_path: Path) -> None:
         await pilot.pause()
         assert reset.preview_on is True
         assert reset._zoom is None
+
+
+async def test_scan_review_is_off_at_startup_then_accepts(tmp_path: Path) -> None:
+    from PIL import Image
+
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_notes import load_notes, notes_path_for
+    from tui_renamer.scan_ui import ReviewScreen
+
+    front = tmp_path / "trip_a.jpg"
+    back = tmp_path / "trip_b.jpg"
+    Image.new("RGB", (16, 12), (10, 20, 30)).save(front, format="JPEG")
+    Image.new("RGB", (16, 12), (80, 80, 80)).save(back, format="JPEG")
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        assert not isinstance(app.screen, ReviewScreen)
+        await pilot.press("S")
+        await pilot.pause()
+        assert isinstance(app.screen, ReviewScreen)
+        review = app.screen
+        review.action_read()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        text = review.query_one("#scan-text", Input)
+        assert "Aunt May" in text.value
+        text.value = "edited 1952"
+        review.query_one("#scan-dates", Input).value = "1952"
+        await pilot.click("#scan-accept")
+        await pilot.pause()
+        assert not isinstance(app.screen, ReviewScreen)
+        notes = load_notes(notes_path_for(front))
+        assert notes is not None
+        assert notes.pairing_confirmed is True
+        assert notes.dates[0].kind == "year"
+        assert notes.dates[0].day is None
+        assert notes.raw_transcription
+
+
+async def test_scan_review_escape_does_not_write(tmp_path: Path) -> None:
+    from PIL import Image
+
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_notes import notes_path_for
+    from tui_renamer.scan_ui import ReviewScreen
+
+    front = tmp_path / "trip_a.jpg"
+    back = tmp_path / "trip_b.jpg"
+    Image.new("RGB", (12, 8), (1, 1, 1)).save(front, format="JPEG")
+    Image.new("RGB", (12, 8), (2, 2, 2)).save(back, format="JPEG")
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        assert isinstance(app.screen, ReviewScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, ReviewScreen)
+        assert not notes_path_for(front).exists()
+
+
+async def test_scan_review_cancels_a_read(tmp_path: Path) -> None:
+    import threading
+
+    from PIL import Image
+
+    from tui_renamer.scan_backend import BackendError, Recognition
+    from tui_renamer.scan_notes import notes_path_for
+    from tui_renamer.scan_ui import ReviewScreen
+
+    class HangBackend:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def recognize(self, image, *, model: str) -> Recognition:
+            del image, model
+            self.started.set()
+            self.release.wait(timeout=5)
+            raise BackendError("late")
+
+    front = tmp_path / "trip_a.jpg"
+    back = tmp_path / "trip_b.jpg"
+    Image.new("RGB", (12, 8), (3, 3, 3)).save(front, format="JPEG")
+    Image.new("RGB", (12, 8), (4, 4, 4)).save(back, format="JPEG")
+    backend = HangBackend()
+    app = RenamerApp(tmp_path)
+    app.scan_backend = backend
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        assert isinstance(app.screen, ReviewScreen)
+        app.screen.action_read()
+        await pilot.pause()
+        assert backend.started.wait(timeout=2)
+        app.screen.action_cancel_read()
+        await pilot.pause()
+        status = str(app.screen.query_one("#scan-status").render())
+        assert "cancelled" in status.lower()
+        await pilot.press("escape")
+        await pilot.pause()
+        backend.release.set()
+        assert not notes_path_for(front).exists()

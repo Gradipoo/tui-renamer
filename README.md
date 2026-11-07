@@ -214,7 +214,27 @@ rn -d
 
 `rn` reads the terminal. If stdin is not a terminal, it exits. On Linux it also exits if the terminal device goes away, so closing the window does not leave the process running.
 
-Hidden files and `.json` sidecars are not listed. Sidecars are read when JSON mode is on. Sidecar lookup matches Google Takeout names, including `name.jpg.json`.
+Hidden files and `.json` sidecars are not listed. Sidecars are read when JSON mode is on. Sidecar lookup matches Google Takeout names, including `name.jpg.json`. Notes from scan review use `name.jpg.rn-notes.json` and are never used as Takeout dates.
+
+## Scan review
+
+`S` opens an optional review for scanned fronts and handwritten backs. Regular renaming is unchanged. Review does not start on its own.
+
+Pairs are suggested from names such as `_a`/`_b` and `_back`, then from neighboring files in folder order. Similar pixel size is a weak hint only. You can pair, unpair, or change the back. The original image files are not modified. Accept writes a versioned notes sidecar next to the front. EXIF and XMP are not written.
+
+A year stays a year. The app does not invent a day from a partial date, and it does not guess an era from the scene.
+
+Reading the back is optional. Type the text yourself, or send the back to a local [Ollama](https://ollama.com) vision model that you already installed and started. `rn` does not install a model, start the server, or upload images to a network host unless you set one in `scan.json`.
+
+```bash
+# your machine, not rn
+ollama serve
+ollama pull gemma3
+```
+
+In scan review, type the model name (for example `gemma3`) and press `r` to read. `x` cancels. Enter accepts. Esc closes without saving. Host defaults to `http://127.0.0.1:11434`. The model name is stored in the same config directory as the view settings.
+
+This path is not an accuracy claim. Mock tests check pairing, sidecar rules, and the UI. They do not measure real handwriting recognition.
 
 An empty folder still opens. Press `r` after you add files.
 
@@ -263,6 +283,7 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `B` | Write JSON location into EXIF GPS |
 | `T` | Choose a timezone |
 | `P` | Show or hide the preview |
+| `S` | Scan review for a photo front and a handwritten back |
 | `u` | Undo the last batch (this session only) |
 | `r` | Reload the folder |
 | `?`, `:`, Ctrl+P, `h`, F1 | Commands. Type to filter. `?` closes it, including from the filter |

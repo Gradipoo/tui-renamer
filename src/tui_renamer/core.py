@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from tui_renamer.scan_notes import takeout_sidecar
+
 try:
     from zoneinfo import ZoneInfo, available_timezones
 
@@ -686,7 +688,7 @@ def load_facts(
     json_photo: datetime | None = None
     json_created: datetime | None = None
     if rules.use_json_data:
-        sidecar = next((item for item in json_candidates(path) if item.exists()), None)
+        sidecar = takeout_sidecar(path, json_candidates(path))
         facts.sidecar = sidecar
         if sidecar is not None:
             try:

@@ -45,3 +45,5 @@ def test_dim_reasons() -> None:
     assert dim_reason(_spec("date_mode"), _ctx(mtime_mode=True)) == "mode clash"
     assert dim_reason(_spec("undo"), _ctx(undo_count=1)) == ""
     assert dim_reason(_spec("preview"), empty) == ""
+    assert dim_reason(_spec("scan_review"), empty) == "no files"
+    assert dim_reason(_spec("scan_review"), _ctx()) == ""

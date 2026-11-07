@@ -86,6 +86,10 @@ from tui_renamer.metadata import (
     write_file_metadata_and_offset,
     write_geodata,
 )
+from tui_renamer.scan_backend import OllamaBackend, ScanBackend
+from tui_renamer.scan_config import load_scan_settings
+from tui_renamer.scan_notes import notes_renames, rewrite_pairing_names
+from tui_renamer.scan_ui import ReviewScreen
 from tui_renamer.search import (
     find_label,
     first_at_or_after,
@@ -137,6 +141,7 @@ BUTTON_TIPS = {
     "act-gps": "Write JSON location into EXIF",
     "act-refresh": "Reload the folder",
     "act-reset": "Reset name options",
+    "act-scan": "Review a scan front and back",
 }
 
 
@@ -430,6 +435,7 @@ class FileTable(DataTable):
         Binding("pagedown", "app.page_down", show=False),
         Binding("g", "app.leader_g", show=False),
         Binding("G", "app.goto_end", show=False),
+        Binding("S", "app.scan_review", show=False),
     ]
 
     def __init__(self, **kwargs: object) -> None:
@@ -569,6 +575,7 @@ class OptionsPane(Vertical):
                 "r Refresh", id="act-refresh", compact=True, tooltip=BUTTON_TIPS["act-refresh"]
             )
             yield Button("0 Reset", id="act-reset", compact=True, tooltip=BUTTON_TIPS["act-reset"])
+            yield Button("S Scan", id="act-scan", compact=True, tooltip=BUTTON_TIPS["act-scan"])
 
 
 SOURCE_STYLE = {
@@ -694,7 +701,21 @@ class RenamerApp(App[None]):
     .-zoom-preview #detail-scroll { display: none; }
     .-zoom-preview #preview-slot { height: 1fr; max-height: 100%; }
     .-zoom-preview #preview-image { height: 1fr; }
-    ConfirmScreen, CommandScreen, TimezoneScreen, InsertScreen { align: center middle; }
+    ConfirmScreen, CommandScreen, TimezoneScreen, InsertScreen,
+        ReviewScreen { align: center middle; }
+    ReviewScreen #scan-dialog {
+        width: 90;
+        max-width: 96%;
+        height: auto;
+        max-height: 90%;
+        background: $panel;
+        border: thick $primary;
+        padding: 1 2;
+    }
+    ReviewScreen #scan-previews { height: 10; }
+    ReviewScreen #scan-front-slot, ReviewScreen #scan-back-slot { width: 1fr; }
+    ReviewScreen #scan-actions { height: auto; }
+    ReviewScreen #scan-pick { height: 8; }
     #dialog {
         width: 72;
         max-width: 90%;
@@ -767,6 +788,7 @@ class RenamerApp(App[None]):
         Binding("T", "timezone", show=False),
         Binding("u", "undo", show=False),
         Binding("r", "reload_files", show=False),
+        Binding("S", "scan_review", show=False),
     ]
 
     def __init__(self, directory: Path, debug: bool = False) -> None:
@@ -809,6 +831,7 @@ class RenamerApp(App[None]):
         self._new_width = 8
         self._zoom: str | None = None
         self._syncing = False
+        self.scan_backend: ScanBackend | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -2139,9 +2162,35 @@ class RenamerApp(App[None]):
             "act-gps": "write_geodata",
             "act-refresh": "reload_files",
             "act-reset": "reset_rules",
+            "act-scan": "scan_review",
         }.get(event.button.id or "")
         if run:
             getattr(self, f"action_{run}")()
+
+    def action_scan_review(self) -> None:
+        self._begin()
+        if self._find_open or not self.files:
+            return
+        start = self.files[self._cursor]
+        selected = [self.files[index] for index in sorted(self.selected) if index < len(self.files)]
+        settings = load_scan_settings()
+        backend = self.scan_backend or OllamaBackend(host=settings.host)
+
+        def done(message: str | None) -> None:
+            if message:
+                self.set_status(message)
+            self.refresh_view()
+
+        self.push_screen(
+            ReviewScreen(
+                self.files,
+                start=start,
+                backend=backend,
+                settings=settings,
+                selected=selected,
+            ),
+            done,
+        )
 
     def action_reset_rules(self) -> None:
         self._begin()
@@ -2349,7 +2398,15 @@ class RenamerApp(App[None]):
 
     def _do_rename(self, pairs: list[tuple[Path, str]]) -> None:
         outcome = rename_paths(pairs)
-        self.journal.push(Batch("rename", [RenameOp(src, dst) for src, dst in outcome.done]))
+        ops = [RenameOp(src, dst) for src, dst in outcome.done]
+        extra = notes_renames(outcome.done)
+        if extra:
+            sidecar_out = rename_paths(extra)
+            ops.extend(RenameOp(src, dst) for src, dst in sidecar_out.done)
+            name_map = {src.name: dst.name for src, dst in outcome.done}
+            for _src, dst in sidecar_out.done:
+                rewrite_pairing_names(dst, name_map)
+        self.journal.push(Batch("rename", ops))
         self.reload_files()
         message = f"Renamed {len(outcome.done)} files."
         if outcome.conflicts:
