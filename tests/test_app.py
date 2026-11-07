@@ -739,6 +739,8 @@ async def test_scan_review_is_off_at_startup_then_accepts(tmp_path: Path) -> Non
         review = app.screen
         assert review.related is None
         assert review.query_one("#scan-help").display is False
+        focused = review.focused
+        assert getattr(focused, "id", None) != "scan-model"
         review.query_one("#scan-model", Input).value = "mock"
         review.query_one("#scan-model", Input).focus()
         await pilot.press("enter")
@@ -906,8 +908,7 @@ async def test_scan_review_installed_loaded_and_related_browse(tmp_path: Path) -
         await pilot.pause()
         shown = str(review.query_one("#scan-models").render())
         assert "gemma3:4b*" in shown or "gemma3:4b" in shown
-        review.action_installed()
-        picker = review.query_one("#scan-pick", OptionList)
+        picker = review.query_one("#scan-model-pick", OptionList)
         assert picker.display is True
         prompts = []
         for index in range(picker.option_count):
@@ -916,45 +917,49 @@ async def test_scan_review_installed_loaded_and_related_browse(tmp_path: Path) -
         blob = " ".join(prompts)
         assert "gemma3:4b" in blob
         assert "loaded" in blob.casefold()
-        review.action_related()
-        picker = review.query_one("#scan-pick", OptionList)
+        related = review.query_one("#scan-related-list", OptionList)
         prompts = []
-        for index in range(picker.option_count):
-            prompt = picker.get_option_at_index(index).prompt
+        for index in range(related.option_count):
+            prompt = related.get_option_at_index(index).prompt
             prompts.append(prompt.plain if hasattr(prompt, "plain") else str(prompt))
         blob = " ".join(prompts)
         assert "Likely" in blob
         assert "trip_b.jpg" in blob
         assert "Unknown" in blob or "Unlikely" in blob or "Possible" in blob
         assert "zz.jpg" in blob
+        assert app.scan_backend.recognize_calls == []
 
 
 async def test_scan_review_remote_host_needs_a_second_read(tmp_path: Path) -> None:
     from tui_renamer.scan_backend import MockBackend
-    from tui_renamer.scan_config import ScanSettings
+    from tui_renamer.scan_config import ScanSettings, save_scan_settings
     from tui_renamer.scan_ui import ReviewScreen
 
     photo = tmp_path / "solo.jpg"
     _jpeg_photo(photo, (7, 7, 7))
+    save_scan_settings(ScanSettings(host="http://example.test:11434", model="mock"))
+    backend = MockBackend(vision_models=["mock"])
     app = RenamerApp(tmp_path)
-    app.scan_backend = MockBackend()
+    app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
         await pilot.pause()
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
         assert isinstance(review, ReviewScreen)
-        review.settings = ScanSettings(host="http://example.test:11434", model="mock")
-        review._local = False
-        review._remote_ok = False
-        review.query_one("#scan-model", Input).value = "mock"
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert backend.recognize_calls == []
+        status = str(review.query_one("#scan-status").render())
+        assert "example.test" in status
         review.action_read()
         status = str(review.query_one("#scan-status").render())
         assert "not this computer" in status
-        assert "example.test" in status
+        assert backend.recognize_calls == []
         review.action_read()
         await review.workers.wait_for_complete()
         await pilot.pause()
+        assert len(backend.recognize_calls) == 1
         assert any("Aunt May" in label for label in _chip_labels(review))
 
 
@@ -1076,3 +1081,173 @@ async def test_scan_review_apply_writes_written_day_and_description(
         await pilot.pause()
         assert photo.exists()
         assert read_exif(photo).naive is None
+
+
+def _option_blob(picker: OptionList) -> str:
+    prompts = []
+    for index in range(picker.option_count):
+        prompt = picker.get_option_at_index(index).prompt
+        prompts.append(prompt.plain if hasattr(prompt, "plain") else str(prompt))
+    return " ".join(prompts)
+
+
+async def test_scan_first_use_dropdown_saves_and_reads_once(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_config import load_scan_settings
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo)
+    backend = MockBackend(vision_models=["gemma3:4b"], loaded_models=["gemma3:4b"])
+    app = RenamerApp(tmp_path)
+    app.scan_backend = backend
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert getattr(review.focused, "id", None) != "scan-model"
+        picker = review.query_one("#scan-model-pick", OptionList)
+        assert picker.display is True
+        assert backend.recognize_calls == []
+        picker.highlighted = 0
+        picker.action_select()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert load_scan_settings().model == "gemma3:4b"
+        assert len(backend.recognize_calls) == 1
+        assert backend.recognize_calls[0][1] == "gemma3:4b"
+        await pilot.pause()
+        assert len(backend.recognize_calls) == 1
+        assert any("Aunt May" in label for label in _chip_labels(review))
+
+
+async def test_scan_saved_model_auto_reads_current_image_once(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_config import ScanSettings, save_scan_settings
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "solo.jpg"
+    extra = tmp_path / "zz.jpg"
+    _jpeg_photo(photo, (1, 2, 3))
+    _jpeg_photo(extra, (4, 5, 6))
+    save_scan_settings(ScanSettings(model="gemma3:4b"))
+    backend = MockBackend(vision_models=["gemma3:4b"])
+    app = RenamerApp(tmp_path)
+    app.scan_backend = backend
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(backend.recognize_calls) == 1
+        assert backend.recognize_calls[0][0].endswith("solo.jpg")
+        related = review.query_one("#scan-related-list", OptionList)
+        assert "zz.jpg" in _option_blob(related)
+        assert all(not call[0].endswith("zz.jpg") for call in backend.recognize_calls)
+        await pilot.pause()
+        assert len(backend.recognize_calls) == 1
+
+
+async def test_scan_unavailable_model_falls_back_to_chooser(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_config import ScanSettings, save_scan_settings
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo)
+    save_scan_settings(ScanSettings(model="missing-vision"))
+    backend = MockBackend(vision_models=["gemma3:4b"])
+    app = RenamerApp(tmp_path)
+    app.scan_backend = backend
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert backend.recognize_calls == []
+        status = str(review.query_one("#scan-status").render())
+        assert "not installed" in status.casefold()
+        assert review.query_one("#scan-model-pick", OptionList).display is True
+        add = review.query_one("#scan-add", Input)
+        add.value = "Aunt May"
+        add.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert any("Aunt May" in item.label for item in review.bits)
+
+
+async def test_scan_stale_read_is_discarded_on_close(tmp_path: Path) -> None:
+    import threading
+
+    from tui_renamer.scan_backend import BackendError, Recognition
+    from tui_renamer.scan_config import ScanSettings, save_scan_settings
+    from tui_renamer.scan_notes import notes_path_for
+    from tui_renamer.scan_ui import ReviewScreen
+
+    class HangBackend:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.recognize_calls: list[tuple[str, str]] = []
+
+        def recognize(self, image, *, model: str) -> Recognition:
+            self.recognize_calls.append((str(image), model))
+            self.started.set()
+            self.release.wait(timeout=5)
+            raise BackendError("late")
+
+        def list_vision_models(self) -> list[str]:
+            return ["mock"]
+
+        def list_loaded_models(self) -> list[str]:
+            return ["mock"]
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo, (9, 9, 9))
+    save_scan_settings(ScanSettings(model="mock"))
+    backend = HangBackend()
+    app = RenamerApp(tmp_path)
+    app.scan_backend = backend
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        assert isinstance(app.screen, ReviewScreen)
+        assert backend.started.wait(timeout=2)
+        await pilot.press("escape")
+        await pilot.pause()
+        backend.release.set()
+        await pilot.pause()
+        assert not isinstance(app.screen, ReviewScreen)
+        assert not notes_path_for(photo).exists()
+
+
+async def test_scan_narrow_viewport_keeps_actions(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo)
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(60, 24)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        assert review.has_class("-narrow")
+        assert review.query_one("#scan-left").display
+        assert review.query_one("#scan-right").display
+        assert review.query_one("#scan-accept").display
+        assert review.query_one("#scan-actions").display

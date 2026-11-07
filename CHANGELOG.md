@@ -4,6 +4,7 @@
 
 - Photo review (`S`) analyzes the highlighted image. Related files are optional. Results are chips you pick for a staged name and supported metadata. Accept writes a notes sidecar. Apply confirms disk rename and metadata. Recognition uses local Ollama only when you ask.
 - Photo review lists local vision models (with a loaded mark when Ollama reports one), warns before sending an image to a non-local host, and keeps long setup text in Help. It does not pull models or start the server.
+- Photo review does not focus the model field. First use shows installed vision models. A saved local model is read on open. Remote hosts never auto-upload. Findings and related suggestions sit in two columns.
 
 ## 0.1.3
 

@@ -117,9 +117,10 @@ class MockBackend:
     tokens: list[str] = field(default_factory=lambda: ["picnic"])
     people_present: bool | None = True
     people_count: int | None = 1
+    recognize_calls: list[tuple[str, str]] = field(default_factory=list)
 
     def recognize(self, image: Path, *, model: str) -> Recognition:
-        del image
+        self.recognize_calls.append((str(image), model))
         if self.error:
             raise BackendError(self.error)
         dates = (

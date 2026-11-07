@@ -706,14 +706,17 @@ class RenamerApp(App[None]):
     ConfirmScreen, CommandScreen, TimezoneScreen, InsertScreen,
         ReviewScreen { align: center middle; }
     ReviewScreen #scan-dialog {
-        width: 90;
-        max-width: 96%;
-        height: auto;
+        width: 96;
+        max-width: 98%;
+        height: 90%;
         max-height: 90%;
         background: $panel;
         border: thick $primary;
         padding: 1 2;
     }
+    ReviewScreen #scan-body { height: 1fr; }
+    ReviewScreen #scan-left, ReviewScreen #scan-right { width: 1fr; height: 1fr; }
+    ReviewScreen.-narrow #scan-body { layout: vertical; }
     ReviewScreen #scan-preview-slot { height: 8; }
     ReviewScreen #scan-chips { layout: grid; grid-size: 2; height: auto; }
     ReviewScreen .scan-chip { width: 1fr; color: $text-muted; }
@@ -722,8 +725,9 @@ class RenamerApp(App[None]):
         color: $text;
         text-style: bold;
     }
-    ReviewScreen #scan-actions { height: auto; }
-    ReviewScreen #scan-pick { height: 8; }
+    ReviewScreen #scan-actions { height: auto; dock: bottom; }
+    ReviewScreen #scan-model-pick { height: auto; max-height: 8; }
+    ReviewScreen #scan-related-list { height: 1fr; min-height: 6; }
     ReviewScreen #scan-help { height: auto; max-height: 10; }
     ReviewScreen #scan-cmd { height: auto; }
     #dialog {

@@ -7,7 +7,7 @@ from pathlib import Path
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -23,15 +23,10 @@ from tui_renamer.scan_bits import (
     description_from_bits,
     staged_filename,
 )
-from tui_renamer.scan_candidates import score_candidates
+from tui_renamer.scan_candidates import Candidate, score_candidates
 from tui_renamer.scan_config import ScanSettings, host_is_local, save_scan_settings
 from tui_renamer.scan_dates import parse_date_text
-from tui_renamer.scan_models import (
-    pull_command,
-    setup_lines,
-    suggested_rec,
-    total_ram_bytes,
-)
+from tui_renamer.scan_models import pull_command, setup_lines, suggested_rec, total_ram_bytes
 from tui_renamer.scan_notes import ScanNotes, notes_path_for, save_notes
 
 
@@ -68,11 +63,13 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         self.settings = settings
         self.zone = zone
         self.has_capture = has_capture
-        self.candidates = score_candidates(start, files)
+        self.candidates: list[Candidate] = []
         self.cache = ThumbCache()
         self._busy = False
         self._job = 0
-        self._pick_kind = ""
+        self._discover_job = 0
+        self._score_job = 0
+        self._auto_started = False
         self._ram = total_ram_bytes()
         self._installed: list[str] | None = None
         self._loaded: list[str] = []
@@ -89,14 +86,20 @@ class ReviewScreen(ModalScreen[StageResult | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="scan-dialog"):
             yield Static("Photo review", markup=False)
-            yield Static("", id="scan-photo", markup=False)
-            yield Vertical(id="scan-preview-slot")
-            yield Input(placeholder="vision model, Enter runs", id="scan-model")
-            yield Static("", id="scan-models", markup=False)
             yield Static("", id="scan-status", markup=False)
-            yield Static("", id="scan-source", markup=False)
-            yield Horizontal(id="scan-chips")
-            yield Input(placeholder="add a name or date chip", id="scan-add")
+            yield Static("", id="scan-models", markup=False)
+            with Horizontal(id="scan-body"):
+                with VerticalScroll(id="scan-left"):
+                    yield Static("", id="scan-photo", markup=False)
+                    yield Vertical(id="scan-preview-slot")
+                    yield Static("", id="scan-source", markup=False)
+                    yield Horizontal(id="scan-chips")
+                    yield Input(placeholder="add a name or date chip", id="scan-add")
+                    yield OptionList(id="scan-model-pick")
+                    yield Input(placeholder="model override, Enter reads", id="scan-model")
+                with VerticalScroll(id="scan-right"):
+                    yield Static("Related (pick, then r to read)", markup=False)
+                    yield OptionList(id="scan-related-list")
             with Horizontal(id="scan-actions"):
                 yield Button(
                     "r Read",
@@ -120,13 +123,13 @@ class ReviewScreen(ModalScreen[StageResult | None]):
                     "b Related",
                     id="scan-related",
                     compact=True,
-                    tooltip="Pick a related file",
+                    tooltip="Focus related suggestions",
                 )
                 yield Button(
-                    "i Installed",
+                    "i Models",
                     id="scan-installed",
                     compact=True,
-                    tooltip="Pick a local vision model",
+                    tooltip="Show installed vision models",
                 )
                 yield Button(
                     "o Skip existing date",
@@ -146,27 +149,38 @@ class ReviewScreen(ModalScreen[StageResult | None]):
                     compact=True,
                     tooltip="Close without staging",
                 )
-            yield OptionList(id="scan-pick")
             yield Static("", id="scan-help", markup=False)
             yield Static("", id="scan-cmd", markup=False)
 
     def on_mount(self) -> None:
         self.query_one("#scan-model", Input).value = self.settings.model
-        self.query_one("#scan-pick", OptionList).display = False
+        self.query_one("#scan-model-pick", OptionList).display = False
         self.query_one("#scan-help", Static).display = False
+        self.query_one("#scan-cmd", Static).display = False
+        self._apply_narrow()
         self._paint_header()
         self._fill_preview()
-        self.query_one("#scan-model", Input).focus()
+        self._fill_related()
+        self.query_one("#scan-related-list", OptionList).focus()
+        self._score_related()
         self._discover()
 
+    def on_resize(self) -> None:
+        self._apply_narrow()
+
+    def _apply_narrow(self) -> None:
+        self.set_class(self.size.width < 80, "-narrow")
+
     def action_close(self) -> None:
-        self._cancel_worker()
+        self._discard_jobs()
         self.dismiss(None)
 
     def action_help(self) -> None:
         box = self.query_one("#scan-help", Static)
+        cmd = self.query_one("#scan-cmd", Static)
         if box.display:
             box.display = False
+            cmd.display = False
             return
         lines = setup_lines(
             host=self.settings.host,
@@ -177,6 +191,10 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         )
         box.update("\n".join(lines))
         box.display = True
+        rec = suggested_rec(self._ram)
+        current = self._model_value() or rec.tag
+        cmd.update(pull_command(current))
+        cmd.display = True
 
     def action_toggle_overwrite(self) -> None:
         self._overwrite = not self._overwrite
@@ -187,62 +205,29 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         if not self._local:
             self._status("Installed list is only for a local Ollama host.")
             return
-        names = self._installed
-        if names is None:
+        if self._installed is None:
             self._status("Still checking local Ollama.")
             return
-        if not names:
+        if not self._installed:
             rec = suggested_rec(self._ram)
-            self._status(f"No vision models. Pull one with: {rec.pull_command()}")
-            self.query_one("#scan-cmd", Static).update(rec.pull_command())
+            self._status(f"No vision models. {rec.pull_command()}")
+            cmd = self.query_one("#scan-cmd", Static)
+            cmd.update(rec.pull_command())
+            cmd.display = True
             return
-        picker = self.query_one("#scan-pick", OptionList)
-        picker.clear_options()
-        loaded = set(self._loaded)
-        self._pick_models = names
-        for index, name in enumerate(names):
-            mark = " (loaded)" if name in loaded else ""
-            picker.add_option(Option(f"{name}{mark}", id=f"mdl-{index}"))
-        picker.display = True
-        self._pick_kind = "model"
-        picker.focus()
+        self._show_model_chooser()
 
     def action_related(self) -> None:
+        picker = self.query_one("#scan-related-list", OptionList)
+        picker.focus()
         if not self.candidates:
             self._status("No other images in this folder.")
-            return
-        picker = self.query_one("#scan-pick", OptionList)
-        picker.clear_options()
-        picker.add_option(Option("This photo only", id="__none__"))
-        for item in self.candidates:
-            picker.add_option(Option(item.line(), id=str(item.path)))
-        picker.display = True
-        self._pick_kind = "related"
-        picker.focus()
 
     def action_read(self) -> None:
-        if self._busy:
-            return
-        model = self.query_one("#scan-model", Input).value.strip()
-        if not model:
-            self._status("No model. Type notes as chips, or pick a vision model.")
-            return
-        self._persist_model(model)
-        if not self._local and not self._remote_ok:
-            self._remote_ok = True
-            self._status(
-                f"This host is not this computer. Read again to send the image to "
-                f"{self.settings.host}."
-            )
-            return
-        source = self.related or self.subject
-        self._busy = True
-        self._job += 1
-        self._status("Reading.")
-        self._run_read(source, model, self._job)
+        self._start_read(self._model_value(), persist=True)
 
     def action_cancel_read(self) -> None:
-        self._cancel_worker()
+        self._cancel_ocr()
         self._busy = False
         self._job += 1
         self._status("Reading cancelled.")
@@ -251,8 +236,9 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         if self._busy:
             self._status("Wait for the reading, or cancel it.")
             return
-        model = self.query_one("#scan-model", Input).value.strip()
-        self._persist_model(model)
+        model = self._model_value()
+        if model:
+            self._persist_model(model)
         payload = ScanNotes(
             front=self.subject.name,
             back=self.related.name if self.related else None,
@@ -291,6 +277,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         suffix = self.subject.suffix.lower()
         if description and suffix not in {".jpg", ".jpeg", ".tif", ".tiff"}:
             extra = " Description stays in the sidecar for this type."
+        self._discard_jobs()
         self.dismiss(
             StageResult(
                 message=(f"Staged notes for {self.subject.name}. Apply writes the disk.{extra}"),
@@ -308,32 +295,44 @@ class ReviewScreen(ModalScreen[StageResult | None]):
     def _add_enter(self) -> None:
         self._add_chip()
 
-    @on(OptionList.OptionSelected, "#scan-pick")
-    def _picked(self, event: OptionList.OptionSelected) -> None:
-        ident = event.option_id
-        kind = self._pick_kind
-        self._pick_kind = ""
-        self.query_one("#scan-pick", OptionList).display = False
-        if kind == "model" and ident:
-            name = ident
-            if ident.startswith("mdl-"):
-                index = int(ident.split("-", 1)[1])
-                name = self._pick_models[index]
-            self.query_one("#scan-model", Input).value = name
-            self._persist_model(name)
-            self._status(f"Model set to {name}.")
+    @on(OptionList.OptionSelected, "#scan-model-pick")
+    def _model_picked(self, event: OptionList.OptionSelected) -> None:
+        ident = event.option_id or ""
+        if not ident.startswith("mdl-"):
             return
-        if kind == "related":
-            if ident == "__none__" or not ident:
-                self.related = None
-                self.related_reason = ""
-            else:
-                path = Path(ident)
-                match = next((item for item in self.candidates if item.path == path), None)
-                self.related = path
-                self.related_reason = match.reason if match else "manual"
-            self._paint_header()
-            self._fill_preview()
+        index = int(ident.split("-", 1)[1])
+        if index < 0 or index >= len(self._pick_models):
+            return
+        name = self._pick_models[index]
+        self.query_one("#scan-model", Input).value = name
+        self._persist_model(name)
+        self._hide_model_chooser()
+        self._status(f"Model set to {name}.")
+        self._auto_started = True
+        self._start_read(name, persist=False)
+
+    @on(OptionList.OptionSelected, "#scan-related-list")
+    def _related_picked(self, event: OptionList.OptionSelected) -> None:
+        ident = event.option_id or ""
+        if ident == "rel-none":
+            path: Path | None = None
+            reason = ""
+        elif ident.startswith("rel-"):
+            index = int(ident.split("-", 1)[1])
+            if index < 0 or index >= len(self.candidates):
+                return
+            item = self.candidates[index]
+            path = item.path
+            reason = item.reason
+        else:
+            return
+        if path == self.related:
+            return
+        self.related = path
+        self.related_reason = reason
+        self._invalidate_ocr()
+        self._paint_header()
+        self._status("Related source set. Press r to read it.")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         ident = event.button.id or ""
@@ -355,6 +354,9 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         }.get(ident)
         if run:
             run()
+
+    def _model_value(self) -> str:
+        return self.query_one("#scan-model", Input).value.strip()
 
     def _add_chip(self) -> None:
         box = self.query_one("#scan-add", Input)
@@ -429,12 +431,9 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         else:
             line = f"Remote host {self.settings.host}."
         self.query_one("#scan-models", Static).update(line)
-        rec = suggested_rec(self._ram)
-        current = self.query_one("#scan-model", Input).value.strip()
-        self.query_one("#scan-cmd", Static).update(pull_command(current or rec.tag))
 
     def _fill_preview(self) -> None:
-        path = self.related or self.subject
+        path = self.subject
         slot = self.query_one("#scan-preview-slot")
         slot.remove_children()
         result: Preview = build_preview(path, self.cache)
@@ -448,6 +447,29 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         elif result.body:
             slot.mount(Static(result.body, markup=False))
 
+    def _fill_related(self) -> None:
+        picker = self.query_one("#scan-related-list", OptionList)
+        picker.clear_options()
+        picker.add_option(Option("This photo only", id="rel-none"))
+        for index, item in enumerate(self.candidates):
+            picker.add_option(Option(item.line(), id=f"rel-{index}"))
+
+    def _show_model_chooser(self) -> None:
+        names = self._installed or []
+        picker = self.query_one("#scan-model-pick", OptionList)
+        picker.clear_options()
+        loaded = set(self._loaded)
+        self._pick_models = names
+        for index, name in enumerate(names):
+            mark = " (loaded)" if name in loaded else ""
+            picker.add_option(Option(f"{name}{mark}", id=f"mdl-{index}"))
+        picker.display = True
+        picker.focus()
+
+    def _hide_model_chooser(self) -> None:
+        picker = self.query_one("#scan-model-pick", OptionList)
+        picker.display = False
+
     def _status(self, message: str) -> None:
         self.query_one("#scan-status", Static).update(message)
 
@@ -455,41 +477,129 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         save_scan_settings(ScanSettings(host=self.settings.host, model=model))
         self.settings = ScanSettings(host=self.settings.host, model=model)
 
-    def _cancel_worker(self) -> None:
+    def _invalidate_ocr(self) -> None:
+        self._cancel_ocr()
+        self._busy = False
+        self._job += 1
+        self._engine = ""
+        self._raw = ""
+        self.bits = [item for item in self.bits if item.manual]
+        if self.is_mounted:
+            self._paint_chips()
+
+    def _cancel_ocr(self) -> None:
         for worker in self.workers:
-            if worker.group in {"scan-ocr", "scan-discover"}:
-                if worker.group == "scan-ocr":
-                    worker.cancel()
+            if worker.group == "scan-ocr":
+                worker.cancel()
+
+    def _discard_jobs(self) -> None:
+        self._cancel_ocr()
+        self._busy = False
+        self._job += 1
+        self._discover_job += 1
+        self._score_job += 1
+
+    def _start_read(self, model: str, *, persist: bool) -> None:
+        if self._busy:
+            return
+        name = model.strip()
+        if not name:
+            self._status("No model. Type notes as chips, or pick a vision model.")
+            return
+        if persist:
+            self._persist_model(name)
+        if not self._local and not self._remote_ok:
+            self._remote_ok = True
+            self._status(
+                f"This host is not this computer. Press r again to send the image to "
+                f"{self.settings.host}."
+            )
+            return
+        source = self.related or self.subject
+        self._busy = True
+        self._job += 1
+        self._status("Reading.")
+        self._run_read(source, name, self._job)
+
+    def _maybe_auto_read(self) -> None:
+        if not self.is_mounted or self._auto_started or self._busy:
+            return
+        if not self._local:
+            host = self.settings.host
+            if self.settings.model.strip():
+                self._status(f"Remote host {host}. Press r to confirm sending this image.")
+            else:
+                self._status(f"Remote host {host}. Pick or type a model, then r to confirm.")
+            return
+        if self._installed is None:
+            return
+        saved = self.settings.model.strip()
+        if self._discover_error and not self._installed:
+            self._status(self._discover_error)
+            return
+        if saved and saved in self._installed:
+            self.query_one("#scan-model", Input).value = saved
+            self._hide_model_chooser()
+            self._auto_started = True
+            self._start_read(saved, persist=False)
+            return
+        if saved and saved not in self._installed:
+            self.query_one("#scan-model", Input).value = saved
+            self._status(f"{saved} is not installed. Pick a vision model, or type notes.")
+            if self._installed:
+                self._show_model_chooser()
+            return
+        if self._installed:
+            self._status("Pick a vision model. Notes work without one.")
+            self._show_model_chooser()
+            return
+        rec = suggested_rec(self._ram)
+        self._status(f"No vision models. {rec.pull_command()}")
 
     @work(thread=True, exclusive=True, group="scan-discover", exit_on_error=False)
     def _discover(self) -> None:
+        job = self._discover_job
         if not self._local:
-            self.app.call_from_thread(self._discover_done, [], [], "")
+            self.app.call_from_thread(self._discover_done, job, [], [], "")
             return
         try:
             names = self.backend.list_vision_models()
         except BackendError as exc:
-            self.app.call_from_thread(self._discover_done, [], [], str(exc))
+            self.app.call_from_thread(self._discover_done, job, [], [], str(exc))
             return
         loaded: list[str] = []
         try:
             loaded = self.backend.list_loaded_models()
         except BackendError:
             loaded = []
-        self.app.call_from_thread(self._discover_done, names, loaded, "")
+        self.app.call_from_thread(self._discover_done, job, names, loaded, "")
 
-    def _discover_done(self, names: list[str], loaded: list[str], error: str) -> None:
+    def _discover_done(
+        self,
+        job: int,
+        names: list[str],
+        loaded: list[str],
+        error: str,
+    ) -> None:
+        if job != self._discover_job or not self.is_mounted:
+            return
         self._installed = names
         self._loaded = loaded
         self._discover_error = error
-        box = self.query_one("#scan-model", Input)
-        if not box.value.strip():
-            pick = next((item for item in loaded if item in names), None)
-            if pick is None and names:
-                pick = names[0]
-            if pick:
-                box.value = pick
         self._paint_models()
+        self._maybe_auto_read()
+
+    @work(thread=True, exclusive=True, group="scan-candidates", exit_on_error=False)
+    def _score_related(self) -> None:
+        job = self._score_job
+        rows = score_candidates(self.subject, self.files)
+        self.app.call_from_thread(self._score_done, job, rows)
+
+    def _score_done(self, job: int, rows: list[Candidate]) -> None:
+        if job != self._score_job or not self.is_mounted:
+            return
+        self.candidates = rows
+        self._fill_related()
 
     @work(thread=True, exclusive=True, group="scan-ocr", exit_on_error=False)
     def _run_read(self, image: Path, model: str, job: int) -> None:
@@ -507,7 +617,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         error: str,
         source: str,
     ) -> None:
-        if job != self._job:
+        if job != self._job or not self.is_mounted:
             return
         self._busy = False
         if error or result is None:
@@ -515,7 +625,8 @@ class ReviewScreen(ModalScreen[StageResult | None]):
             return
         self._engine = result.engine
         self._raw = result.raw
-        self.bits = bits_from_recognition(
+        manual = [item for item in self.bits if item.manual]
+        self.bits = manual + bits_from_recognition(
             transcription=result.transcription,
             dates=result.dates,
             tokens=result.tokens,

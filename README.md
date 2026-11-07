@@ -226,7 +226,7 @@ Accept writes a versioned notes sidecar next to the photo and stages a filename 
 
 A year stays a year. Only a complete written calendar day can become capture metadata, using noon if you opt in. Year, month, season, inferred, and unresolved ambiguous dates never become EXIF. Partial dates can still go in the sidecar and in a name you approve. Description writes JPEG/TIFF ImageDescription. Other types keep the text in the sidecar.
 
-Reading is optional. `rn` does not install Ollama, pull a model, start the server, or upload images unless you press Read (Enter in the model field also saves and reads). Host defaults to `http://127.0.0.1:11434`. A host that is not loopback shows a warning, and the first Read must be confirmed, because the image is sent to that host.
+Reading is optional. On a local host, a saved vision model is read when you open `S`. First use shows installed vision models instead of a typing field. `rn` does not install Ollama, pull a model, start the server, or upload images on its own. Host defaults to `http://127.0.0.1:11434`. A host that is not loopback is never auto-uploaded. The first Read must be confirmed, because the image is sent to that host.
 
 These tags were checked against the official library. They are not a handwriting-accuracy ranking, and we have not evaluated them on real scans.
 
@@ -245,7 +245,7 @@ ollama serve
 ollama pull gemma3:4b
 ```
 
-In photo review, type a vision model and press Enter, or press `i` for local installed vision models (a loaded mark when Ollama reports one). `r` reads. `x` cancels. `a` accepts. `b` opens related-file candidates. `?` shows setup help. Esc closes without staging. The model name is stored in `scan.json` next to the view settings. Total system RAM, when readable, is a conservative hint only. It is not free RAM or GPU VRAM.
+In photo review, pick an installed vision model, or type an override and press Enter. `i` shows local installed vision models (a loaded mark when Ollama reports one). `r` reads. `x` cancels. `a` accepts. `b` focuses related-file suggestions. `?` shows setup help. Esc closes without staging. The model name is stored in `scan.json` next to the view settings. Total system RAM, when readable, is a conservative hint only. It is not free RAM or GPU VRAM.
 
 This path is not an accuracy claim. Mock tests check chips, sidecar rules, date precision, and the UI. They do not measure real handwriting recognition.
 
