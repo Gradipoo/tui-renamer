@@ -9,7 +9,7 @@ from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from tui_renamer.scan_dates import ScanDate, can_queue_capture
+from tui_renamer.scan_dates import ScanDate, can_queue_capture, parse_whole_calendar_day
 
 if TYPE_CHECKING:
     from tui_renamer.core import RenameRules
@@ -40,6 +40,9 @@ class Bit:
         origin = "written" if self.origin == "written" else "inferred"
         line = f"{self.kind}. Source {self.source}. {origin}. Model {self.model or 'manual'}."
         stamp = scan_date_name_stamp(self.date) if self.date is not None else None
+        if stamp is None:
+            parsed = parse_whole_calendar_day(self.label)
+            stamp = scan_date_name_stamp(parsed) if parsed is not None else None
         if stamp is None:
             return line
         if stamp[1] == "date":
@@ -124,8 +127,14 @@ def scan_date_name_stamp(date: ScanDate) -> tuple[str, str] | None:
 
 
 def name_token_for_bit(item: Bit) -> str:
-    if item.kind == "date" and item.date is not None:
+    if item.date is not None:
         stamp = scan_date_name_stamp(item.date)
+        if stamp is not None:
+            return stamp[0]
+        return item.label.strip()
+    parsed = parse_whole_calendar_day(item.label)
+    if parsed is not None:
+        stamp = scan_date_name_stamp(parsed)
         if stamp is not None:
             return stamp[0]
     return item.label.strip()
@@ -134,17 +143,30 @@ def name_token_for_bit(item: Bit) -> str:
 def format_scan_selected(bits: list[Bit], rules: RenameRules) -> list[str]:
     chosen = [(index, item) for index, item in enumerate(bits) if item.use_name]
     chosen.sort(key=lambda pair: (pair[1].name_order or 0, pair[0]))
-    labels = [name_token_for_bit(item) for _index, item in chosen]
-    return format_scan_parts(labels, rules)
+    return [
+        part
+        for part in (_clean_scan_piece(name_token_for_bit(item), rules) for _index, item in chosen)
+        if part
+    ]
 
 
-def format_scan_part(text: str, rules: RenameRules) -> str:
-    """Apply ordinary filename format toggles to one S tag. Labels stay raw."""
+def _clean_scan_piece(text: str, rules: RenameRules) -> str:
     from tui_renamer.core import clean_filename
 
     piece = text.replace("\0", "").replace("/", " ").replace("\\", " ").strip()
     piece = clean_filename(piece, rules)
     return piece[:MAX_SLUG]
+
+
+def format_scan_part(text: str, rules: RenameRules) -> str:
+    """Apply ordinary filename format toggles to one S tag. Labels stay raw."""
+    piece = text.replace("\0", "").replace("/", " ").replace("\\", " ").strip()
+    parsed = parse_whole_calendar_day(piece)
+    if parsed is not None:
+        stamp = scan_date_name_stamp(parsed)
+        if stamp is not None:
+            piece = stamp[0]
+    return _clean_scan_piece(piece, rules)
 
 
 def format_scan_parts(labels: list[str], rules: RenameRules) -> list[str]:

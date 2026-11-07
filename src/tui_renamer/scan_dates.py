@@ -21,6 +21,38 @@ _YEAR = re.compile(r"\b(1[6-9]\d{2}|20\d{2})\b")
 _ISO_DAY = re.compile(r"\b(1[6-9]\d{2}|20\d{2})-(\d{1,2})-(\d{1,2})\b")
 _ISO_MONTH = re.compile(r"\b(1[6-9]\d{2}|20\d{2})-(\d{1,2})\b")
 _OR = re.compile(r"\b(1[6-9]\d{2}|20\d{2})\s+or\s+(1[6-9]\d{2}|20\d{2})\b", re.I)
+_MONTH_NAMES = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sept": 9,
+    "sep": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
+_MONTH_ALT = "|".join(sorted(_MONTH_NAMES, key=len, reverse=True))
+_YEAR_PART = r"(1[6-9]\d{2}|20\d{2})"
+_DAY_PART = r"(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?"
+_ISO_WHOLE = re.compile(rf"^{_YEAR_PART}-(\d{{1,2}})-(\d{{1,2}})$")
+_MDY = re.compile(rf"^({_MONTH_ALT})\.?\s+{_DAY_PART},?\s+{_YEAR_PART}$", re.I)
+_DMY = re.compile(rf"^{_DAY_PART}\s+({_MONTH_ALT})\.?,?\s+{_YEAR_PART}$", re.I)
 
 
 @dataclass(frozen=True)
@@ -52,11 +84,46 @@ def can_queue_capture(date: ScanDate) -> bool:
     )
 
 
+def parse_whole_calendar_day(text: str) -> ScanDate | None:
+    """One complete calendar day when the whole label is that date. No substrings."""
+    raw = text.strip()
+    if not raw or len(raw) > 80:
+        return None
+    if "?" in raw or re.search(r"\bor\b", raw, re.I):
+        return None
+    match = _ISO_WHOLE.fullmatch(raw)
+    if match:
+        year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        if _valid_day(year, month, day):
+            return ScanDate("day", raw, year, month, day)
+        return None
+    match = _MDY.fullmatch(raw)
+    if match:
+        month = _MONTH_NAMES[match.group(1).casefold()]
+        day = int(re.sub(r"(?:st|nd|rd|th)$", "", match.group(2), flags=re.I))
+        year = int(match.group(3))
+        if _valid_day(year, month, day):
+            return ScanDate("day", raw, year, month, day)
+        return None
+    match = _DMY.fullmatch(raw)
+    if match:
+        day = int(re.sub(r"(?:st|nd|rd|th)$", "", match.group(1), flags=re.I))
+        month = _MONTH_NAMES[match.group(2).casefold()]
+        year = int(match.group(3))
+        if _valid_day(year, month, day):
+            return ScanDate("day", raw, year, month, day)
+        return None
+    return None
+
+
 def parse_date_text(blob: str) -> list[ScanDate]:
     """Conservative readings from user or model text. Empty when nothing is dated."""
     text = blob.strip()
     if not text:
         return []
+    whole = parse_whole_calendar_day(text)
+    if whole is not None:
+        return [whole]
     found: list[ScanDate] = []
     for match in _OR.finditer(text):
         left, right = int(match.group(1)), int(match.group(2))

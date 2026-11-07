@@ -29,6 +29,7 @@ from tui_renamer.scan_backend import (
 from tui_renamer.scan_bits import (
     Bit,
     apply_scan_suffix,
+    bits_from_recognition,
     capture_from_bits,
     description_from_bits,
     format_scan_part,
@@ -41,7 +42,13 @@ from tui_renamer.scan_bits import (
 )
 from tui_renamer.scan_candidates import FileClocks, aware_delta, score_candidates
 from tui_renamer.scan_config import host_is_local
-from tui_renamer.scan_dates import ScanDate, can_queue_capture, parse_date_text, parse_model_dates
+from tui_renamer.scan_dates import (
+    ScanDate,
+    can_queue_capture,
+    parse_date_text,
+    parse_model_dates,
+    parse_whole_calendar_day,
+)
 from tui_renamer.scan_models import (
     DEFAULT,
     LIGHT,
@@ -153,6 +160,13 @@ def test_season_and_day_parse() -> None:
     day = parse_date_text("1961-07-04")
     assert day[0].kind == "day"
     assert day[0].day == 4
+    english = parse_date_text("Oct 20, 1994")
+    assert len(english) == 1
+    assert english[0].kind == "day"
+    assert english[0].year == 1994
+    assert english[0].month == 10
+    assert english[0].day == 20
+    assert english[0].text == "Oct 20, 1994"
 
 
 def test_notes_sidecar_is_not_a_takeout_date(tmp_path: Path) -> None:
@@ -734,7 +748,37 @@ def test_written_day_filename_uses_existing_clock() -> None:
         use_name=True,
         name_order=1,
     )
-    assert format_scan_selected([text], RenameRules()) == ["Oct 20, 1994"]
+    assert format_scan_selected([text], RenameRules()) == [noon]
+    token = Bit(
+        kind="token",
+        label="Oct 20, 1994",
+        source="a.jpg",
+        model="mock",
+        origin="inferred",
+        use_name=True,
+        name_order=1,
+    )
+    assert format_scan_selected([token], RenameRules()) == [noon]
+    assert token.use_meta is False
+    sentence = Bit(
+        kind="text",
+        label="Aunt May picnic Oct 20, 1994",
+        source="a.jpg",
+        model="",
+        origin="written",
+        use_name=True,
+        name_order=1,
+    )
+    assert format_scan_selected([sentence], RenameRules()) == ["Aunt May picnic Oct 20, 1994"]
+    assert parse_whole_calendar_day("Oct 20, 1994") is not None
+    assert parse_whole_calendar_day("October 20, 1994") is not None
+    assert parse_whole_calendar_day("20 October 1994") is not None
+    assert parse_whole_calendar_day("Oct. 20th, 1994") is not None
+    assert parse_whole_calendar_day("Aunt May picnic Oct 20, 1994") is None
+    assert parse_whole_calendar_day("Oct 20, 1994 or 1995") is None
+    assert parse_whole_calendar_day("Feb 31, 1994") is None
+    assert parse_whole_calendar_day("October 1994") is None
+    assert format_scan_parts(["Oct 20, 1994"], RenameRules()) == [noon]
     alt = parse_date_text("1952 or 1953")
     assert all(item.uncertain for item in alt)
     assert format_scan_selected([_date_bit(alt[0])], RenameRules()) == [alt[0].text]
@@ -742,6 +786,22 @@ def test_written_day_filename_uses_existing_clock() -> None:
     assert "12:00" in chip.tooltip()
     assert "assumed" in chip.tooltip()
     assert chip.label == "Oct 20, 1994"
+    found = bits_from_recognition(
+        transcription="Aunt May picnic Oct 20, 1994",
+        dates=[],
+        tokens=["Oct 20, 1994"],
+        people_present=None,
+        people_count=None,
+        source="a.jpg",
+        model="mock",
+    )
+    token_bit = next(item for item in found if item.kind == "token")
+    token_bit.use_name = True
+    token_bit.name_order = 1
+    assert format_scan_selected([token_bit], RenameRules()) == [noon]
+    assert token_bit.use_meta is False
+    moment, _text = capture_from_bits([token_bit], timezone.utc)
+    assert moment is None
 
 
 def test_notes_roundtrip_keeps_name_suffix(tmp_path: Path) -> None:

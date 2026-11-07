@@ -1613,6 +1613,127 @@ async def test_scan_written_day_filename_clock_apply_reopen(tmp_path: Path) -> N
         assert app.preview_for(other_index) == "plain.jpg"
 
 
+async def test_scan_english_date_token_typed_and_notes_preview(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_bits import Bit
+    from tui_renamer.scan_notes import ScanNotes, notes_path_for, save_notes
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "2026-11-05-13-44-0041.tiff"
+    other = tmp_path / "plain.jpg"
+    _jpeg_photo(photo, (8, 8, 8))
+    _jpeg_photo(other, (9, 9, 9))
+    expected = "2026-11-05-13-44-0041-1994-10-20-120000.tiff"
+    backend = MockBackend(
+        transcription="Aunt May picnic Oct 20, 1994",
+        dates=[],
+        tokens=["Oct 20, 1994"],
+        people_present=None,
+        people_count=None,
+    )
+    app = RenamerApp(tmp_path)
+    app.scan_backend = backend
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review.query_one("#scan-model", Input).value = "mock"
+        review.action_read()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        token = next(item for item in review.bits if item.label == "Oct 20, 1994")
+        assert token.kind == "token"
+        review._toggle_name(token)
+        shown = str(review.query_one("#scan-name-preview").render())
+        assert f"New: {expected}" in shown
+        assert token.label == "Oct 20, 1994"
+        assert token.use_meta is False
+        sentence = next(
+            item for item in review.bits if "picnic" in item.label and item.kind == "text"
+        )
+        review._toggle_name(sentence)
+        shown = str(review.query_one("#scan-name-preview").render())
+        assert "Oct 20, 1994" in shown
+        assert "1994-10-20-120000" in shown
+        while sentence.use_name:
+            review._toggle_name(sentence)
+        review.action_close()
+        await pilot.pause()
+        assert app.preview_for(0) == expected
+        assert str(photo) not in app.scan_pending
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        add = review.query_one("#scan-add", Input)
+        add.value = "Oct 20, 1994"
+        add.focus()
+        await pilot.press("enter")
+        typed = next(
+            item
+            for item in review.bits
+            if item.manual and item.label == "Oct 20, 1994" and item.kind == "date"
+        )
+        assert typed.use_meta is False
+        review.action_close()
+        await pilot.pause()
+        other_index = next(
+            index for index, path in enumerate(app.files) if path.name == "plain.jpg"
+        )
+        assert app.preview_for(other_index) == "plain.jpg"
+
+    notes_photo = tmp_path / "oldscan.jpg"
+    _jpeg_photo(notes_photo, (3, 3, 3))
+    save_notes(
+        notes_path_for(notes_photo),
+        ScanNotes(
+            front=notes_photo.name,
+            back=None,
+            pairing_reason="none",
+            pairing_confirmed=False,
+            engine="mock",
+            model="mock",
+            raw_transcription="Oct 20, 1994 Aunt May",
+            notes="",
+            bits=[
+                Bit(
+                    kind="token",
+                    label="Oct 20, 1994",
+                    source=notes_photo.name,
+                    model="mock",
+                    origin="inferred",
+                    use_name=True,
+                    name_order=1,
+                )
+            ],
+        ),
+    )
+    app2 = RenamerApp(tmp_path)
+    app2.scan_backend = MockBackend(dates=[], tokens=[], transcription="")
+    async with app2.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        index = next(i for i, path in enumerate(app2.files) if path.name == notes_photo.name)
+        app2._cursor = index
+        await pilot.press("S")
+        await pilot.pause()
+        review = app2.screen
+        assert isinstance(review, ReviewScreen)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        restored = next(item for item in review.bits if item.label == "Oct 20, 1994")
+        assert restored.kind == "token"
+        assert restored.date is None
+        shown = str(review.query_one("#scan-name-preview").render())
+        assert "New: oldscan-1994-10-20-120000.jpg" in shown
+        assert restored.use_meta is False
+        review.action_close()
+        await pilot.pause()
+        assert app2.preview_for(index) == "oldscan-1994-10-20-120000.jpg"
+        assert notes_photo.name not in [item.path.name for item in app2.scan_pending.values()]
+
+
 async def test_scan_lock_ignores_suffix(tmp_path: Path) -> None:
     from tui_renamer.scan_backend import MockBackend
     from tui_renamer.scan_ui import ReviewScreen
