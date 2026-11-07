@@ -9,17 +9,19 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Protocol
 
 from PIL import Image
 
-from tui_renamer.scan_config import DEFAULT_HOST, valid_host
+from tui_renamer.scan_config import DEFAULT_HOST, host_is_local, valid_host
 from tui_renamer.scan_dates import ScanDate, parse_model_dates
+from tui_renamer.scan_models import DEFAULT, MAX_PULL, pull_command
 from tui_renamer.scan_notes import MAX_TEXT
 
 MAX_IMAGE_EDGE = 1280
@@ -27,6 +29,9 @@ MAX_ENCODED = 4 * 1024 * 1024
 MAX_RESPONSE = 1 * 1024 * 1024
 DEFAULT_TIMEOUT = 60
 MAX_TIMEOUT = 120
+DISCOVER_TIMEOUT = 5
+DISCOVER_BUDGET = 12
+MAX_DISCOVER = 24
 
 PROMPT = (
     "Transcribe handwritten or stamped text from this photograph back. "
@@ -83,6 +88,9 @@ class ScanBackend(Protocol):
     def recognize(self, image: Path, *, model: str) -> Recognition:
         """Read a back image. Raise BackendError on failure."""
 
+    def list_vision_models(self) -> list[str]:
+        """Installed vision model names, or empty."""
+
 
 @dataclass
 class MockBackend:
@@ -92,6 +100,8 @@ class MockBackend:
     notes: str = ""
     dates: list[ScanDate] | None = None
     error: str | None = None
+    vision_models: list[str] = field(default_factory=list)
+    discover_error: str | None = None
 
     def recognize(self, image: Path, *, model: str) -> Recognition:
         del image
@@ -111,6 +121,11 @@ class MockBackend:
             raw=self.transcription,
         )
 
+    def list_vision_models(self) -> list[str]:
+        if self.discover_error:
+            raise BackendError(self.discover_error)
+        return list(self.vision_models)
+
 
 class OllamaBackend:
     """POST /api/generate with images and a JSON schema, as Ollama documents."""
@@ -120,10 +135,12 @@ class OllamaBackend:
         host: str = DEFAULT_HOST,
         timeout: int = DEFAULT_TIMEOUT,
         poster=None,
+        getter=None,
     ) -> None:
         self.host = host.rstrip("/")
         self.timeout = min(max(timeout, 1), MAX_TIMEOUT)
         self._poster = poster or post_json
+        self._getter = getter or get_json
 
     def recognize(self, image: Path, *, model: str) -> Recognition:
         name = model.strip()
@@ -148,7 +165,7 @@ class OllamaBackend:
         except TimeoutError as exc:
             raise BackendError("Ollama timed out.") from exc
         except urllib.error.HTTPError as exc:
-            raise BackendError(_http_error(exc)) from exc
+            raise BackendError(_http_error(exc, model=name)) from exc
         except urllib.error.URLError as exc:
             raise BackendError(
                 "Ollama is not reachable. Start it yourself if you want a reading."
@@ -156,6 +173,51 @@ class OllamaBackend:
         except OSError as exc:
             raise BackendError("Ollama is not reachable.") from exc
         return parse_ollama_body(body, model=name)
+
+    def list_vision_models(self) -> list[str]:
+        """Installed vision models on loopback only. Never scans a remote host."""
+        if not valid_host(self.host):
+            raise BackendError("The Ollama host URL is not valid.")
+        if not host_is_local(self.host):
+            return []
+        names = self._list_names()
+        found: list[str] = []
+        deadline = time.monotonic() + DISCOVER_BUDGET
+        for name in names[:MAX_DISCOVER]:
+            if time.monotonic() >= deadline:
+                break
+            if self._model_has_vision(name):
+                found.append(name)
+        return found
+
+    def _list_names(self) -> list[str]:
+        url = self.host + "/api/tags"
+        try:
+            body = self._getter(url, timeout=DISCOVER_TIMEOUT)
+        except TimeoutError as exc:
+            raise BackendError("Listing local Ollama models timed out.") from exc
+        except urllib.error.HTTPError as exc:
+            raise BackendError(_http_error(exc)) from exc
+        except urllib.error.URLError as exc:
+            raise BackendError(
+                "Ollama is not reachable. Start it yourself with: ollama serve"
+            ) from exc
+        except OSError as exc:
+            raise BackendError(
+                "Ollama is not reachable. Start it yourself with: ollama serve"
+            ) from exc
+        return parse_tags(body)
+
+    def _model_has_vision(self, name: str) -> bool:
+        url = self.host + "/api/show"
+        try:
+            body = self._poster(url, {"model": name}, timeout=DISCOVER_TIMEOUT)
+        except (TimeoutError, urllib.error.URLError, OSError, BackendError):
+            return False
+        try:
+            return show_has_vision(body)
+        except BackendError:
+            return False
 
 
 def encode_image(path: Path) -> str:
@@ -178,6 +240,16 @@ def encode_image(path: Path) -> str:
     if len(encoded) > MAX_ENCODED:
         raise BackendError("The back image is too large to send.")
     return encoded
+
+
+def get_json(url: str, *, timeout: int) -> bytes:
+    request = urllib.request.Request(
+        url,
+        method="GET",
+        headers={"Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read(MAX_RESPONSE + 1)
 
 
 def post_json(url: str, payload: dict, *, timeout: int) -> bytes:
@@ -205,7 +277,7 @@ def parse_ollama_body(body: bytes, *, model: str) -> Recognition:
         message = outer.get("error")
         if not isinstance(message, str) or not message.strip():
             message = "Ollama returned an error."
-        raise BackendError(message.strip()[:200])
+        raise BackendError(_vision_error(message.strip()[:200], model=model))
     raw = outer.get("response")
     if not isinstance(raw, str) or not raw.strip():
         raise BackendError("The Ollama reply had no text.")
@@ -243,9 +315,68 @@ def _clean_text(text: str) -> str:
     return cleaned[:MAX_TEXT]
 
 
-def _http_error(exc: urllib.error.HTTPError) -> str:
+def parse_tags(body: bytes) -> list[str]:
+    if len(body) > MAX_RESPONSE:
+        raise BackendError("The Ollama model list was too large.")
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+    except json.JSONDecodeError as exc:
+        raise BackendError("The Ollama model list was not JSON.") from exc
+    if not isinstance(data, dict):
+        raise BackendError("The Ollama model list was not an object.")
+    models = data.get("models")
+    if not isinstance(models, list):
+        raise BackendError("The Ollama model list was missing models.")
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        clean = name.strip()[:MAX_PULL]
+        if clean in seen:
+            continue
+        seen.add(clean)
+        names.append(clean)
+    return names
+
+
+def show_has_vision(body: bytes) -> bool:
+    """True when /api/show reports the documented vision capability."""
+    if len(body) > MAX_RESPONSE:
+        raise BackendError("The Ollama show reply was too large.")
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+    except json.JSONDecodeError as exc:
+        raise BackendError("The Ollama show reply was not JSON.") from exc
+    if not isinstance(data, dict):
+        raise BackendError("The Ollama show reply was not an object.")
+    caps = data.get("capabilities")
+    if isinstance(caps, list) and any(
+        isinstance(item, str) and item.casefold() == "vision" for item in caps
+    ):
+        return True
+    info = data.get("model_info")
+    if isinstance(info, dict) and any(isinstance(key, str) and ".vision." in key for key in info):
+        return True
+    return False
+
+
+def _vision_error(message: str, *, model: str) -> str:
+    lower = message.casefold()
+    if "vision" in lower or "image" in lower:
+        return (
+            f"{message} This looks like a text-only model. Pull a vision tag such as {DEFAULT.tag}."
+        )
+    return message
+
+
+def _http_error(exc: urllib.error.HTTPError, model: str = "") -> str:
     if exc.code == 404:
-        return "That Ollama model was not found."
+        tag = model.strip() or DEFAULT.tag
+        return f"That Ollama model was not found. Pull it yourself with: {pull_command(tag)}"
     if exc.code == 400:
         return "Ollama rejected the request."
     return f"Ollama HTTP {exc.code}."

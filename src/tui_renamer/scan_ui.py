@@ -14,8 +14,16 @@ from textual.widgets.option_list import Option
 
 from tui_renamer.preview import Preview, ThumbCache, build_preview, load_image_widget
 from tui_renamer.scan_backend import BackendError, Recognition, ScanBackend
-from tui_renamer.scan_config import ScanSettings, save_scan_settings
+from tui_renamer.scan_config import ScanSettings, host_is_local, save_scan_settings
 from tui_renamer.scan_dates import ScanDate, parse_date_text
+from tui_renamer.scan_models import (
+    DEFAULT,
+    LIGHT,
+    pull_command,
+    setup_lines,
+    suggested_rec,
+    total_ram_bytes,
+)
 from tui_renamer.scan_notes import ScanNotes, load_notes, notes_path_for, save_notes
 from tui_renamer.scan_pairing import PairRecord, suggest_pairs
 
@@ -32,6 +40,9 @@ class ReviewScreen(ModalScreen[str | None]):
         Binding("u", "unpair", show=False),
         Binding("r", "read", show=False),
         Binding("x", "cancel_read", show=False),
+        Binding("L", "use_light", show=False),
+        Binding("D", "use_default", show=False),
+        Binding("i", "installed", show=False),
     ]
 
     def __init__(
@@ -57,6 +68,12 @@ class ReviewScreen(ModalScreen[str | None]):
         self._engine = ""
         self._raw = ""
         self._picking = False
+        self._pick_kind = ""
+        self._ram = total_ram_bytes()
+        self._installed: list[str] | None = None
+        self._discover_error = ""
+        self._remote_ok = False
+        self._local = host_is_local(settings.host)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="scan-dialog"):
@@ -65,8 +82,10 @@ class ReviewScreen(ModalScreen[str | None]):
             with Horizontal(id="scan-previews"):
                 yield Vertical(id="scan-front-slot")
                 yield Vertical(id="scan-back-slot")
+            yield Static("", id="scan-setup", markup=False)
+            yield Static("", id="scan-cmd", markup=False)
             yield Static(
-                "Model (local Ollama). Leave blank to type the back yourself.",
+                "Model. Leave blank to type the back yourself. Override any pick.",
                 markup=False,
             )
             yield Input(placeholder="model name", id="scan-model")
@@ -115,17 +134,37 @@ class ReviewScreen(ModalScreen[str | None]):
                     compact=True,
                     tooltip="Close without saving",
                 )
+                yield Button(
+                    "L Light",
+                    id="scan-light",
+                    compact=True,
+                    tooltip=f"Use {LIGHT.tag}",
+                )
+                yield Button(
+                    "D Default",
+                    id="scan-default",
+                    compact=True,
+                    tooltip=f"Use {DEFAULT.tag}",
+                )
+                yield Button(
+                    "i Installed",
+                    id="scan-installed",
+                    compact=True,
+                    tooltip="List local vision models",
+                )
             yield OptionList(id="scan-pick")
             yield Static(
-                "j/k next pair. Reading never writes EXIF. Accept writes a .rn-notes.json sidecar.",
+                "j/k next pair. L light rec, D default rec. Reading never writes EXIF.",
                 markup=False,
             )
 
     def on_mount(self) -> None:
         self.query_one("#scan-model", Input).value = self.settings.model
         self.query_one("#scan-pick", OptionList).display = False
+        self._paint_setup()
         self._show()
         self.query_one("#scan-text", Input).focus()
+        self._discover()
 
     def action_close(self) -> None:
         self._cancel_worker()
@@ -168,6 +207,37 @@ class ReviewScreen(ModalScreen[str | None]):
             picker.add_option(Option(path.name, id=str(path)))
         picker.display = True
         self._picking = True
+        self._pick_kind = "pair"
+        picker.focus()
+
+    def action_use_light(self) -> None:
+        self._set_model(LIGHT.tag)
+
+    def action_use_default(self) -> None:
+        self._set_model(DEFAULT.tag)
+
+    def action_installed(self) -> None:
+        if not self._local:
+            self._status("Installed list is only for a local Ollama host.")
+            return
+        names = self._installed
+        if names is None:
+            self._status("Still checking local Ollama.")
+            return
+        if not names:
+            rec = suggested_rec(self._ram)
+            self._status(
+                f"No vision models on the local server. Pull one with: {rec.pull_command()}"
+            )
+            self.query_one("#scan-cmd", Static).update(rec.pull_command())
+            return
+        picker = self.query_one("#scan-pick", OptionList)
+        picker.clear_options()
+        for name in names:
+            picker.add_option(Option(name, id=name))
+        picker.display = True
+        self._picking = True
+        self._pick_kind = "model"
         picker.focus()
 
     def action_read(self) -> None:
@@ -178,6 +248,18 @@ class ReviewScreen(ModalScreen[str | None]):
             self._status("Pair a back first, or type the text by hand.")
             return
         model = self.query_one("#scan-model", Input).value.strip()
+        if not model:
+            self._status(
+                "No model name. Type the back by hand, or pick Light or Default, then Read."
+            )
+            return
+        if not self._local and not self._remote_ok:
+            self._remote_ok = True
+            self._status(
+                f"This host is not this computer. Read again to send the back image to "
+                f"{self.settings.host}."
+            )
+            return
         self._persist_model(model)
         self._busy = True
         self._job += 1
@@ -230,8 +312,15 @@ class ReviewScreen(ModalScreen[str | None]):
     @on(OptionList.OptionSelected, "#scan-pick")
     def _picked(self, event: OptionList.OptionSelected) -> None:
         ident = event.option_id
+        kind = self._pick_kind
         self._picking = False
+        self._pick_kind = ""
         self.query_one("#scan-pick", OptionList).display = False
+        if kind == "model":
+            if ident:
+                self._set_model(ident)
+                self._status(f"Using installed model {ident}.")
+            return
         if not ident or not self.records:
             return
         back = Path(ident)
@@ -256,6 +345,9 @@ class ReviewScreen(ModalScreen[str | None]):
             "scan-unpair": self.action_unpair,
             "scan-pair-btn": self.action_pair,
             "scan-close": self.action_close,
+            "scan-light": self.action_use_light,
+            "scan-default": self.action_use_default,
+            "scan-installed": self.action_installed,
         }.get(event.button.id or "")
         if run:
             run()
@@ -352,6 +444,25 @@ class ReviewScreen(ModalScreen[str | None]):
     def _status(self, message: str) -> None:
         self.query_one("#scan-status", Static).update(message)
 
+    def _set_model(self, tag: str) -> None:
+        self.query_one("#scan-model", Input).value = tag
+        self._persist_model(tag)
+        self.query_one("#scan-cmd", Static).update(pull_command(tag))
+        self._status(f"Model set to {tag}. Pull it yourself if it is not installed.")
+
+    def _paint_setup(self) -> None:
+        lines = setup_lines(
+            host=self.settings.host,
+            local_host=self._local,
+            total_bytes=self._ram,
+            installed=self._installed,
+            discover_error=self._discover_error,
+        )
+        self.query_one("#scan-setup", Static).update("\n".join(lines))
+        rec = suggested_rec(self._ram)
+        current = self.query_one("#scan-model", Input).value.strip()
+        self.query_one("#scan-cmd", Static).update(pull_command(current or rec.tag))
+
     def _persist_model(self, model: str) -> None:
         save_scan_settings(ScanSettings(host=self.settings.host, model=model))
         self.settings = ScanSettings(host=self.settings.host, model=model)
@@ -360,6 +471,23 @@ class ReviewScreen(ModalScreen[str | None]):
         for worker in self.workers:
             if worker.group == "scan-ocr":
                 worker.cancel()
+
+    @work(thread=True, exclusive=True, group="scan-discover", exit_on_error=False)
+    def _discover(self) -> None:
+        if not self._local:
+            self.app.call_from_thread(self._discover_done, [], "")
+            return
+        try:
+            names = self.backend.list_vision_models()
+        except BackendError as exc:
+            self.app.call_from_thread(self._discover_done, [], str(exc))
+            return
+        self.app.call_from_thread(self._discover_done, names, "")
+
+    def _discover_done(self, names: list[str], error: str) -> None:
+        self._installed = names
+        self._discover_error = error
+        self._paint_setup()
 
     @work(thread=True, exclusive=True, group="scan-ocr", exit_on_error=False)
     def _run_read(self, image: Path, model: str, job: int) -> None:

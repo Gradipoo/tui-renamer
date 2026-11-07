@@ -87,7 +87,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Actions",
         "S",
         "Scan review",
-        "Review a scan front and back",
+        "Review a scan front and back. Ollama is optional",
         "scan_review",
     ),
     _spec("Actions", "ctrl+0", "Reset view", "Reset preview and zoom", "reset_view"),

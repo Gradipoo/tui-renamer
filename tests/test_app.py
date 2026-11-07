@@ -731,6 +731,7 @@ async def test_scan_review_is_off_at_startup_then_accepts(tmp_path: Path) -> Non
         await pilot.pause()
         assert isinstance(app.screen, ReviewScreen)
         review = app.screen
+        review.query_one("#scan-model", Input).value = "mock"
         review.action_read()
         await review.workers.wait_for_complete()
         await pilot.pause()
@@ -738,7 +739,7 @@ async def test_scan_review_is_off_at_startup_then_accepts(tmp_path: Path) -> Non
         assert "Aunt May" in text.value
         text.value = "edited 1952"
         review.query_one("#scan-dates", Input).value = "1952"
-        await pilot.click("#scan-accept")
+        review.action_accept()
         await pilot.pause()
         assert not isinstance(app.screen, ReviewScreen)
         notes = load_notes(notes_path_for(front))
@@ -805,6 +806,7 @@ async def test_scan_review_cancels_a_read(tmp_path: Path) -> None:
         await pilot.press("S")
         await pilot.pause()
         assert isinstance(app.screen, ReviewScreen)
+        app.screen.query_one("#scan-model", Input).value = "mock"
         app.screen.action_read()
         await pilot.pause()
         assert backend.started.wait(timeout=2)
@@ -816,3 +818,75 @@ async def test_scan_review_cancels_a_read(tmp_path: Path) -> None:
         await pilot.pause()
         backend.release.set()
         assert not notes_path_for(front).exists()
+
+
+async def test_scan_review_default_model_persists_and_manual_without_ollama(
+    tmp_path: Path,
+) -> None:
+    from PIL import Image
+
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_config import load_scan_settings
+    from tui_renamer.scan_models import DEFAULT
+    from tui_renamer.scan_notes import notes_path_for
+    from tui_renamer.scan_ui import ReviewScreen
+
+    front = tmp_path / "trip_a.jpg"
+    back = tmp_path / "trip_b.jpg"
+    Image.new("RGB", (12, 8), (5, 5, 5)).save(front, format="JPEG")
+    Image.new("RGB", (12, 8), (6, 6, 6)).save(back, format="JPEG")
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend(discover_error="Ollama is not reachable.")
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        setup = str(review.query_one("#scan-setup").render())
+        assert "optional" in setup.casefold()
+        assert "not reachable" in setup.casefold() or "ollama" in setup.casefold()
+        review.action_use_default()
+        assert review.query_one("#scan-model", Input).value == DEFAULT.tag
+        assert DEFAULT.pull_command() in str(review.query_one("#scan-cmd").render())
+        assert load_scan_settings().model == DEFAULT.tag
+        review.query_one("#scan-text", Input).value = "typed by hand"
+        review.query_one("#scan-dates", Input).value = "1952"
+        review.action_accept()
+        await pilot.pause()
+        assert notes_path_for(front).exists()
+
+
+async def test_scan_review_remote_host_needs_a_second_read(tmp_path: Path) -> None:
+    from PIL import Image
+
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_config import ScanSettings
+    from tui_renamer.scan_ui import ReviewScreen
+
+    front = tmp_path / "trip_a.jpg"
+    back = tmp_path / "trip_b.jpg"
+    Image.new("RGB", (12, 8), (7, 7, 7)).save(front, format="JPEG")
+    Image.new("RGB", (12, 8), (8, 8, 8)).save(back, format="JPEG")
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review.settings = ScanSettings(host="http://example.test:11434", model="mock")
+        review._local = False
+        review._remote_ok = False
+        review.query_one("#scan-model", Input).value = "mock"
+        review.action_read()
+        status = str(review.query_one("#scan-status").render())
+        assert "not this computer" in status
+        assert "example.test" in status
+        review.action_read()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert "Aunt May" in review.query_one("#scan-text", Input).value

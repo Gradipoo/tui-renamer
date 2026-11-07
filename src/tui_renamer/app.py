@@ -716,6 +716,8 @@ class RenamerApp(App[None]):
     ReviewScreen #scan-front-slot, ReviewScreen #scan-back-slot { width: 1fr; }
     ReviewScreen #scan-actions { height: auto; }
     ReviewScreen #scan-pick { height: 8; }
+    ReviewScreen #scan-setup { height: auto; max-height: 10; }
+    ReviewScreen #scan-cmd { height: auto; }
     #dialog {
         width: 72;
         max-width: 90%;

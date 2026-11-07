@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from datetime import timezone
 from pathlib import Path
 
@@ -16,8 +17,19 @@ from tui_renamer.scan_backend import (
     OllamaBackend,
     parse_ollama_body,
     parse_structured,
+    parse_tags,
+    show_has_vision,
 )
+from tui_renamer.scan_config import host_is_local
 from tui_renamer.scan_dates import parse_date_text, parse_model_dates
+from tui_renamer.scan_models import (
+    DEFAULT,
+    LIGHT,
+    pull_command,
+    recs_for_ram,
+    setup_lines,
+    suggested_rec,
+)
 from tui_renamer.scan_notes import (
     ScanNotes,
     is_notes_sidecar,
@@ -282,3 +294,115 @@ def test_ollama_timeout_and_http_error(tmp_path: Path) -> None:
     empty = OllamaBackend()
     with pytest.raises(BackendError, match="No model"):
         empty.recognize(path, model="  ")
+
+    def missing(_url: str, _payload: dict, *, timeout: int) -> bytes:
+        del timeout
+        raise urllib.error.HTTPError(
+            "http://127.0.0.1:11434/api/generate",
+            404,
+            "not found",
+            None,
+            None,
+        )
+
+    backend = OllamaBackend(poster=missing)
+    with pytest.raises(BackendError, match="ollama pull"):
+        backend.recognize(path, model="missing-vision")
+
+
+def test_tags_and_vision_filter() -> None:
+    names = parse_tags(
+        json.dumps(
+            {
+                "models": [
+                    {"name": "gemma3:4b"},
+                    {"name": "gemma3:1b"},
+                    {"name": "gemma3:4b"},
+                    {"size": 1},
+                ]
+            }
+        ).encode()
+    )
+    assert names == ["gemma3:4b", "gemma3:1b"]
+    with pytest.raises(BackendError, match="not JSON"):
+        parse_tags(b"nope")
+    with pytest.raises(BackendError, match="missing models"):
+        parse_tags(b"{}")
+    assert show_has_vision(b'{"capabilities": ["completion", "vision"]}') is True
+    assert show_has_vision(b'{"capabilities": ["completion"]}') is False
+    assert show_has_vision(b'{"model_info": {"gemma3.vision.block_count": 16}}') is True
+    with pytest.raises(BackendError, match="not JSON"):
+        show_has_vision(b"{")
+
+
+def test_list_vision_models_local_only_and_timeout() -> None:
+    shown: list[str] = []
+
+    def getter(_url: str, *, timeout: int) -> bytes:
+        del timeout
+        return json.dumps({"models": [{"name": "gemma3:4b"}, {"name": "gemma3:1b"}]}).encode()
+
+    def poster(url: str, payload: dict, *, timeout: int) -> bytes:
+        del timeout
+        shown.append(str(payload.get("model")))
+        if "generate" in url:
+            raise AssertionError("discovery must not generate")
+        name = payload.get("model")
+        if name == "gemma3:4b":
+            return json.dumps({"capabilities": ["completion", "vision"]}).encode()
+        return json.dumps({"capabilities": ["completion"]}).encode()
+
+    local = OllamaBackend(poster=poster, getter=getter)
+    assert local.list_vision_models() == ["gemma3:4b"]
+    assert shown == ["gemma3:4b", "gemma3:1b"]
+
+    remote = OllamaBackend(
+        host="http://example.test:11434",
+        poster=poster,
+        getter=getter,
+    )
+    assert remote.list_vision_models() == []
+
+    def late(_url: str, *, timeout: int) -> bytes:
+        del timeout
+        raise TimeoutError("slow")
+
+    timed = OllamaBackend(getter=late, poster=poster)
+    with pytest.raises(BackendError, match="timed out"):
+        timed.list_vision_models()
+
+    def down(_url: str, *, timeout: int) -> bytes:
+        del timeout
+        raise ConnectionRefusedError("nope")
+
+    missing = OllamaBackend(getter=down, poster=poster)
+    with pytest.raises(BackendError, match="ollama serve"):
+        missing.list_vision_models()
+
+
+def test_recommendations_and_setup_text() -> None:
+    assert LIGHT.tag == "qwen3.5:2b"
+    assert DEFAULT.tag == "gemma3:4b"
+    assert "gemma3:270m" not in {item.tag for item in recs_for_ram(None)}
+    assert suggested_rec(2 * 1024**3).tag == LIGHT.tag
+    assert suggested_rec(16 * 1024**3).tag == DEFAULT.tag
+    assert suggested_rec(None, tier="light").tag == LIGHT.tag
+    assert pull_command("gemma3:4b") == "ollama pull gemma3:4b"
+    assert "rm" not in pull_command("gemma3:4b; rm -rf /")
+    assert host_is_local("http://127.0.0.1:11434")
+    assert not host_is_local("http://example.test:11434")
+    lines = setup_lines(
+        host="http://example.test:11434",
+        local_host=False,
+        total_bytes=None,
+        installed=[],
+        discover_error="",
+    )
+    blob = " ".join(lines)
+    assert "optional" in blob.casefold()
+    assert "example.test" in blob
+    assert LIGHT.pull_command() in blob
+    assert DEFAULT.pull_command() in blob
+    body = json.dumps({"error": "this model does not support images"}).encode()
+    with pytest.raises(BackendError, match="text-only"):
+        parse_ollama_body(body, model="gemma3:1b")

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Optional scan review (`S`) for photo fronts and handwritten backs. Suggested pairs, manual pairing, and a notes sidecar. Recognition uses local Ollama only when you ask. It does not write EXIF.
+- Scan review recommends current Ollama vision tags, lists local vision models, and warns before sending a back image to a non-local host. It does not pull models or start the server.
 
 ## 0.1.3
 

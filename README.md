@@ -224,15 +224,26 @@ Pairs are suggested from names such as `_a`/`_b` and `_back`, then from neighbor
 
 A year stays a year. The app does not invent a day from a partial date, and it does not guess an era from the scene.
 
-Reading the back is optional. Type the text yourself, or send the back to a local [Ollama](https://ollama.com) vision model that you already installed and started. `rn` does not install a model, start the server, or upload images to a network host unless you set one in `scan.json`.
+Reading the back is optional. Type the text yourself, or send the back to a local [Ollama](https://ollama.com) vision model that you already installed and started. `rn` does not install Ollama, pull a model, start the server, or upload images unless you press Read. Host defaults to `http://127.0.0.1:11434`. A host that is not loopback shows a warning, and the first Read must be confirmed, because the back image is sent to that host.
+
+These tags were checked against the official library. They are not a handwriting-accuracy ranking, and we have not evaluated them on real scans.
+
+| Pick | Command | Download (not runtime RAM) | License | Source |
+| --- | --- | --- | --- | --- |
+| Light | `ollama pull qwen3.5:2b` | about 2.7 to 3.1 GB | Apache License 2.0 | [qwen3.5:2b](https://ollama.com/library/qwen3.5:2b) |
+| Default | `ollama pull gemma3:4b` | about 3.4 GB | Gemma Terms of Use | [gemma3:4b](https://ollama.com/library/gemma3:4b) |
+| Larger | `ollama pull gemma4:e4b` | about 6.6 to 9.5 GB | Gemma Terms of Use | [gemma4](https://ollama.com/library/gemma4) |
+
+`gemma3:270m` and `gemma3:1b` are text-only on the library page. Do not use those for a photo back. Official vision docs use `/api/generate` with an `images` array and a JSON `format` schema: [Vision](https://docs.ollama.com/capabilities/vision), [Generate](https://docs.ollama.com/api/generate). Installed models are listed with [GET /api/tags](https://docs.ollama.com/api/tags) and checked for vision with [POST /api/show](https://docs.ollama.com/api-reference/show-model-details) (`capabilities` includes `vision`). Discovery runs only against loopback. GPU notes: [Hardware](https://docs.ollama.com/gpu).
 
 ```bash
 # your machine, not rn
+# https://ollama.com/download
 ollama serve
-ollama pull gemma3
+ollama pull gemma3:4b
 ```
 
-In scan review, type the model name (for example `gemma3`) and press `r` to read. `x` cancels. Enter accepts. Esc closes without saving. Host defaults to `http://127.0.0.1:11434`. The model name is stored in the same config directory as the view settings.
+In scan review, press `L` or `D` for the light or default tag, or `i` to pick from local vision models, or type any name. `r` reads. `x` cancels. Enter accepts. Esc closes without saving. The model name is stored in `scan.json` next to the view settings. Total system RAM, when readable, is a conservative hint only. It is not free RAM or GPU VRAM.
 
 This path is not an accuracy claim. Mock tests check pairing, sidecar rules, and the UI. They do not measure real handwriting recognition.
 

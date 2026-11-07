@@ -47,6 +47,13 @@ def save_scan_settings(settings: ScanSettings) -> None:
         return
 
 
+def host_is_local(host: str) -> bool:
+    """True for loopback only. LAN and public hosts are remote."""
+    parsed = urlparse(host)
+    name = (parsed.hostname or "").casefold()
+    return name in {"127.0.0.1", "localhost", "::1"}
+
+
 def valid_host(host: str) -> bool:
     """http(s) URL with a host. file: and javascript: are rejected."""
     if not host or len(host) > MAX_HOST:
