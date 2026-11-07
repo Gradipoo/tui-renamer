@@ -12,6 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from tui_renamer.core import RenameRules
 from tui_renamer.preview import Preview, ThumbCache, build_preview, load_image_widget
 from tui_renamer.scan_backend import BackendError, Recognition, ScanBackend
 from tui_renamer.scan_bits import (
@@ -23,8 +24,9 @@ from tui_renamer.scan_bits import (
     bits_from_recognition,
     capture_from_bits,
     description_from_bits,
+    format_scan_parts,
     join_scan_name,
-    selected_slugs,
+    selected_labels,
     strip_accepted_suffix,
 )
 from tui_renamer.scan_candidates import Candidate, FileClocks, score_candidates, stat_clocks
@@ -515,6 +517,10 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         self._restored = True
         self._auto_started = True
 
+    def _name_rules(self) -> RenameRules:
+        rules = getattr(self.app, "rules", None)
+        return rules if isinstance(rules, RenameRules) else RenameRules()
+
     def _paint_name_preview(self) -> None:
         box = self.query_one("#scan-name-preview", Static)
         if self.locked:
@@ -525,7 +531,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         name = join_scan_name(
             stem,
             self.base_ext,
-            selected_slugs(self.bits),
+            format_scan_parts(selected_labels(self.bits), self._name_rules()),
             fallback=self.subject.name,
         )
         box.update(f"New: {name}")
@@ -570,7 +576,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
     def _session_record(self) -> ScanSession:
         return ScanSession(
             bits=self.bits,
-            suffix_parts=selected_slugs(self.bits),
+            suffix_parts=selected_labels(self.bits),
             engine=self._engine,
             raw=self._raw,
             model=self.settings.model,
@@ -602,7 +608,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         return StageResult(
             message=f"Staged {self.subject.name}. Apply writes the disk.{extra}",
             subject=self.subject,
-            suffix_parts=selected_slugs(self.bits),
+            suffix_parts=selected_labels(self.bits),
             pending=pending,
             session=self._session_record(),
         )

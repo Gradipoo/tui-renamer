@@ -89,7 +89,13 @@ from tui_renamer.metadata import (
     write_image_description,
 )
 from tui_renamer.scan_backend import OllamaBackend, ScanBackend
-from tui_renamer.scan_bits import PendingScan, ScanSession, StageResult, apply_scan_suffix
+from tui_renamer.scan_bits import (
+    PendingScan,
+    ScanSession,
+    StageResult,
+    apply_scan_suffix,
+    format_scan_parts,
+)
 from tui_renamer.scan_config import load_scan_settings
 from tui_renamer.scan_notes import (
     ScanNotes,
@@ -996,8 +1002,9 @@ class RenamerApp(App[None]):
         if index in self.locked:
             return self.locked[index]
         key = str(path)
-        parts = self.scan_suffix.get(key, [])
+        raw = self.scan_suffix.get(key, [])
         accepted = self.scan_accepted.get(key, [])
+        parts = format_scan_parts(raw, self.rules)
         if index in self.manual:
             return apply_scan_suffix(self.manual[index], parts, accepted=accepted)
         stem, ext = preview_base(path.name, self.facts_for(path), self.rules)
@@ -2266,8 +2273,6 @@ class RenamerApp(App[None]):
     ) -> None:
         key = str(result.subject)
         self.scan_suffix[key] = list(result.suffix_parts)
-        if result.suffix_parts:
-            self.scan_accepted[key] = list(result.suffix_parts)
         if result.session is not None:
             self.scan_sessions[key] = result.session
         if closing:
@@ -2477,7 +2482,11 @@ class RenamerApp(App[None]):
                 dates=[item.date for item in session.bits if item.date is not None],
                 bits=session.bits,
                 related_reason=session.related_reason,
-                name_suffix=list(session.suffix_parts),
+                name_suffix=list(
+                    self.scan_accepted.get(
+                        str(path), format_scan_parts(session.suffix_parts, self.rules)
+                    )
+                ),
             )
             try:
                 save_notes(notes_path_for(path), payload)
@@ -2576,6 +2585,11 @@ class RenamerApp(App[None]):
         errors: list[str] = []
         note_targets = {src for src, _name in pairs}
         note_targets.update(item.path for item in pending)
+        for path in note_targets:
+            key = str(path)
+            raw = self.scan_suffix.get(key, [])
+            if key in self.scan_suffix:
+                self.scan_accepted[key] = format_scan_parts(raw, self.rules)
         errors.extend(self._write_scan_notes(note_targets))
         if pairs:
             outcome = rename_paths(pairs)
@@ -2883,11 +2897,21 @@ class RenamerApp(App[None]):
         def restore_birth(path: Path, birth: float) -> None:
             set_birthtime(path, datetime.fromtimestamp(birth).astimezone(), setfile=self.setfile)
 
+        last = self.journal.batches[-1] if self.journal.batches else None
+        reverse = (
+            {op.dst: op.src for op in last.ops if isinstance(op, RenameOp)}
+            if last is not None
+            else {}
+        )
         result = self.journal.undo(restore_birth=restore_birth)
         if result is None:
             self.set_status("Nothing to undo.")
             self._update_status()
             return
+        if reverse:
+            self.scan_suffix = self._remap_scan_map(self.scan_suffix, reverse)
+            self.scan_accepted = self._remap_scan_map(self.scan_accepted, reverse)
+            self.scan_sessions = self._remap_sessions(reverse)
         self.reload_files()
         message = f"Undid {result.kind} ({result.restored} restored)."
         if result.notes:

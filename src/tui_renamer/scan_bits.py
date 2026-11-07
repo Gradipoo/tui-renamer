@@ -7,8 +7,12 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tui_renamer.scan_dates import ScanDate, can_queue_capture
+
+if TYPE_CHECKING:
+    from tui_renamer.core import RenameRules
 
 MAX_SLUG = 40
 MAX_CHIPS = 24
@@ -89,16 +93,23 @@ class StageResult:
     session: ScanSession | None = None
 
 
-def slug_piece(text: str) -> str:
-    piece = re.sub(r"[^A-Za-z0-9]+", "-", text.strip())
-    return piece.strip("-")[:MAX_SLUG]
-
-
-def selected_slugs(bits: list[Bit]) -> list[str]:
+def selected_labels(bits: list[Bit]) -> list[str]:
     chosen = [(index, item) for index, item in enumerate(bits) if item.use_name]
     chosen.sort(key=lambda pair: (pair[1].name_order or 0, pair[0]))
-    parts = [slug_piece(item.label) for _index, item in chosen]
-    return [part for part in parts if part]
+    return [item.label.strip() for _index, item in chosen if item.label.strip()]
+
+
+def format_scan_part(text: str, rules: RenameRules) -> str:
+    """Apply ordinary filename format toggles to one S tag. Labels stay raw."""
+    from tui_renamer.core import clean_filename
+
+    piece = text.replace("\0", "").replace("/", " ").replace("\\", " ").strip()
+    piece = clean_filename(piece, rules)
+    return piece[:MAX_SLUG]
+
+
+def format_scan_parts(labels: list[str], rules: RenameRules) -> list[str]:
+    return [part for part in (format_scan_part(item, rules) for item in labels) if part]
 
 
 def strip_accepted_suffix(stem: str, accepted: list[str]) -> str:
@@ -117,6 +128,7 @@ def strip_accepted_suffix(stem: str, accepted: list[str]) -> str:
 
 def join_scan_name(stem: str, ext: str, parts: list[str], *, fallback: str) -> str:
     extra = "-".join(part for part in parts if part)
+    extra = re.sub(r"--+", "-", extra).strip("-_")
     if stem and extra:
         return f"{stem}-{extra}{ext}"
     if extra:

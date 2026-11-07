@@ -25,9 +25,10 @@ from tui_renamer.scan_bits import (
     apply_scan_suffix,
     capture_from_bits,
     description_from_bits,
+    format_scan_part,
+    format_scan_parts,
     join_scan_name,
-    selected_slugs,
-    slug_piece,
+    selected_labels,
     strip_accepted_suffix,
 )
 from tui_renamer.scan_candidates import FileClocks, aware_delta, score_candidates
@@ -615,15 +616,16 @@ def test_scan_suffix_order_strip_and_empty_base() -> None:
         name_order=1,
     )
     unused = Bit(kind="text", label="skip", source="a.jpg", model="", origin="written")
-    assert selected_slugs([first, second, unused]) == ["alpha", "beta"]
+    assert selected_labels([first, second, unused]) == ["alpha", "beta"]
     first.label = "beta-edit"
-    assert selected_slugs([first, second]) == ["alpha", "beta-edit"]
+    assert selected_labels([first, second]) == ["alpha", "beta-edit"]
     first.use_name = False
     first.name_order = 0
     first.use_name = True
     first.name_order = 3
-    assert selected_slugs([first, second]) == ["alpha", "beta-edit"]
-    assert slug_piece("Aunt May!") == "Aunt-May"
+    assert selected_labels([first, second]) == ["alpha", "beta-edit"]
+    first.label = "Aunt May!"
+    assert selected_labels([first, second]) == ["alpha", "Aunt May!"]
     assert strip_accepted_suffix("photo-picnic", ["picnic"]) == "photo"
     assert strip_accepted_suffix("picnic", ["picnic"]) == ""
     assert strip_accepted_suffix("photo-picnic", []) == "photo-picnic"
@@ -634,6 +636,41 @@ def test_scan_suffix_order_strip_and_empty_base() -> None:
     assert apply_scan_suffix("photo.jpg", ["tag"], stem="") == "tag.jpg"
     assert apply_scan_suffix("photo-picnic.jpg", ["lake"], accepted=["picnic"]) == "photo-lake.jpg"
     assert apply_scan_suffix("photo.jpg", []) == "photo.jpg"
+
+
+def test_format_scan_parts_follows_rename_rules() -> None:
+    raw = ["Aunt May!"]
+    assert format_scan_parts(raw, RenameRules()) == ["Aunt May!"]
+    assert format_scan_parts(raw, RenameRules(remove_caps=True)) == ["aunt may!"]
+    assert format_scan_parts(raw, RenameRules(remove_special=True)) == ["Aunt May"]
+    assert format_scan_parts(raw, RenameRules(replace_spaces=True)) == ["Aunt-May!"]
+    assert format_scan_parts(["file.name"], RenameRules(replace_dots=True)) == ["file-name"]
+    combo = RenameRules(
+        remove_caps=True,
+        remove_special=True,
+        replace_spaces=True,
+        replace_dots=True,
+    )
+    assert format_scan_parts(["Aunt May!"], combo) == ["aunt-may"]
+    assert format_scan_parts(["Hello.World!"], combo) == ["hello-world"]
+    assert format_scan_parts(["!!!", "ok"], RenameRules(remove_special=True)) == ["ok"]
+    assert format_scan_parts(["foo/bar"], RenameRules()) == ["foo bar"]
+    assert format_scan_parts(["  ", ""], RenameRules()) == []
+    long_label = "n" * 80
+    assert format_scan_part(long_label, RenameRules()) == "n" * 40
+    joined = join_scan_name(
+        "keep",
+        ".jpg",
+        format_scan_parts(["Aunt May!", "Lake"], combo),
+        fallback="keep.jpg",
+    )
+    assert joined == "keep-aunt-may-lake.jpg"
+    stamped = apply_scan_suffix(
+        "photo.jpg",
+        format_scan_parts(["Aunt May!"], combo),
+        stem="2020-01-01-000000-photo",
+    )
+    assert stamped == "2020-01-01-000000-photo-aunt-may.jpg"
 
 
 def test_notes_roundtrip_keeps_name_suffix(tmp_path: Path) -> None:
