@@ -34,9 +34,22 @@ class ScanDate:
     day: int | None = None
     season: str | None = None
     uncertain: bool = False
+    origin: str = "written"
 
     def as_line(self) -> str:
         return self.text.strip()
+
+
+def can_queue_capture(date: ScanDate) -> bool:
+    """True only for a complete written calendar day. No noon fill for year or month."""
+    return (
+        date.kind == "day"
+        and date.origin == "written"
+        and not date.uncertain
+        and date.year is not None
+        and date.month is not None
+        and date.day is not None
+    )
 
 
 def parse_date_text(blob: str) -> list[ScanDate]:
@@ -114,26 +127,28 @@ def _one_model_date(item: object) -> ScanDate | None:
     if isinstance(season_raw, str):
         season = SEASONS.get(season_raw.strip().casefold())
     uncertain = item.get("uncertain") is True
+    origin_raw = item.get("origin")
+    origin = origin_raw if origin_raw in {"written", "inferred"} else "written"
     if kind == "day":
         if year is None or month is None or day is None or not _valid_day(year, month, day):
             return None
-        return ScanDate("day", text.strip(), year, month, day, None, uncertain)
+        return ScanDate("day", text.strip(), year, month, day, None, uncertain, origin)
     if kind == "month":
         if year is None or month is None:
             return None
-        return ScanDate("month", text.strip(), year, month, None, None, uncertain)
+        return ScanDate("month", text.strip(), year, month, None, None, uncertain, origin)
     if kind == "season":
         if season is None:
             return None
-        return ScanDate("season", text.strip(), year, None, None, season, uncertain)
+        return ScanDate("season", text.strip(), year, None, None, season, uncertain, origin)
     if kind == "year":
         if year is None:
             return None
-        return ScanDate("year", text.strip(), year, None, None, None, uncertain)
+        return ScanDate("year", text.strip(), year, None, None, None, uncertain, origin)
     if kind == "range":
         if year is None:
             return None
-        return ScanDate("range", text.strip(), year, None, None, None, True)
+        return ScanDate("range", text.strip(), year, None, None, None, True, origin)
     return None
 
 
@@ -169,7 +184,15 @@ def _dedupe(items: list[ScanDate]) -> list[ScanDate]:
     seen: set[tuple[object, ...]] = set()
     unique: list[ScanDate] = []
     for item in items:
-        key = (item.kind, item.year, item.month, item.day, item.season, item.uncertain)
+        key = (
+            item.kind,
+            item.year,
+            item.month,
+            item.day,
+            item.season,
+            item.uncertain,
+            item.origin,
+        )
         if key in seen:
             continue
         seen.add(key)

@@ -1,4 +1,4 @@
-"""Versioned notes sidecars for accepted scan-back transcriptions.
+"""Versioned notes sidecars for accepted photo analysis.
 
 The file name is ``<image.name>.rn-notes.json``. That spelling is not in the
 Google Takeout candidate list. The payload also carries ``format: rn-notes`` so
@@ -13,10 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tui_renamer.scan_bits import Bit, dump_bits, load_bits
 from tui_renamer.scan_dates import ScanDate, parse_model_dates
 
 FORMAT = "rn-notes"
-VERSION = 1
+VERSION = 2
 SUFFIX = ".rn-notes.json"
 MAX_TEXT = 8000
 
@@ -34,6 +35,8 @@ class ScanNotes:
     dates: list[ScanDate] = field(default_factory=list)
     accepted_at: str = ""
     size_similar: bool = False
+    bits: list[Bit] = field(default_factory=list)
+    related_reason: str = ""
 
 
 def notes_path_for(path: Path) -> Path:
@@ -80,6 +83,7 @@ def dump_notes(notes: ScanNotes) -> dict[str, Any]:
             "reason": notes.pairing_reason,
             "confirmed": notes.pairing_confirmed,
             "size_similar": notes.size_similar,
+            "related_reason": notes.related_reason,
         },
         "recognition": {
             "engine": notes.engine,
@@ -96,9 +100,11 @@ def dump_notes(notes: ScanNotes) -> dict[str, Any]:
                 "day": item.day,
                 "season": item.season,
                 "uncertain": item.uncertain,
+                "origin": item.origin,
             }
             for item in notes.dates
         ],
+        "bits": dump_bits(notes.bits),
         "accepted_at": notes.accepted_at,
     }
 
@@ -111,7 +117,7 @@ def load_notes(path: Path) -> ScanNotes | None:
     if not is_notes_document(data):
         return None
     version = data.get("version")
-    if version != VERSION:
+    if version not in {1, 2}:
         return None
     pairing = data.get("pairing") if isinstance(data.get("pairing"), dict) else {}
     recog = data.get("recognition") if isinstance(data.get("recognition"), dict) else {}
@@ -130,6 +136,7 @@ def load_notes(path: Path) -> ScanNotes | None:
     engine = recog.get("engine")
     model = recog.get("model")
     reason = pairing.get("reason")
+    related = pairing.get("related_reason")
     accepted = data.get("accepted_at")
     return ScanNotes(
         front=front,
@@ -143,6 +150,8 @@ def load_notes(path: Path) -> ScanNotes | None:
         dates=parse_model_dates(data.get("dates")),
         accepted_at=accepted if isinstance(accepted, str) else "",
         size_similar=pairing.get("size_similar") is True,
+        bits=load_bits(data.get("bits")),
+        related_reason=related if isinstance(related, str) else "",
     )
 
 
@@ -170,4 +179,6 @@ def rewrite_pairing_names(notes_file: Path, name_map: dict[str, str]) -> None:
     notes.front = name_map.get(notes.front, notes.front)
     if notes.back:
         notes.back = name_map.get(notes.back, notes.back)
+    for item in notes.bits:
+        item.source = name_map.get(item.source, item.source)
     save_notes(notes_file, notes)

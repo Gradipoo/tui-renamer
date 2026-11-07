@@ -11,7 +11,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.coordinate import Coordinate
 from textual.geometry import Region
-from textual.widgets import DataTable, Input, Static
+from textual.widgets import DataTable, Input, OptionList, Static
 
 from tui_renamer.app import (
     CommandScreen,
@@ -711,17 +711,23 @@ async def test_preview_and_zoom_are_remembered(tmp_path: Path) -> None:
         assert reset._zoom is None
 
 
-async def test_scan_review_is_off_at_startup_then_accepts(tmp_path: Path) -> None:
+def _chip_labels(review) -> list[str]:
+    return [str(button.label) for button in review.query(".scan-chip")]
+
+
+def _jpeg_photo(path: Path, color: tuple[int, int, int] = (10, 20, 30)) -> None:
     from PIL import Image
 
+    Image.new("RGB", (16, 12), color).save(path, format="JPEG")
+
+
+async def test_scan_review_is_off_at_startup_then_accepts(tmp_path: Path) -> None:
     from tui_renamer.scan_backend import MockBackend
     from tui_renamer.scan_notes import load_notes, notes_path_for
     from tui_renamer.scan_ui import ReviewScreen
 
-    front = tmp_path / "trip_a.jpg"
-    back = tmp_path / "trip_b.jpg"
-    Image.new("RGB", (16, 12), (10, 20, 30)).save(front, format="JPEG")
-    Image.new("RGB", (16, 12), (80, 80, 80)).save(back, format="JPEG")
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo)
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
@@ -731,36 +737,38 @@ async def test_scan_review_is_off_at_startup_then_accepts(tmp_path: Path) -> Non
         await pilot.pause()
         assert isinstance(app.screen, ReviewScreen)
         review = app.screen
+        assert review.related is None
+        assert review.query_one("#scan-help").display is False
         review.query_one("#scan-model", Input).value = "mock"
-        review.action_read()
+        review.query_one("#scan-model", Input).focus()
+        await pilot.press("enter")
         await review.workers.wait_for_complete()
         await pilot.pause()
-        text = review.query_one("#scan-text", Input)
-        assert "Aunt May" in text.value
-        text.value = "edited 1952"
-        review.query_one("#scan-dates", Input).value = "1952"
+        labels = _chip_labels(review)
+        assert any("Aunt May" in label for label in labels)
+        assert any("picnic" in label for label in labels)
+        list(review.query(".scan-chip"))[0].press()
+        await pilot.pause()
+        first = list(review.query(".scan-chip"))[0]
+        assert "name" in str(first.label)
+        assert "written" in review.bits[0].tooltip()
         review.action_accept()
         await pilot.pause()
         assert not isinstance(app.screen, ReviewScreen)
-        notes = load_notes(notes_path_for(front))
+        notes = load_notes(notes_path_for(photo))
         assert notes is not None
-        assert notes.pairing_confirmed is True
-        assert notes.dates[0].kind == "year"
-        assert notes.dates[0].day is None
+        assert notes.pairing_confirmed is False
         assert notes.raw_transcription
+        assert notes.bits
 
 
 async def test_scan_review_escape_does_not_write(tmp_path: Path) -> None:
-    from PIL import Image
-
     from tui_renamer.scan_backend import MockBackend
     from tui_renamer.scan_notes import notes_path_for
     from tui_renamer.scan_ui import ReviewScreen
 
-    front = tmp_path / "trip_a.jpg"
-    back = tmp_path / "trip_b.jpg"
-    Image.new("RGB", (12, 8), (1, 1, 1)).save(front, format="JPEG")
-    Image.new("RGB", (12, 8), (2, 2, 2)).save(back, format="JPEG")
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo, (1, 1, 1))
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
@@ -771,13 +779,11 @@ async def test_scan_review_escape_does_not_write(tmp_path: Path) -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, ReviewScreen)
-        assert not notes_path_for(front).exists()
+        assert not notes_path_for(photo).exists()
 
 
 async def test_scan_review_cancels_a_read(tmp_path: Path) -> None:
     import threading
-
-    from PIL import Image
 
     from tui_renamer.scan_backend import BackendError, Recognition
     from tui_renamer.scan_notes import notes_path_for
@@ -794,10 +800,14 @@ async def test_scan_review_cancels_a_read(tmp_path: Path) -> None:
             self.release.wait(timeout=5)
             raise BackendError("late")
 
-    front = tmp_path / "trip_a.jpg"
-    back = tmp_path / "trip_b.jpg"
-    Image.new("RGB", (12, 8), (3, 3, 3)).save(front, format="JPEG")
-    Image.new("RGB", (12, 8), (4, 4, 4)).save(back, format="JPEG")
+        def list_vision_models(self) -> list[str]:
+            return []
+
+        def list_loaded_models(self) -> list[str]:
+            return []
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo, (3, 3, 3))
     backend = HangBackend()
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
@@ -817,26 +827,25 @@ async def test_scan_review_cancels_a_read(tmp_path: Path) -> None:
         await pilot.press("escape")
         await pilot.pause()
         backend.release.set()
-        assert not notes_path_for(front).exists()
+        assert not notes_path_for(photo).exists()
 
 
-async def test_scan_review_default_model_persists_and_manual_without_ollama(
+async def test_scan_review_compact_status_help_installed_and_manual(
     tmp_path: Path,
 ) -> None:
-    from PIL import Image
-
     from tui_renamer.scan_backend import MockBackend
     from tui_renamer.scan_config import load_scan_settings
-    from tui_renamer.scan_models import DEFAULT
-    from tui_renamer.scan_notes import notes_path_for
+    from tui_renamer.scan_dates import ScanDate
+    from tui_renamer.scan_notes import load_notes, notes_path_for
     from tui_renamer.scan_ui import ReviewScreen
 
-    front = tmp_path / "trip_a.jpg"
-    back = tmp_path / "trip_b.jpg"
-    Image.new("RGB", (12, 8), (5, 5, 5)).save(front, format="JPEG")
-    Image.new("RGB", (12, 8), (6, 6, 6)).save(back, format="JPEG")
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo, (5, 5, 5))
     app = RenamerApp(tmp_path)
-    app.scan_backend = MockBackend(discover_error="Ollama is not reachable.")
+    app.scan_backend = MockBackend(
+        discover_error="Ollama is not reachable. Start it yourself with: ollama serve",
+        dates=[ScanDate("year", "1952", 1952)],
+    )
     async with app.run_test(size=(120, 42)) as pilot:
         await pilot.pause()
         await pilot.press("S")
@@ -845,31 +854,88 @@ async def test_scan_review_default_model_persists_and_manual_without_ollama(
         assert isinstance(review, ReviewScreen)
         await review.workers.wait_for_complete()
         await pilot.pause()
-        setup = str(review.query_one("#scan-setup").render())
-        assert "optional" in setup.casefold()
-        assert "not reachable" in setup.casefold() or "ollama" in setup.casefold()
-        review.action_use_default()
-        assert review.query_one("#scan-model", Input).value == DEFAULT.tag
-        assert DEFAULT.pull_command() in str(review.query_one("#scan-cmd").render())
-        assert load_scan_settings().model == DEFAULT.tag
-        review.query_one("#scan-text", Input).value = "typed by hand"
-        review.query_one("#scan-dates", Input).value = "1952"
+        models = str(review.query_one("#scan-models").render())
+        assert "ollama serve" in models.casefold() or "not reachable" in models.casefold()
+        assert review.query_one("#scan-help").display is False
+        review.action_help()
+        help_text = str(review.query_one("#scan-help").render())
+        assert "optional" in help_text.casefold()
+        box = review.query_one("#scan-model", Input)
+        box.value = "typed-vision"
+        box.focus()
+        await pilot.press("enter")
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert load_scan_settings().model == "typed-vision"
+        add = review.query_one("#scan-add", Input)
+        add.value = "1952"
+        add.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert any("1952" in item.label for item in review.bits)
         review.action_accept()
         await pilot.pause()
-        assert notes_path_for(front).exists()
+        notes = load_notes(notes_path_for(photo))
+        assert notes is not None
+        kinds = [item.date.kind for item in notes.bits if item.date is not None]
+        assert "year" in kinds
 
 
-async def test_scan_review_remote_host_needs_a_second_read(tmp_path: Path) -> None:
-    from PIL import Image
-
+async def test_scan_review_installed_loaded_and_related_browse(tmp_path: Path) -> None:
     from tui_renamer.scan_backend import MockBackend
-    from tui_renamer.scan_config import ScanSettings
     from tui_renamer.scan_ui import ReviewScreen
 
     front = tmp_path / "trip_a.jpg"
     back = tmp_path / "trip_b.jpg"
-    Image.new("RGB", (12, 8), (7, 7, 7)).save(front, format="JPEG")
-    Image.new("RGB", (12, 8), (8, 8, 8)).save(back, format="JPEG")
+    extra = tmp_path / "zz.jpg"
+    _jpeg_photo(front, (7, 7, 7))
+    _jpeg_photo(back, (8, 8, 8))
+    _jpeg_photo(extra, (9, 9, 9))
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend(
+        vision_models=["gemma3:4b", "qwen3.5:2b"],
+        loaded_models=["gemma3:4b"],
+    )
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        shown = str(review.query_one("#scan-models").render())
+        assert "gemma3:4b*" in shown or "gemma3:4b" in shown
+        review.action_installed()
+        picker = review.query_one("#scan-pick", OptionList)
+        assert picker.display is True
+        prompts = []
+        for index in range(picker.option_count):
+            prompt = picker.get_option_at_index(index).prompt
+            prompts.append(prompt.plain if hasattr(prompt, "plain") else str(prompt))
+        blob = " ".join(prompts)
+        assert "gemma3:4b" in blob
+        assert "loaded" in blob.casefold()
+        review.action_related()
+        picker = review.query_one("#scan-pick", OptionList)
+        prompts = []
+        for index in range(picker.option_count):
+            prompt = picker.get_option_at_index(index).prompt
+            prompts.append(prompt.plain if hasattr(prompt, "plain") else str(prompt))
+        blob = " ".join(prompts)
+        assert "Likely" in blob
+        assert "trip_b.jpg" in blob
+        assert "Unknown" in blob or "Unlikely" in blob or "Possible" in blob
+        assert "zz.jpg" in blob
+
+
+async def test_scan_review_remote_host_needs_a_second_read(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_config import ScanSettings
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo, (7, 7, 7))
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
@@ -889,4 +955,124 @@ async def test_scan_review_remote_host_needs_a_second_read(tmp_path: Path) -> No
         review.action_read()
         await review.workers.wait_for_complete()
         await pilot.pause()
-        assert "Aunt May" in review.query_one("#scan-text", Input).value
+        assert any("Aunt May" in label for label in _chip_labels(review))
+
+
+async def test_scan_review_stage_apply_overwrite_skip_and_undo(tmp_path: Path) -> None:
+    import piexif
+
+    from tui_renamer.metadata import read_exif, write_image_exif_datetime
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_dates import ScanDate
+    from tui_renamer.scan_notes import notes_path_for
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "keep.jpg"
+    _jpeg_photo(photo, (11, 12, 13))
+    write_image_exif_datetime(photo, datetime(2020, 6, 1, 17, 0, tzinfo=timezone.utc))
+    before = read_exif(photo).naive
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend(
+        dates=[ScanDate("day", "1961-07-04", 1961, 7, 4, origin="written")],
+        tokens=["lake"],
+    )
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review.query_one("#scan-model", Input).value = "mock"
+        review.action_read()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        for index, bit in enumerate(review.bits):
+            if bit.kind in {"date", "token", "text"}:
+                bit.cycle()
+                if bit.can_meta():
+                    bit.cycle()
+        review._paint_chips()
+        review.action_accept()
+        await pilot.pause()
+        assert notes_path_for(photo).exists()
+        assert read_exif(photo).naive == before
+        await pilot.press("enter")
+        question = str(app.screen.query_one("#confirm-question").render())
+        assert "skip" in question.casefold()
+        await pilot.press("y")
+        await pilot.pause()
+        current = photo if photo.exists() else next(tmp_path.glob("keep-*.jpg"))
+        assert read_exif(current).naive == before
+        loaded = piexif.load(str(current))
+        desc = loaded["0th"].get(piexif.ImageIFD.ImageDescription, b"")
+        assert b"lake" in desc or b"Aunt" in desc or b"June" in desc or desc
+        await pilot.press("u")
+        await pilot.pause()
+        assert read_exif(photo).naive == before
+
+
+async def test_scan_review_apply_writes_written_day_and_description(
+    tmp_path: Path,
+) -> None:
+    import piexif
+
+    from tui_renamer.metadata import read_exif
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_dates import ScanDate
+    from tui_renamer.scan_notes import notes_path_for
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "plain.jpg"
+    _jpeg_photo(photo, (20, 21, 22))
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend(
+        transcription="",
+        dates=[ScanDate("day", "1961-07-04", 1961, 7, 4, origin="written")],
+        tokens=["picnic"],
+        people_present=True,
+        people_count=1,
+    )
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review.query_one("#scan-model", Input).value = "mock"
+        review.action_read()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        people = next(item for item in review.bits if item.kind == "people")
+        people.cycle()
+        people.cycle()
+        assert people.use_name is False
+        for bit in review.bits:
+            if bit.kind in {"date", "token"}:
+                bit.use_name = True
+                bit.use_meta = True
+        review.action_accept()
+        await pilot.pause()
+        assert notes_path_for(photo).exists()
+        assert read_exif(photo).naive is None
+        assert app.scan_pending
+        item = next(iter(app.scan_pending.values()))
+        assert item.moment is not None
+        assert item.description == "picnic"
+        await pilot.press("enter")
+        question = str(app.screen.query_one("#confirm-question").render())
+        assert "capture" in question.casefold()
+        await pilot.press("y")
+        await pilot.pause()
+        renamed = sorted(tmp_path.glob("plain-*.jpg"))
+        assert renamed
+        assert "Wrote" in app._message
+        clock = read_exif(renamed[0])
+        assert clock.naive is not None
+        assert clock.naive.date().isoformat() == "1961-07-04"
+        assert clock.naive.hour == 12
+        loaded = piexif.load(str(renamed[0]))
+        assert loaded["0th"][piexif.ImageIFD.ImageDescription] == b"picnic"
+        await pilot.press("u")
+        await pilot.pause()
+        assert photo.exists()
+        assert read_exif(photo).naive is None

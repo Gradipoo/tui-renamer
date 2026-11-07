@@ -33,6 +33,7 @@ from tui_renamer.metadata import (
     windows_filetime,
     write_file_metadata_and_offset,
     write_geodata,
+    write_image_description,
     write_image_exif_datetime,
 )
 from tui_renamer.preview import HEIF_SUFFIXES, heif_ready
@@ -263,3 +264,14 @@ def test_snapshot_mode() -> None:
     assert snapshot_mode(Path("a.heic")) == "copy"
     assert snapshot_mode(Path("a.png")) == "copy"
     assert snapshot_mode(Path("a.txt")) == "times"
+
+
+def test_write_image_description_jpeg_only(tmp_path: Path) -> None:
+    path = tmp_path / "photo.jpg"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(path, format="JPEG")
+    assert write_image_description(path, "picnic; lake") is True
+    loaded = piexif.load(str(path))
+    assert loaded["0th"][piexif.ImageIFD.ImageDescription] == b"picnic; lake"
+    png = tmp_path / "photo.png"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(png, format="PNG")
+    assert write_image_description(png, "picnic") is False

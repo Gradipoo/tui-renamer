@@ -248,6 +248,30 @@ def _exiftool_offset(text: str) -> tuple[tzinfo | None, str]:
     return zone, f"{piece[0]}{hours:02d}:{minutes:02d}"
 
 
+def write_image_description(path: Path, text: str) -> bool:
+    """Write ImageDescription on JPEG or TIFF. Other types are left alone."""
+    if not PIEXIF_AVAILABLE or piexif is None:
+        return False
+    if path.suffix.lower() not in IMAGE_EXTENSIONS:
+        return False
+    clean = text.replace("\x00", "").strip()[:200]
+    if not clean:
+        return False
+    encoded = clean.encode("utf-8")
+    try:
+        exif_dict = piexif.load(str(path))
+    except Exception:
+        exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "Interop": {}, "1st": {}, "thumbnail": None}
+    if not isinstance(exif_dict.get("0th"), dict):
+        exif_dict["0th"] = {}
+    exif_dict["0th"][piexif.ImageIFD.ImageDescription] = encoded
+    try:
+        piexif.insert(piexif.dump(exif_dict), str(path))
+        return True
+    except Exception:
+        return False
+
+
 def write_image_exif_datetime(path: Path, moment: datetime) -> bool:
     """Write local date and the three EXIF 2.31 offset tags into JPEG or TIFF."""
     if not PIEXIF_AVAILABLE or piexif is None:

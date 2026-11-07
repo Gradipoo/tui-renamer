@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Optional scan review (`S`) for photo fronts and handwritten backs. Suggested pairs, manual pairing, and a notes sidecar. Recognition uses local Ollama only when you ask. It does not write EXIF.
-- Scan review recommends current Ollama vision tags, lists local vision models, and warns before sending a back image to a non-local host. It does not pull models or start the server.
+- Photo review (`S`) analyzes the highlighted image. Related files are optional. Results are chips you pick for a staged name and supported metadata. Accept writes a notes sidecar. Apply confirms disk rename and metadata. Recognition uses local Ollama only when you ask.
+- Photo review lists local vision models (with a loaded mark when Ollama reports one), warns before sending an image to a non-local host, and keeps long setup text in Help. It does not pull models or start the server.
 
 ## 0.1.3
 

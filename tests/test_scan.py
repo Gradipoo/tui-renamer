@@ -20,8 +20,10 @@ from tui_renamer.scan_backend import (
     parse_tags,
     show_has_vision,
 )
+from tui_renamer.scan_bits import Bit, capture_from_bits, description_from_bits
+from tui_renamer.scan_candidates import score_candidates
 from tui_renamer.scan_config import host_is_local
-from tui_renamer.scan_dates import parse_date_text, parse_model_dates
+from tui_renamer.scan_dates import ScanDate, can_queue_capture, parse_date_text, parse_model_dates
 from tui_renamer.scan_models import (
     DEFAULT,
     LIGHT,
@@ -406,3 +408,105 @@ def test_recommendations_and_setup_text() -> None:
     body = json.dumps({"error": "this model does not support images"}).encode()
     with pytest.raises(BackendError, match="text-only"):
         parse_ollama_body(body, model="gemma3:1b")
+
+
+def test_written_day_only_can_become_capture() -> None:
+    day = ScanDate("day", "1961-07-04", 1961, 7, 4, origin="written")
+    year = ScanDate("year", "1952", 1952, origin="written")
+    inferred = ScanDate("day", "1961-07-04", 1961, 7, 4, origin="inferred")
+    season = ScanDate("season", "summer 1961", 1961, season="summer", origin="written")
+    assert can_queue_capture(day) is True
+    assert can_queue_capture(year) is False
+    assert can_queue_capture(inferred) is False
+    assert can_queue_capture(season) is False
+    zone = timezone.utc
+    year_bit = Bit(
+        kind="date",
+        label=year.text,
+        source="a.jpg",
+        model="mock",
+        origin="written",
+        use_meta=True,
+        date=year,
+    )
+    inferred_bit = Bit(
+        kind="date",
+        label=inferred.text,
+        source="a.jpg",
+        model="mock",
+        origin="inferred",
+        use_meta=True,
+        date=inferred,
+    )
+    day_bit = Bit(
+        kind="date",
+        label=day.text,
+        source="a.jpg",
+        model="mock",
+        origin="written",
+        use_meta=True,
+        date=day,
+    )
+    assert capture_from_bits([year_bit], zone) == (None, "")
+    assert capture_from_bits([inferred_bit], zone) == (None, "")
+    moment, text = capture_from_bits([day_bit], zone)
+    assert text == "1961-07-04"
+    assert moment is not None
+    assert moment.hour == 12
+    assert moment.minute == 0
+    token = Bit(
+        kind="token",
+        label="picnic",
+        source="a.jpg",
+        model="mock",
+        origin="inferred",
+        use_meta=True,
+    )
+    assert description_from_bits([token]) == "picnic"
+
+
+def test_related_candidate_tiers(tmp_path: Path) -> None:
+    front = tmp_path / "trip_a.jpg"
+    back = tmp_path / "trip_b.jpg"
+    other = tmp_path / "letter.jpg"
+    _jpeg(front)
+    _jpeg(back)
+    _jpeg(other, (80, 60), (9, 9, 9))
+    rows = score_candidates(front, [front, back, other])
+    by_name = {item.path.name: item for item in rows}
+    assert by_name["trip_b.jpg"].tier == "likely"
+    assert by_name["trip_b.jpg"].label == "Likely"
+    assert "filename" in by_name["trip_b.jpg"].reason
+    assert by_name["letter.jpg"].tier == "unlikely"
+    assert "not disproven" in by_name["letter.jpg"].reason
+    only_size = tmp_path / "solo.jpg"
+    close = tmp_path / "near.jpg"
+    _jpeg(only_size, (40, 30))
+    _jpeg(close, (41, 30))
+    size_rows = score_candidates(only_size, [only_size, close])
+    assert size_rows[0].tier != "likely"
+    assert "size" in size_rows[0].reason
+    one = tmp_path / "scan-001.jpg"
+    two = tmp_path / "scan-002.jpg"
+    _jpeg(one)
+    _jpeg(two)
+    neighbor = score_candidates(one, [one, two])[0]
+    assert neighbor.tier == "possible"
+    assert neighbor.label == "Possible"
+
+
+def test_list_loaded_models_uses_ps() -> None:
+    def getter(url: str, *, timeout: int) -> bytes:
+        del timeout
+        if url.endswith("/api/ps"):
+            return json.dumps({"models": [{"name": "gemma3:4b"}]}).encode()
+        return json.dumps({"models": [{"name": "gemma3:4b"}]}).encode()
+
+    backend = OllamaBackend(getter=getter, poster=lambda *_a, **_k: b"{}")
+    assert backend.list_loaded_models() == ["gemma3:4b"]
+    remote = OllamaBackend(
+        host="http://example.test:11434",
+        getter=getter,
+        poster=lambda *_a, **_k: b"{}",
+    )
+    assert remote.list_loaded_models() == []

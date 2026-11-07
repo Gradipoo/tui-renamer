@@ -216,15 +216,17 @@ rn -d
 
 Hidden files and `.json` sidecars are not listed. Sidecars are read when JSON mode is on. Sidecar lookup matches Google Takeout names, including `name.jpg.json`. Notes from scan review use `name.jpg.rn-notes.json` and are never used as Takeout dates.
 
-## Scan review
+## Photo review
 
-`S` opens an optional review for scanned fronts and handwritten backs. Regular renaming is unchanged. Review does not start on its own.
+`S` opens an optional review for the highlighted photo. Regular renaming is unchanged. Review does not start on its own. A related file is never required.
 
-Pairs are suggested from names such as `_a`/`_b` and `_back`, then from neighboring files in folder order. Similar pixel size is a weak hint only. You can pair, unpair, or change the back. The original image files are not modified. Accept writes a versioned notes sidecar next to the front. EXIF and XMP are not written.
+You can type chips by hand, or send the chosen image to a local [Ollama](https://ollama.com) vision model that you already installed and started. `rn` does not identify people from appearance, and it does not infer sensitive attributes. Manual names are fine. Related-file candidates are listed with labels (Likely, Possible, Unlikely). Size alone is never Likely. Lack of evidence is not disproven. You choose a related file if you want one. The folder is not analyzed in bulk.
 
-A year stays a year. The app does not invent a day from a partial date, and it does not guess an era from the scene.
+Accept writes a versioned notes sidecar next to the photo and stages a filename preview plus pending metadata. Images stay unchanged until you Apply on the main screen. Apply asks before a disk rename or metadata write. Existing capture dates are skipped unless you turn on overwrite in the overlay. Session undo covers that Apply batch. It does not recover files after you quit.
 
-Reading the back is optional. Type the text yourself, or send the back to a local [Ollama](https://ollama.com) vision model that you already installed and started. `rn` does not install Ollama, pull a model, start the server, or upload images unless you press Read. Host defaults to `http://127.0.0.1:11434`. A host that is not loopback shows a warning, and the first Read must be confirmed, because the back image is sent to that host.
+A year stays a year. Only a complete written calendar day can become capture metadata, using noon if you opt in. Year, month, season, inferred, and unresolved ambiguous dates never become EXIF. Partial dates can still go in the sidecar and in a name you approve. Description writes JPEG/TIFF ImageDescription. Other types keep the text in the sidecar.
+
+Reading is optional. `rn` does not install Ollama, pull a model, start the server, or upload images unless you press Read (Enter in the model field also saves and reads). Host defaults to `http://127.0.0.1:11434`. A host that is not loopback shows a warning, and the first Read must be confirmed, because the image is sent to that host.
 
 These tags were checked against the official library. They are not a handwriting-accuracy ranking, and we have not evaluated them on real scans.
 
@@ -243,9 +245,9 @@ ollama serve
 ollama pull gemma3:4b
 ```
 
-In scan review, press `L` or `D` for the light or default tag, or `i` to pick from local vision models, or type any name. `r` reads. `x` cancels. Enter accepts. Esc closes without saving. The model name is stored in `scan.json` next to the view settings. Total system RAM, when readable, is a conservative hint only. It is not free RAM or GPU VRAM.
+In photo review, type a vision model and press Enter, or press `i` for local installed vision models (a loaded mark when Ollama reports one). `r` reads. `x` cancels. `a` accepts. `b` opens related-file candidates. `?` shows setup help. Esc closes without staging. The model name is stored in `scan.json` next to the view settings. Total system RAM, when readable, is a conservative hint only. It is not free RAM or GPU VRAM.
 
-This path is not an accuracy claim. Mock tests check pairing, sidecar rules, and the UI. They do not measure real handwriting recognition.
+This path is not an accuracy claim. Mock tests check chips, sidecar rules, date precision, and the UI. They do not measure real handwriting recognition.
 
 An empty folder still opens. Press `r` after you add files.
 
@@ -294,7 +296,7 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `B` | Write JSON location into EXIF GPS |
 | `T` | Choose a timezone |
 | `P` | Show or hide the preview |
-| `S` | Scan review for a photo front and a handwritten back |
+| `S` | Photo review for the highlighted image |
 | `u` | Undo the last batch (this session only) |
 | `r` | Reload the folder |
 | `?`, `:`, Ctrl+P, `h`, F1 | Commands. Type to filter. `?` closes it, including from the filter |

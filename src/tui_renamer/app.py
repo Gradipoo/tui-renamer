@@ -70,7 +70,7 @@ from tui_renamer.core import (
     show_not_oldest_warning,
     timeline_bins,
 )
-from tui_renamer.journal import Batch, Journal, RenameOp
+from tui_renamer.journal import Batch, Journal, MetaOp, RenameOp
 from tui_renamer.metadata import (
     IMAGE_EXTENSIONS,
     PIEXIF_AVAILABLE,
@@ -85,8 +85,10 @@ from tui_renamer.metadata import (
     timezone_write_message,
     write_file_metadata_and_offset,
     write_geodata,
+    write_image_description,
 )
 from tui_renamer.scan_backend import OllamaBackend, ScanBackend
+from tui_renamer.scan_bits import PendingScan, StageResult
 from tui_renamer.scan_config import load_scan_settings
 from tui_renamer.scan_notes import notes_renames, rewrite_pairing_names
 from tui_renamer.scan_ui import ReviewScreen
@@ -141,7 +143,7 @@ BUTTON_TIPS = {
     "act-gps": "Write JSON location into EXIF",
     "act-refresh": "Reload the folder",
     "act-reset": "Reset name options",
-    "act-scan": "Review a scan front and back",
+    "act-scan": "Review this photo",
 }
 
 
@@ -575,7 +577,7 @@ class OptionsPane(Vertical):
                 "r Refresh", id="act-refresh", compact=True, tooltip=BUTTON_TIPS["act-refresh"]
             )
             yield Button("0 Reset", id="act-reset", compact=True, tooltip=BUTTON_TIPS["act-reset"])
-            yield Button("S Scan", id="act-scan", compact=True, tooltip=BUTTON_TIPS["act-scan"])
+            yield Button("S Photo", id="act-scan", compact=True, tooltip=BUTTON_TIPS["act-scan"])
 
 
 SOURCE_STYLE = {
@@ -712,11 +714,17 @@ class RenamerApp(App[None]):
         border: thick $primary;
         padding: 1 2;
     }
-    ReviewScreen #scan-previews { height: 10; }
-    ReviewScreen #scan-front-slot, ReviewScreen #scan-back-slot { width: 1fr; }
+    ReviewScreen #scan-preview-slot { height: 8; }
+    ReviewScreen #scan-chips { layout: grid; grid-size: 2; height: auto; }
+    ReviewScreen .scan-chip { width: 1fr; color: $text-muted; }
+    ReviewScreen .scan-chip.-on {
+        background: $accent;
+        color: $text;
+        text-style: bold;
+    }
     ReviewScreen #scan-actions { height: auto; }
     ReviewScreen #scan-pick { height: 8; }
-    ReviewScreen #scan-setup { height: auto; max-height: 10; }
+    ReviewScreen #scan-help { height: auto; max-height: 10; }
     ReviewScreen #scan-cmd { height: auto; }
     #dialog {
         width: 72;
@@ -834,6 +842,7 @@ class RenamerApp(App[None]):
         self._zoom: str | None = None
         self._syncing = False
         self.scan_backend: ScanBackend | None = None
+        self.scan_pending: dict[str, PendingScan] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -928,6 +937,10 @@ class RenamerApp(App[None]):
         self._cursor = 0
         self.visual = False
         self.anchor = None
+        alive = {path.resolve() for path in self.files}
+        self.scan_pending = {
+            key: item for key, item in self.scan_pending.items() if item.path.resolve() in alive
+        }
 
     def target_zone(self) -> tzinfo:
         return resolve_tz(self.rules.source_tz)
@@ -2174,13 +2187,22 @@ class RenamerApp(App[None]):
         if self._find_open or not self.files:
             return
         start = self.files[self._cursor]
-        selected = [self.files[index] for index in sorted(self.selected) if index < len(self.files)]
         settings = load_scan_settings()
         backend = self.scan_backend or OllamaBackend(host=settings.host)
+        facts = self.facts_for(start)
 
-        def done(message: str | None) -> None:
-            if message:
-                self.set_status(message)
+        def done(result: StageResult | None) -> None:
+            if result is None:
+                return
+            try:
+                index = self.files.index(result.subject)
+            except ValueError:
+                index = self._cursor
+            if result.new_name:
+                self.manual[index] = result.new_name
+            if result.pending is not None:
+                self.scan_pending[str(result.subject)] = result.pending
+            self.set_status(result.message)
             self.refresh_view()
 
         self.push_screen(
@@ -2189,7 +2211,8 @@ class RenamerApp(App[None]):
                 start=start,
                 backend=backend,
                 settings=settings,
-                selected=selected,
+                zone=self.target_zone(),
+                has_capture=facts.has_exif,
             ),
             done,
         )
@@ -2392,31 +2415,102 @@ class RenamerApp(App[None]):
             self._ask_mtime()
             return
         pairs = [(src, name) for src, name in self._rename_pairs() if src.name != name]
-        if not pairs:
+        pending = list(self.scan_pending.values())
+        if not pairs and not pending:
             self.set_status("No changes to apply.")
             self._update_status()
             return
-        self._ask(f"Rename {len(pairs)} files?", lambda: self._do_rename(pairs))
+        parts = []
+        if pairs:
+            parts.append(f"Rename {len(pairs)} files")
+        date_n = sum(1 for item in pending if item.moment is not None)
+        desc_n = sum(1 for item in pending if item.description)
+        skip_n = sum(
+            1
+            for item in pending
+            if item.moment is not None and not item.overwrite and self.facts_for(item.path).has_exif
+        )
+        if date_n:
+            extra = f", skip {skip_n} existing capture dates" if skip_n else ""
+            parts.append(f"write {date_n} written calendar-day capture date(s) at noon{extra}")
+        if desc_n:
+            parts.append(f"write {desc_n} description(s) on JPEG/TIFF")
+        question = "; ".join(parts) + "? Session undo only. y or n"
+        self._ask(question, lambda: self._do_apply(pairs, pending))
 
     def _do_rename(self, pairs: list[tuple[Path, str]]) -> None:
-        outcome = rename_paths(pairs)
-        ops = [RenameOp(src, dst) for src, dst in outcome.done]
-        extra = notes_renames(outcome.done)
-        if extra:
-            sidecar_out = rename_paths(extra)
-            ops.extend(RenameOp(src, dst) for src, dst in sidecar_out.done)
-            name_map = {src.name: dst.name for src, dst in outcome.done}
-            for _src, dst in sidecar_out.done:
-                rewrite_pairing_names(dst, name_map)
-        self.journal.push(Batch("rename", ops))
+        self._do_apply(pairs, [])
+
+    def _do_apply(
+        self,
+        pairs: list[tuple[Path, str]],
+        pending: list[PendingScan],
+    ) -> None:
+        ops: list[RenameOp | MetaOp] = []
+        path_map: dict[Path, Path] = {}
+        renamed = 0
+        conflicts = 0
+        errors: list[str] = []
+        if pairs:
+            outcome = rename_paths(pairs)
+            ops.extend(RenameOp(src, dst) for src, dst in outcome.done)
+            extra = notes_renames(outcome.done)
+            if extra:
+                sidecar_out = rename_paths(extra)
+                ops.extend(RenameOp(src, dst) for src, dst in sidecar_out.done)
+                name_map = {src.name: dst.name for src, dst in outcome.done}
+                for _src, dst in sidecar_out.done:
+                    rewrite_pairing_names(dst, name_map)
+            path_map = {src: dst for src, dst in outcome.done}
+            renamed = len(outcome.done)
+            conflicts = outcome.conflicts
+            errors = list(outcome.errors)
+        skipped = 0
+        dates = 0
+        descs = 0
+        for item in pending:
+            path = path_map.get(item.path, item.path)
+            if not path.exists():
+                continue
+            facts = self.facts_for(path)
+            write_date = item.moment is not None
+            if write_date and not item.overwrite and facts.has_exif:
+                write_date = False
+                skipped += 1
+            write_desc = bool(item.description) and path.suffix.lower() in IMAGE_EXTENSIONS
+            if not write_date and not write_desc:
+                continue
+            try:
+                op = self.journal.snapshot(path)
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            if write_date and item.moment is not None:
+                set_filesystem_times(path, item.moment, setfile=self.setfile)
+                if write_file_metadata_and_offset(path, item.moment, exiftool=self.exiftool):
+                    dates += 1
+            if write_desc and write_image_description(path, item.description):
+                descs += 1
+            ops.append(op)
+        kind = "apply" if pending else "rename"
+        self.journal.push(Batch(kind, ops))
+        self.scan_pending.clear()
         self.reload_files()
-        message = f"Renamed {len(outcome.done)} files."
-        if outcome.conflicts:
-            message += f" {outcome.conflicts} conflicts."
-        if outcome.errors:
-            message += f" {len(outcome.errors)} errors."
-            self.debug("; ".join(outcome.errors))
-        self.set_status(message)
+        parts: list[str] = []
+        if pairs:
+            parts.append(f"Renamed {renamed} files.")
+            if conflicts:
+                parts.append(f"{conflicts} conflicts.")
+        if dates:
+            parts.append(f"Wrote {dates} capture date(s).")
+        if skipped:
+            parts.append(f"Skipped {skipped} existing capture date(s).")
+        if descs:
+            parts.append(f"Wrote {descs} description(s).")
+        if errors:
+            parts.append(f"{len(errors)} errors.")
+            self.debug("; ".join(errors))
+        self.set_status(" ".join(parts) if parts else "Applied.")
         self.refresh_view()
 
     def _ask_mtime(self) -> None:
