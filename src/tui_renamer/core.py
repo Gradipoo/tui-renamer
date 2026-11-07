@@ -227,9 +227,17 @@ def clean_filename(basename: str, rules: RenameRules) -> str:
     return name.strip("-_")
 
 
-def preview_base(filename: str, facts: FileFacts, rules: RenameRules) -> tuple[str, str]:
+def preview_base(
+    filename: str,
+    facts: FileFacts,
+    rules: RenameRules,
+    *,
+    stem: str | None = None,
+) -> tuple[str, str]:
     """Stem and extension for the new name. Stem may be empty."""
     orig_base, ext = os.path.splitext(filename)
+    if stem is not None:
+        orig_base = stem
     if rules.strip_original_name:
         core = ""
     elif rules.strip_to_text:

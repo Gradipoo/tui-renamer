@@ -95,6 +95,7 @@ from tui_renamer.scan_bits import (
     StageResult,
     apply_scan_suffix,
     format_scan_parts,
+    strip_accepted_suffix,
 )
 from tui_renamer.scan_config import load_scan_settings
 from tui_renamer.scan_notes import (
@@ -1007,11 +1008,13 @@ class RenamerApp(App[None]):
         parts = format_scan_parts(raw, self.rules)
         if index in self.manual:
             return apply_scan_suffix(self.manual[index], parts, accepted=accepted)
-        stem, ext = preview_base(path.name, self.facts_for(path), self.rules)
+        file_stem, _ext = os.path.splitext(path.name)
+        bare = strip_accepted_suffix(file_stem, accepted)
+        stem, ext = preview_base(path.name, self.facts_for(path), self.rules, stem=bare)
         return apply_scan_suffix(
             path.name,
             parts,
-            accepted=accepted,
+            accepted=[],
             stem=stem if stem else "",
         )
 
@@ -2508,7 +2511,10 @@ class RenamerApp(App[None]):
             return os.path.splitext(self.locked[index])
         if index in self.manual:
             return os.path.splitext(self.manual[index])
-        return preview_base(path.name, self.facts_for(path), self.rules)
+        accepted = self.scan_accepted.get(str(path), [])
+        file_stem, _ext = os.path.splitext(path.name)
+        bare = strip_accepted_suffix(file_stem, accepted)
+        return preview_base(path.name, self.facts_for(path), self.rules, stem=bare)
 
     def _rename_pairs(self) -> list[tuple[Path, str]]:
         names: dict[int, str] = dict(self.locked)

@@ -1520,6 +1520,10 @@ async def test_scan_suffix_format_toggles_keep_raw_labels(tmp_path: Path) -> Non
         assert [item.label for item in loaded.bits if item.label == "Hello.World"]
         assert app.preview_for(0) == "keep-aunt-may-hello-world.jpg"
         assert app._rename_pairs() == []
+        app.rules.replace_spaces = False
+        assert app.preview_for(0) == "keep-aunt may-hello-world.jpg"
+        app.rules.replace_spaces = True
+        assert app.preview_for(0) == "keep-aunt-may-hello-world.jpg"
         await pilot.press("u")
         await pilot.pause()
         assert photo.exists()
