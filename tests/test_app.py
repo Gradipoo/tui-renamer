@@ -1677,8 +1677,15 @@ async def test_scan_english_date_token_typed_and_notes_preview(tmp_path: Path) -
             if item.manual and item.label == "Oct 20, 1994" and item.kind == "date"
         )
         assert typed.use_meta is False
+        for item in list(review.bits):
+            if item is not typed and item.use_name:
+                review._toggle_name(item)
+        review._toggle_name(typed)
+        shown = str(review.query_one("#scan-name-preview").render())
+        assert f"New: {expected}" in shown
         review.action_close()
         await pilot.pause()
+        assert app.preview_for(0) == expected
         other_index = next(
             index for index, path in enumerate(app.files) if path.name == "plain.jpg"
         )
