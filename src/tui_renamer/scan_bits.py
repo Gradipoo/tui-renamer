@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
 from pathlib import Path
 
@@ -29,6 +30,7 @@ class Bit:
     people_count: int | None = None
     people_present: bool | None = None
     manual: bool = False
+    name_order: int = 0
 
     def tooltip(self) -> str:
         origin = "written" if self.origin == "written" else "inferred"
@@ -57,6 +59,7 @@ class Bit:
             return
         self.use_name = False
         self.use_meta = False
+        self.name_order = 0
 
 
 @dataclass
@@ -73,7 +76,7 @@ class PendingScan:
 class StageResult:
     message: str
     subject: Path
-    new_name: str | None = None
+    suffix_parts: list[str] = field(default_factory=list)
     pending: PendingScan | None = None
 
 
@@ -82,16 +85,50 @@ def slug_piece(text: str) -> str:
     return piece.strip("-")[:MAX_SLUG]
 
 
-def staged_filename(original: Path, bits: list[Bit]) -> str | None:
-    parts = [slug_piece(item.label) for item in bits if item.use_name]
-    parts = [item for item in parts if item]
-    if not parts:
-        return None
-    stem = original.stem
+def selected_slugs(bits: list[Bit]) -> list[str]:
+    chosen = [(index, item) for index, item in enumerate(bits) if item.use_name]
+    chosen.sort(key=lambda pair: (pair[1].name_order or 0, pair[0]))
+    parts = [slug_piece(item.label) for _index, item in chosen]
+    return [part for part in parts if part]
+
+
+def strip_accepted_suffix(stem: str, accepted: list[str]) -> str:
+    """Remove a trailing suffix only when it equals the known accepted parts."""
+    parts = [item for item in accepted if item]
+    if not stem or not parts:
+        return stem
     extra = "-".join(parts)
-    if extra.casefold() in stem.casefold():
-        return original.name
-    return f"{stem}-{extra}{original.suffix}"
+    if stem == extra:
+        return ""
+    token = "-" + extra
+    if stem.endswith(token):
+        return stem[: -len(token)]
+    return stem
+
+
+def join_scan_name(stem: str, ext: str, parts: list[str], *, fallback: str) -> str:
+    extra = "-".join(part for part in parts if part)
+    if stem and extra:
+        return f"{stem}-{extra}{ext}"
+    if extra:
+        return f"{extra}{ext}"
+    if stem:
+        return f"{stem}{ext}"
+    return fallback
+
+
+def apply_scan_suffix(
+    filename: str,
+    parts: list[str],
+    *,
+    accepted: list[str] | None = None,
+    stem: str | None = None,
+) -> str:
+    """Append ordered S tags. Empty stem plus tags is tags plus extension."""
+    file_stem, ext = os.path.splitext(filename)
+    stem_part = file_stem if stem is None else stem
+    stem_part = strip_accepted_suffix(stem_part, accepted or [])
+    return join_scan_name(stem_part, ext, parts, fallback=filename)
 
 
 def capture_from_bits(bits: list[Bit], zone: tzinfo) -> tuple[datetime | None, str]:
@@ -196,6 +233,7 @@ def dump_bits(bits: list[Bit]) -> list[dict]:
                 "use_name": item.use_name,
                 "use_meta": item.use_meta,
                 "manual": item.manual,
+                "name_order": item.name_order,
                 "people_count": item.people_count,
                 "people_present": item.people_present,
                 "date": None
@@ -241,6 +279,7 @@ def load_bits(raw: object) -> list[Bit]:
             parsed = parse_model_dates([date_raw])
             date = parsed[0] if parsed else None
         count = item.get("people_count")
+        order = item.get("name_order")
         bits.append(
             Bit(
                 kind=kind,
@@ -258,6 +297,9 @@ def load_bits(raw: object) -> list[Bit]:
                 if isinstance(item.get("people_present"), bool)
                 else None,
                 manual=item.get("manual") is True,
+                name_order=order
+                if isinstance(order, int) and not isinstance(order, bool) and order > 0
+                else 0,
             )
         )
     return bits[:MAX_CHIPS]

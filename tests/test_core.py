@@ -34,6 +34,7 @@ from tui_renamer.core import (
     parse_json_geodata,
     parse_json_time_field,
     plan_filename_dates,
+    preview_base,
     preview_name,
     rename_paths,
     reset_name_rules,
@@ -128,6 +129,10 @@ def test_clean_order_and_letter_strip() -> None:
     assert preview_name("My File 2020!.jpg", facts, text_rules) == "My File .jpg"
     text_rules.strip_original_name = True
     assert preview_name("My File 2020!.jpg", facts, text_rules) == "My File 2020!.jpg"
+    stem, ext = preview_base("photo.jpg", facts, RenameRules(strip_original_name=True))
+    assert stem == ""
+    assert ext == ".jpg"
+    assert preview_name("photo.jpg", facts, RenameRules(strip_original_name=True)) == "photo.jpg"
 
 
 def test_today_stamp_and_double_dash_collapse() -> None:

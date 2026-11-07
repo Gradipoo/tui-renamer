@@ -20,7 +20,16 @@ from tui_renamer.scan_backend import (
     parse_tags,
     show_has_vision,
 )
-from tui_renamer.scan_bits import Bit, capture_from_bits, description_from_bits
+from tui_renamer.scan_bits import (
+    Bit,
+    apply_scan_suffix,
+    capture_from_bits,
+    description_from_bits,
+    join_scan_name,
+    selected_slugs,
+    slug_piece,
+    strip_accepted_suffix,
+)
 from tui_renamer.scan_candidates import score_candidates
 from tui_renamer.scan_config import host_is_local
 from tui_renamer.scan_dates import ScanDate, can_queue_capture, parse_date_text, parse_model_dates
@@ -510,3 +519,77 @@ def test_list_loaded_models_uses_ps() -> None:
         poster=lambda *_a, **_k: b"{}",
     )
     assert remote.list_loaded_models() == []
+
+
+def test_scan_suffix_order_strip_and_empty_base() -> None:
+    first = Bit(
+        kind="text",
+        label="beta",
+        source="a.jpg",
+        model="",
+        origin="written",
+        use_name=True,
+        name_order=2,
+    )
+    second = Bit(
+        kind="text",
+        label="alpha",
+        source="a.jpg",
+        model="",
+        origin="written",
+        use_name=True,
+        name_order=1,
+    )
+    unused = Bit(kind="text", label="skip", source="a.jpg", model="", origin="written")
+    assert selected_slugs([first, second, unused]) == ["alpha", "beta"]
+    first.label = "beta-edit"
+    assert selected_slugs([first, second]) == ["alpha", "beta-edit"]
+    first.use_name = False
+    first.name_order = 0
+    first.use_name = True
+    first.name_order = 3
+    assert selected_slugs([first, second]) == ["alpha", "beta-edit"]
+    assert slug_piece("Aunt May!") == "Aunt-May"
+    assert strip_accepted_suffix("photo-picnic", ["picnic"]) == "photo"
+    assert strip_accepted_suffix("picnic", ["picnic"]) == ""
+    assert strip_accepted_suffix("photo-picnic", []) == "photo-picnic"
+    assert strip_accepted_suffix("summer-day", ["other"]) == "summer-day"
+    assert strip_accepted_suffix("photo-picnic", ["pic"]) == "photo-picnic"
+    assert join_scan_name("", ".jpg", ["tag1", "tag2"], fallback="old.jpg") == "tag1-tag2.jpg"
+    assert not join_scan_name("", ".jpg", ["tag1"], fallback="old.jpg").startswith("-")
+    assert apply_scan_suffix("photo.jpg", ["tag"], stem="") == "tag.jpg"
+    assert apply_scan_suffix("photo-picnic.jpg", ["lake"], accepted=["picnic"]) == "photo-lake.jpg"
+    assert apply_scan_suffix("photo.jpg", []) == "photo.jpg"
+
+
+def test_notes_roundtrip_keeps_name_suffix(tmp_path: Path) -> None:
+    photo = tmp_path / "keep.jpg"
+    _jpeg(photo)
+    notes = ScanNotes(
+        front=photo.name,
+        back=None,
+        pairing_reason="none",
+        pairing_confirmed=False,
+        engine="mock",
+        model="mock",
+        raw_transcription="",
+        notes="",
+        name_suffix=["alpha", "beta"],
+        bits=[
+            Bit(
+                kind="text",
+                label="alpha",
+                source=photo.name,
+                model="",
+                origin="written",
+                use_name=True,
+                name_order=1,
+                manual=True,
+            )
+        ],
+    )
+    save_notes(notes_path_for(photo), notes)
+    loaded = load_notes(notes_path_for(photo))
+    assert loaded is not None
+    assert loaded.name_suffix == ["alpha", "beta"]
+    assert loaded.bits[0].name_order == 1

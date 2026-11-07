@@ -227,8 +227,8 @@ def clean_filename(basename: str, rules: RenameRules) -> str:
     return name.strip("-_")
 
 
-def preview_name(filename: str, facts: FileFacts, rules: RenameRules) -> str:
-    """Build the new filename. An empty result keeps the original name."""
+def preview_base(filename: str, facts: FileFacts, rules: RenameRules) -> tuple[str, str]:
+    """Stem and extension for the new name. Stem may be empty."""
     orig_base, ext = os.path.splitext(filename)
     if rules.strip_original_name:
         core = ""
@@ -255,7 +255,13 @@ def preview_name(filename: str, facts: FileFacts, rules: RenameRules) -> str:
             time_suffix += f"-{facts.origtime_text}"
     geo_part = f"{facts.geodata}-" if rules.add_geodata and facts.geodata else ""
     new_base = re.sub(r"--+", "-", f"{time_prefix}{geo_part}{core}{time_suffix}").strip("-_")
-    return (new_base + ext) if new_base else filename
+    return new_base, ext
+
+
+def preview_name(filename: str, facts: FileFacts, rules: RenameRules) -> str:
+    """Build the new filename. An empty result keeps the original name."""
+    stem, ext = preview_base(filename, facts, rules)
+    return (stem + ext) if stem else filename
 
 
 def show_not_oldest_warning(facts: FileFacts, rules: RenameRules) -> bool:

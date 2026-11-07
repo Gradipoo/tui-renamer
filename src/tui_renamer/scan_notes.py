@@ -37,6 +37,7 @@ class ScanNotes:
     size_similar: bool = False
     bits: list[Bit] = field(default_factory=list)
     related_reason: str = ""
+    name_suffix: list[str] = field(default_factory=list)
 
 
 def notes_path_for(path: Path) -> Path:
@@ -105,6 +106,7 @@ def dump_notes(notes: ScanNotes) -> dict[str, Any]:
             for item in notes.dates
         ],
         "bits": dump_bits(notes.bits),
+        "name_suffix": [item for item in notes.name_suffix if isinstance(item, str)][:24],
         "accepted_at": notes.accepted_at,
     }
 
@@ -152,6 +154,7 @@ def load_notes(path: Path) -> ScanNotes | None:
         size_similar=pairing.get("size_similar") is True,
         bits=load_bits(data.get("bits")),
         related_reason=related if isinstance(related, str) else "",
+        name_suffix=_string_list(data.get("name_suffix")),
     )
 
 
@@ -182,3 +185,13 @@ def rewrite_pairing_names(notes_file: Path, name_map: dict[str, str]) -> None:
     for item in notes.bits:
         item.source = name_map.get(item.source, item.source)
     save_notes(notes_file, notes)
+
+
+def _string_list(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    found: list[str] = []
+    for item in raw[:24]:
+        if isinstance(item, str) and item.strip():
+            found.append(item.strip()[:40])
+    return found

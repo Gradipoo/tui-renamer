@@ -63,6 +63,7 @@ from tui_renamer.core import (
     neighbor_flags,
     parse_filename_datetime,
     plan_filename_dates,
+    preview_base,
     preview_name,
     rename_paths,
     reset_name_rules,
@@ -88,7 +89,7 @@ from tui_renamer.metadata import (
     write_image_description,
 )
 from tui_renamer.scan_backend import OllamaBackend, ScanBackend
-from tui_renamer.scan_bits import PendingScan, StageResult
+from tui_renamer.scan_bits import PendingScan, StageResult, apply_scan_suffix
 from tui_renamer.scan_config import load_scan_settings
 from tui_renamer.scan_notes import notes_renames, rewrite_pairing_names
 from tui_renamer.scan_ui import ReviewScreen
@@ -717,7 +718,11 @@ class RenamerApp(App[None]):
     ReviewScreen #scan-body { height: 1fr; }
     ReviewScreen #scan-left, ReviewScreen #scan-right { width: 1fr; height: 1fr; }
     ReviewScreen.-narrow #scan-body { layout: vertical; }
-    ReviewScreen #scan-preview-slot { height: 8; }
+    ReviewScreen #scan-previews { height: 10; }
+    ReviewScreen #scan-orig-slot, ReviewScreen #scan-rel-slot { width: 1fr; height: 10; }
+    ReviewScreen.-narrow #scan-previews { layout: vertical; height: auto; }
+    ReviewScreen.-narrow #scan-orig-slot, ReviewScreen.-narrow #scan-rel-slot { height: 8; }
+    ReviewScreen #scan-name-preview { height: auto; color: $text-muted; }
     ReviewScreen #scan-chips { layout: grid; grid-size: 2; height: auto; }
     ReviewScreen .scan-chip { width: 1fr; color: $text-muted; }
     ReviewScreen .scan-chip.-on {
@@ -847,6 +852,8 @@ class RenamerApp(App[None]):
         self._syncing = False
         self.scan_backend: ScanBackend | None = None
         self.scan_pending: dict[str, PendingScan] = {}
+        self.scan_suffix: dict[str, list[str]] = {}
+        self.scan_accepted: dict[str, list[str]] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -945,6 +952,11 @@ class RenamerApp(App[None]):
         self.scan_pending = {
             key: item for key, item in self.scan_pending.items() if item.path.resolve() in alive
         }
+        names = {str(path) for path in self.files}
+        self.scan_suffix = {key: parts for key, parts in self.scan_suffix.items() if key in names}
+        self.scan_accepted = {
+            key: parts for key, parts in self.scan_accepted.items() if key in names
+        }
 
     def target_zone(self) -> tzinfo:
         return resolve_tz(self.rules.source_tz)
@@ -966,9 +978,18 @@ class RenamerApp(App[None]):
         path = self.files[index]
         if index in self.locked:
             return self.locked[index]
+        key = str(path)
+        parts = self.scan_suffix.get(key, [])
+        accepted = self.scan_accepted.get(key, [])
         if index in self.manual:
-            return self.manual[index]
-        return preview_name(path.name, self.facts_for(path), self.rules)
+            return apply_scan_suffix(self.manual[index], parts, accepted=accepted)
+        stem, ext = preview_base(path.name, self.facts_for(path), self.rules)
+        return apply_scan_suffix(
+            path.name,
+            parts,
+            accepted=accepted,
+            stem=stem if stem else "",
+        )
 
     def refresh_view(self) -> None:
         self._recompute_changing()
@@ -2198,17 +2219,17 @@ class RenamerApp(App[None]):
         def done(result: StageResult | None) -> None:
             if result is None:
                 return
-            try:
-                index = self.files.index(result.subject)
-            except ValueError:
-                index = self._cursor
-            if result.new_name:
-                self.manual[index] = result.new_name
+            key = str(result.subject)
+            self.scan_suffix[key] = list(result.suffix_parts)
+            if result.suffix_parts:
+                self.scan_accepted[key] = list(result.suffix_parts)
             if result.pending is not None:
-                self.scan_pending[str(result.subject)] = result.pending
+                self.scan_pending[key] = result.pending
             self.set_status(result.message)
             self.refresh_view()
 
+        stem, ext = self._ordinary_stem_ext(self._cursor)
+        key = str(start)
         self.push_screen(
             ReviewScreen(
                 self.files,
@@ -2217,6 +2238,10 @@ class RenamerApp(App[None]):
                 settings=settings,
                 zone=self.target_zone(),
                 has_capture=facts.has_exif,
+                base_stem=stem,
+                base_ext=ext,
+                locked=self._cursor in self.locked,
+                accepted_suffix=list(self.scan_accepted.get(key, [])),
             ),
             done,
         )
@@ -2332,7 +2357,7 @@ class RenamerApp(App[None]):
             return
         if not self.files:
             return
-        stem, extension = split_stem(self.preview_for(self._cursor))
+        stem, extension = split_stem(self._ordinary_name(self._cursor))
 
         def done(result: tuple[str, str] | None) -> None:
             if not result:
@@ -2385,15 +2410,43 @@ class RenamerApp(App[None]):
 
         self.push_screen(TimezoneScreen(self.rules.source_tz), done)
 
+    def _remap_scan_map(
+        self, store: dict[str, list[str]], path_map: dict[Path, Path]
+    ) -> dict[str, list[str]]:
+        moved: dict[str, list[str]] = {}
+        for key, parts in store.items():
+            dest = path_map.get(Path(key), Path(key))
+            moved[str(dest)] = parts
+        return moved
+
+    def _ordinary_name(self, index: int) -> str:
+        path = self.files[index]
+        if index in self.locked:
+            return self.locked[index]
+        if index in self.manual:
+            return self.manual[index]
+        return preview_name(path.name, self.facts_for(path), self.rules)
+
+    def _ordinary_stem_ext(self, index: int) -> tuple[str, str]:
+        path = self.files[index]
+        if index in self.locked:
+            return os.path.splitext(self.locked[index])
+        if index in self.manual:
+            return os.path.splitext(self.manual[index])
+        return preview_base(path.name, self.facts_for(path), self.rules)
+
     def _rename_pairs(self) -> list[tuple[Path, str]]:
         names: dict[int, str] = dict(self.locked)
-        for index, name in self.manual.items():
-            names.setdefault(index, name)
-        for index in self.selected:
-            if index in names or index >= len(self.files):
+        for index, path in enumerate(self.files):
+            if index in names:
                 continue
-            path = self.files[index]
-            new_name = preview_name(path.name, self.facts_for(path), self.rules)
+            if (
+                index not in self.selected
+                and index not in self.manual
+                and str(path) not in self.scan_suffix
+            ):
+                continue
+            new_name = self.preview_for(index)
             if new_name != path.name:
                 names[index] = new_name
         pairs: list[tuple[Path, str]] = []
@@ -2466,6 +2519,8 @@ class RenamerApp(App[None]):
                 for _src, dst in sidecar_out.done:
                     rewrite_pairing_names(dst, name_map)
             path_map = {src: dst for src, dst in outcome.done}
+            self.scan_suffix = self._remap_scan_map(self.scan_suffix, path_map)
+            self.scan_accepted = self._remap_scan_map(self.scan_accepted, path_map)
             renamed = len(outcome.done)
             conflicts = outcome.conflicts
             errors = list(outcome.errors)

@@ -15,19 +15,22 @@ from textual.widgets.option_list import Option
 from tui_renamer.preview import Preview, ThumbCache, build_preview, load_image_widget
 from tui_renamer.scan_backend import BackendError, Recognition, ScanBackend
 from tui_renamer.scan_bits import (
+    MAX_CHIPS,
     Bit,
     PendingScan,
     StageResult,
     bits_from_recognition,
     capture_from_bits,
     description_from_bits,
-    staged_filename,
+    join_scan_name,
+    selected_slugs,
+    strip_accepted_suffix,
 )
 from tui_renamer.scan_candidates import Candidate, score_candidates
 from tui_renamer.scan_config import ScanSettings, host_is_local, save_scan_settings
 from tui_renamer.scan_dates import parse_date_text
 from tui_renamer.scan_models import pull_command, setup_lines, suggested_rec, total_ram_bytes
-from tui_renamer.scan_notes import ScanNotes, notes_path_for, save_notes
+from tui_renamer.scan_notes import ScanNotes, load_notes, notes_path_for, save_notes
 
 
 class ReviewScreen(ModalScreen[StageResult | None]):
@@ -36,6 +39,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
     BINDINGS = [
         Binding("escape", "close", show=False),
         Binding("r", "read", show=False),
+        Binding("R", "read_related", show=False),
         Binding("x", "cancel_read", show=False),
         Binding("a", "accept", show=False),
         Binding("b", "related", show=False),
@@ -53,6 +57,10 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         settings: ScanSettings,
         zone=None,
         has_capture: bool = False,
+        base_stem: str = "",
+        base_ext: str = "",
+        locked: bool = False,
+        accepted_suffix: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.files = files
@@ -63,6 +71,11 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         self.settings = settings
         self.zone = zone
         self.has_capture = has_capture
+        self.base_stem = base_stem
+        self.base_ext = base_ext
+        self.locked = locked
+        self.accepted_suffix = list(accepted_suffix or [])
+        self.highlight: Path | None = None
         self.candidates: list[Candidate] = []
         self.cache = ThumbCache()
         self._busy = False
@@ -80,6 +93,9 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         self._pick_models: list[str] = []
         self.bits: list[Bit] = []
         self._chip_gen = 0
+        self._preview_job = 0
+        self._name_seq = 0
+        self._restored = False
         self._engine = ""
         self._raw = ""
 
@@ -91,21 +107,30 @@ class ReviewScreen(ModalScreen[StageResult | None]):
             with Horizontal(id="scan-body"):
                 with VerticalScroll(id="scan-left"):
                     yield Static("", id="scan-photo", markup=False)
-                    yield Vertical(id="scan-preview-slot")
+                    with Horizontal(id="scan-previews"):
+                        yield Vertical(id="scan-orig-slot")
+                        yield Vertical(id="scan-rel-slot")
+                    yield Static("", id="scan-name-preview", markup=False)
                     yield Static("", id="scan-source", markup=False)
                     yield Horizontal(id="scan-chips")
                     yield Input(placeholder="add a name or date chip", id="scan-add")
                     yield OptionList(id="scan-model-pick")
                     yield Input(placeholder="model override, Enter reads", id="scan-model")
                 with VerticalScroll(id="scan-right"):
-                    yield Static("Related (pick, then r to read)", markup=False)
+                    yield Static("Related (highlight to preview, R to read)", markup=False)
                     yield OptionList(id="scan-related-list")
             with Horizontal(id="scan-actions"):
                 yield Button(
-                    "r Read",
+                    "r Original",
                     id="scan-read",
                     compact=True,
-                    tooltip="Read the chosen image",
+                    tooltip="Read the original photo",
+                )
+                yield Button(
+                    "R Related",
+                    id="scan-read-related",
+                    compact=True,
+                    tooltip="Read the highlighted related photo",
                 )
                 yield Button(
                     "x Cancel",
@@ -158,10 +183,14 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         self.query_one("#scan-help", Static).display = False
         self.query_one("#scan-cmd", Static).display = False
         self._apply_narrow()
+        self._restore_notes()
+        self._paint_chips()
         self._paint_header()
-        self._fill_preview()
+        self._fill_slot(self.query_one("#scan-orig-slot"), self.subject, "orig")
+        self._fill_slot(self.query_one("#scan-rel-slot"), None, "rel")
         self._fill_related()
-        self.query_one("#scan-related-list", OptionList).focus()
+        self._paint_name_preview()
+        self.query_one("#scan-left").focus()
         self._score_related()
         self._discover()
 
@@ -224,7 +253,17 @@ class ReviewScreen(ModalScreen[StageResult | None]):
             self._status("No other images in this folder.")
 
     def action_read(self) -> None:
-        self._start_read(self._model_value(), persist=True)
+        self._start_read(self._model_value(), source=self.subject, persist=True)
+
+    def action_read_related(self) -> None:
+        if self.highlight is None:
+            self._status("Highlight a related file, then press R to read it.")
+            return
+        self.related = self.highlight
+        match = next((item for item in self.candidates if item.path == self.highlight), None)
+        self.related_reason = match.reason if match else "manual"
+        self._paint_header()
+        self._start_read(self._model_value(), source=self.highlight, persist=True)
 
     def action_cancel_read(self) -> None:
         self._cancel_ocr()
@@ -251,13 +290,13 @@ class ReviewScreen(ModalScreen[StageResult | None]):
             dates=[item.date for item in self.bits if item.date is not None],
             bits=self.bits,
             related_reason=self.related_reason,
+            name_suffix=selected_slugs(self.bits),
         )
         try:
             save_notes(notes_path_for(self.subject), payload)
         except OSError:
             self._status("The notes sidecar could not be written.")
             return
-        new_name = staged_filename(self.subject, self.bits)
         pending = None
         moment = None
         date_text = ""
@@ -282,7 +321,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
             StageResult(
                 message=(f"Staged notes for {self.subject.name}. Apply writes the disk.{extra}"),
                 subject=self.subject,
-                new_name=new_name,
+                suffix_parts=selected_slugs(self.bits),
                 pending=pending,
             )
         )
@@ -309,41 +348,39 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         self._hide_model_chooser()
         self._status(f"Model set to {name}.")
         self._auto_started = True
-        self._start_read(name, persist=False)
+        self._start_read(name, source=self.subject, persist=False)
 
-    @on(OptionList.OptionSelected, "#scan-related-list")
-    def _related_picked(self, event: OptionList.OptionSelected) -> None:
+    @on(OptionList.OptionHighlighted, "#scan-related-list")
+    def _related_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         ident = event.option_id or ""
-        if ident == "rel-none":
-            path: Path | None = None
-            reason = ""
-        elif ident.startswith("rel-"):
+        path: Path | None = None
+        if ident.startswith("rel-") and ident != "rel-none":
             index = int(ident.split("-", 1)[1])
-            if index < 0 or index >= len(self.candidates):
-                return
-            item = self.candidates[index]
-            path = item.path
-            reason = item.reason
+            if 0 <= index < len(self.candidates):
+                path = self.candidates[index].path
+        if path == self.highlight:
+            return
+        self.highlight = path
+        self._preview_job += 1
+        job = self._preview_job
+        self._fill_related_preview(path, job)
+        if path is None:
+            self._status("Original photo. r reads this file.")
         else:
-            return
-        if path == self.related:
-            return
-        self.related = path
-        self.related_reason = reason
-        self._invalidate_ocr()
-        self._paint_header()
-        self._status("Related source set. Press r to read it.")
+            self._status(f"Preview {path.name}. r reads original. R reads this file.")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         ident = event.button.id or ""
         if ident.startswith("scan-bit-"):
             index = int(ident.rsplit("-", 1)[-1])
             if 0 <= index < len(self.bits):
-                self.bits[index].cycle()
+                self._cycle_bit(self.bits[index])
                 self._paint_chips()
+                self._paint_name_preview()
             return
         run = {
             "scan-read": self.action_read,
+            "scan-read-related": self.action_read_related,
             "scan-cancel": self.action_cancel_read,
             "scan-accept": self.action_accept,
             "scan-related": self.action_related,
@@ -390,12 +427,60 @@ class ReviewScreen(ModalScreen[StageResult | None]):
                 )
             )
         self._paint_chips()
+        self._paint_name_preview()
+
+    def _cycle_bit(self, item: Bit) -> None:
+        was = item.use_name
+        item.cycle()
+        if item.use_name and not was:
+            self._name_seq += 1
+            item.name_order = self._name_seq
+        elif not item.use_name:
+            item.name_order = 0
+
+    def _restore_notes(self) -> None:
+        notes = load_notes(notes_path_for(self.subject))
+        if notes is None:
+            return
+        if notes.name_suffix and not self.accepted_suffix:
+            self.accepted_suffix = list(notes.name_suffix)
+        if not notes.bits:
+            return
+        self.bits = notes.bits
+        seq = 0
+        for item in self.bits:
+            if item.use_name and item.name_order <= 0:
+                seq += 1
+                item.name_order = seq
+        self._name_seq = max((item.name_order for item in self.bits), default=0)
+        self._restored = True
+        self._auto_started = True
+        self._engine = notes.engine
+        self._raw = notes.raw_transcription
+
+    def _paint_name_preview(self) -> None:
+        box = self.query_one("#scan-name-preview", Static)
+        if self.locked:
+            name = join_scan_name(self.base_stem, self.base_ext, [], fallback=self.subject.name)
+            box.update(f"Locked: {name}")
+            return
+        stem = strip_accepted_suffix(self.base_stem, self.accepted_suffix)
+        name = join_scan_name(
+            stem,
+            self.base_ext,
+            selected_slugs(self.bits),
+            fallback=self.subject.name,
+        )
+        box.update(f"New: {name}")
 
     def _paint_header(self) -> None:
         related = self.related.name if self.related else "none"
-        self.query_one("#scan-photo", Static).update(f"{self.subject.name}  related {related}")
-        source = self.related or self.subject
-        self.query_one("#scan-source", Static).update(f"Read source: {source.name}")
+        self.query_one("#scan-photo", Static).update(
+            f"{self.subject.name}  last related read {related}"
+        )
+        self.query_one("#scan-source", Static).update(
+            f"r reads {self.subject.name}. R reads the highlighted related file."
+        )
 
     def _paint_chips(self) -> None:
         row = self.query_one("#scan-chips")
@@ -432,16 +517,48 @@ class ReviewScreen(ModalScreen[StageResult | None]):
             line = f"Remote host {self.settings.host}."
         self.query_one("#scan-models", Static).update(line)
 
-    def _fill_preview(self) -> None:
-        path = self.subject
-        slot = self.query_one("#scan-preview-slot")
+    def _fill_slot(self, slot, path: Path | None, kind: str) -> None:
         slot.remove_children()
+        if path is None:
+            slot.mount(Static("No related highlight", markup=False))
+            return
         result: Preview = build_preview(path, self.cache)
-        slot.mount(Static(result.caption, markup=False))
+        slot.mount(Static(result.caption, id=f"scan-cap-{kind}-{self._preview_job}", markup=False))
         widget_cls = load_image_widget()
         if result.show_image and result.image is not None and widget_cls is not None:
             try:
-                slot.mount(widget_cls(result.image))
+                slot.mount(widget_cls(result.image, id=f"scan-img-{kind}-{self._preview_job}"))
+            except Exception:
+                slot.mount(Static(result.body or result.caption, markup=False))
+        elif result.body:
+            slot.mount(Static(result.body, markup=False))
+
+    def _fill_related_preview(self, path: Path | None, job: int) -> None:
+        self._run_related_preview(path, job)
+
+    @work(thread=True, exclusive=True, group="scan-preview", exit_on_error=False)
+    def _run_related_preview(self, path: Path | None, job: int) -> None:
+        result = None if path is None else build_preview(path, self.cache)
+        self.app.call_from_thread(self._related_preview_done, job, path, result)
+
+    def _related_preview_done(
+        self,
+        job: int,
+        path: Path | None,
+        result: Preview | None,
+    ) -> None:
+        if job != self._preview_job or not self.is_mounted:
+            return
+        slot = self.query_one("#scan-rel-slot")
+        slot.remove_children()
+        if path is None or result is None:
+            slot.mount(Static("No related highlight", markup=False))
+            return
+        slot.mount(Static(result.caption, id=f"scan-cap-rel-{job}", markup=False))
+        widget_cls = load_image_widget()
+        if result.show_image and result.image is not None and widget_cls is not None:
+            try:
+                slot.mount(widget_cls(result.image, id=f"scan-img-rel-{job}"))
             except Exception:
                 slot.mount(Static(result.body or result.caption, markup=False))
         elif result.body:
@@ -477,16 +594,6 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         save_scan_settings(ScanSettings(host=self.settings.host, model=model))
         self.settings = ScanSettings(host=self.settings.host, model=model)
 
-    def _invalidate_ocr(self) -> None:
-        self._cancel_ocr()
-        self._busy = False
-        self._job += 1
-        self._engine = ""
-        self._raw = ""
-        self.bits = [item for item in self.bits if item.manual]
-        if self.is_mounted:
-            self._paint_chips()
-
     def _cancel_ocr(self) -> None:
         for worker in self.workers:
             if worker.group == "scan-ocr":
@@ -498,8 +605,9 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         self._job += 1
         self._discover_job += 1
         self._score_job += 1
+        self._preview_job += 1
 
-    def _start_read(self, model: str, *, persist: bool) -> None:
+    def _start_read(self, model: str, *, source: Path, persist: bool) -> None:
         if self._busy:
             return
         name = model.strip()
@@ -515,14 +623,16 @@ class ReviewScreen(ModalScreen[StageResult | None]):
                 f"{self.settings.host}."
             )
             return
-        source = self.related or self.subject
         self._busy = True
         self._job += 1
-        self._status("Reading.")
+        self._status(f"Reading {source.name}.")
         self._run_read(source, name, self._job)
 
     def _maybe_auto_read(self) -> None:
         if not self.is_mounted or self._auto_started or self._busy:
+            return
+        if self._restored:
+            self._status("Restored notes. r reads original. R reads related.")
             return
         if not self._local:
             host = self.settings.host
@@ -541,7 +651,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
             self.query_one("#scan-model", Input).value = saved
             self._hide_model_chooser()
             self._auto_started = True
-            self._start_read(saved, persist=False)
+            self._start_read(saved, source=self.subject, persist=False)
             return
         if saved and saved not in self._installed:
             self.query_one("#scan-model", Input).value = saved
@@ -625,8 +735,8 @@ class ReviewScreen(ModalScreen[StageResult | None]):
             return
         self._engine = result.engine
         self._raw = result.raw
-        manual = [item for item in self.bits if item.manual]
-        self.bits = manual + bits_from_recognition(
+        kept = [item for item in self.bits if item.manual or item.source != source]
+        added = bits_from_recognition(
             transcription=result.transcription,
             dates=result.dates,
             tokens=result.tokens,
@@ -635,5 +745,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
             source=source,
             model=result.model,
         )
+        self.bits = (kept + added)[:MAX_CHIPS]
         self._paint_chips()
+        self._paint_name_preview()
         self._status("Select chips for the name or metadata, then Accept.")

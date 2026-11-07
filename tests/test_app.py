@@ -1249,5 +1249,216 @@ async def test_scan_narrow_viewport_keeps_actions(tmp_path: Path) -> None:
         assert review.has_class("-narrow")
         assert review.query_one("#scan-left").display
         assert review.query_one("#scan-right").display
+        assert review.query_one("#scan-orig-slot").display
+        assert review.query_one("#scan-rel-slot").display
         assert review.query_one("#scan-accept").display
         assert review.query_one("#scan-actions").display
+        assert review.query_one("#scan-read").display
+        assert review.query_one("#scan-read-related").display
+
+
+async def test_scan_highlight_does_not_switch_original_read(tmp_path: Path) -> None:
+    from tui_renamer.preview import build_preview
+    from tui_renamer.scan_backend import MockBackend, Recognition
+    from tui_renamer.scan_ui import ReviewScreen
+
+    class SplitBackend(MockBackend):
+        def recognize(self, image, *, model: str) -> Recognition:
+            if Path(image).name == "trip_b.jpg":
+                self.recognize_calls.append((str(image), model))
+                return Recognition(
+                    transcription="verso writing",
+                    notes="",
+                    dates=[],
+                    engine="mock",
+                    model=model or "mock",
+                    raw="verso writing",
+                    tokens=["verso"],
+                    people_present=False,
+                    people_count=None,
+                )
+            return super().recognize(image, model=model)
+
+    front = tmp_path / "trip_a.jpg"
+    back = tmp_path / "trip_b.jpg"
+    _jpeg_photo(front, (1, 2, 3))
+    _jpeg_photo(back, (4, 5, 6))
+    backend = SplitBackend(vision_models=["mock"], loaded_models=["mock"])
+    app = RenamerApp(tmp_path)
+    app.scan_backend = backend
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        review.query_one("#scan-model", Input).value = "mock"
+        review.action_read()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        original_count = len(backend.recognize_calls)
+        assert backend.recognize_calls[-1][0].endswith("trip_a.jpg")
+        assert any("Aunt May" in label for label in _chip_labels(review))
+        assert review.related is None
+        review.highlight = back
+        review._preview_job += 1
+        review._fill_related_preview(back, review._preview_job)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        review.action_read()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(backend.recognize_calls) == original_count + 1
+        assert backend.recognize_calls[-1][0].endswith("trip_a.jpg")
+        assert review.related is None
+        review.action_read_related()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert backend.recognize_calls[-1][0].endswith("trip_b.jpg")
+        assert review.related == back
+        sources = {item.source for item in review.bits}
+        assert "trip_a.jpg" in sources
+        assert "trip_b.jpg" in sources
+        assert any("verso" in item.label for item in review.bits)
+        assert any("Aunt May" in item.label for item in review.bits)
+        orig = review.query_one("#scan-orig-slot")
+        rel = review.query_one("#scan-rel-slot")
+        assert orig.children
+        assert rel.children
+        stale_job = review._preview_job
+        review._preview_job += 1
+        review._related_preview_done(stale_job, back, build_preview(back, review.cache))
+        assert review.query_one("#scan-orig-slot").children
+
+
+async def test_scan_suffix_preview_accept_reopen_refresh_apply(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_notes import load_notes, notes_path_for
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "keep.jpg"
+    other = tmp_path / "plain.jpg"
+    _jpeg_photo(photo, (8, 8, 8))
+    _jpeg_photo(other, (9, 9, 9))
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        add = review.query_one("#scan-add", Input)
+        add.value = "alpha"
+        add.focus()
+        await pilot.press("enter")
+        add.value = "beta"
+        await pilot.press("enter")
+        await pilot.pause()
+        alpha = next(item for item in review.bits if item.label == "alpha")
+        beta = next(item for item in review.bits if item.label == "beta")
+        review._cycle_bit(beta)
+        review._cycle_bit(alpha)
+        review._paint_name_preview()
+        shown = str(review.query_one("#scan-name-preview").render())
+        assert "New: keep-beta-alpha.jpg" in shown
+        while beta.use_name:
+            review._cycle_bit(beta)
+        review._cycle_bit(beta)
+        review._paint_name_preview()
+        shown = str(review.query_one("#scan-name-preview").render())
+        assert "New: keep-alpha-beta.jpg" in shown
+        alpha.label = "alpha-edit"
+        review._paint_name_preview()
+        shown = str(review.query_one("#scan-name-preview").render())
+        assert "New: keep-alpha-edit-beta.jpg" in shown
+        review.action_accept()
+        await pilot.pause()
+        notes = load_notes(notes_path_for(photo))
+        assert notes is not None
+        assert notes.name_suffix == ["alpha-edit", "beta"]
+        assert app.preview_for(0) == "keep-alpha-edit-beta.jpg"
+        app.rules.strip_original_name = True
+        assert app.preview_for(0) == "alpha-edit-beta.jpg"
+        app.rules.strip_original_name = False
+        app.manual[0] = "custom.jpg"
+        assert app.preview_for(0) == "custom-alpha-edit-beta.jpg"
+        del app.manual[0]
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        add = review.query_one("#scan-add", Input)
+        add.value = "gamma"
+        add.focus()
+        await pilot.press("enter")
+        await pilot.press("escape")
+        await pilot.pause()
+        notes = load_notes(notes_path_for(photo))
+        assert notes is not None
+        assert "gamma" not in notes.name_suffix
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        labels = [item.label for item in review.bits]
+        assert "gamma" not in labels
+        assert "alpha-edit" in labels
+        assert "beta" in labels
+        review.action_close()
+        await pilot.pause()
+        app.action_reload_files()
+        await pilot.pause()
+        assert app.preview_for(0) == "keep-alpha-edit-beta.jpg"
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        renamed = tmp_path / "keep-alpha-edit-beta.jpg"
+        assert renamed.exists()
+        assert notes_path_for(renamed).exists()
+        assert not notes_path_for(photo).exists()
+        loaded = load_notes(notes_path_for(renamed))
+        assert loaded is not None
+        assert loaded.name_suffix == ["alpha-edit", "beta"]
+        await pilot.press("u")
+        await pilot.pause()
+        assert photo.exists()
+        assert notes_path_for(photo).exists()
+        other_index = next(
+            index for index, path in enumerate(app.files) if path.name == "plain.jpg"
+        )
+        assert app.preview_for(other_index) == "plain.jpg"
+        assert other.exists()
+
+
+async def test_scan_lock_ignores_suffix(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "lockme.jpg"
+    _jpeg_photo(photo)
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        app.locked[0] = "lockme.jpg"
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        add = review.query_one("#scan-add", Input)
+        add.value = "tag"
+        add.focus()
+        await pilot.press("enter")
+        item = review.bits[0]
+        review._cycle_bit(item)
+        review._paint_name_preview()
+        shown = str(review.query_one("#scan-name-preview").render())
+        assert shown.startswith("Locked:")
+        review.action_accept()
+        await pilot.pause()
+        assert app.preview_for(0) == "lockme.jpg"
+        assert app._rename_pairs()[0][1] == "lockme.jpg"
