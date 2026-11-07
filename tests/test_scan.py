@@ -411,6 +411,7 @@ def test_recommendations_and_setup_text() -> None:
     )
     blob = " ".join(lines)
     assert "optional" in blob.casefold()
+    assert "j/k" in blob
     assert "example.test" in blob
     assert LIGHT.pull_command() in blob
     assert DEFAULT.pull_command() in blob

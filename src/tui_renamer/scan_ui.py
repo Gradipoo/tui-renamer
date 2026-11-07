@@ -38,7 +38,12 @@ class ReviewScreen(ModalScreen[StageResult | None]):
     """Analyze the current photo. A related file is optional."""
 
     BINDINGS = [
-        Binding("escape", "close", show=False),
+        Binding("escape", "escape", show=False),
+        Binding("q", "back", show=False),
+        Binding("j", "cursor_down", show=False),
+        Binding("k", "cursor_up", show=False),
+        Binding("down", "cursor_down", show=False),
+        Binding("up", "cursor_up", show=False),
         Binding("r", "read", show=False),
         Binding("R", "read_related", show=False),
         Binding("x", "cancel_read", show=False),
@@ -168,7 +173,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
                     "Esc Close",
                     id="scan-close",
                     compact=True,
-                    tooltip="Close and keep the staged name",
+                    tooltip="Close and keep the staged name (q or Esc)",
                 )
             yield Static("", id="scan-help", markup=False)
             yield Static("", id="scan-cmd", markup=False)
@@ -199,6 +204,92 @@ class ReviewScreen(ModalScreen[StageResult | None]):
     def action_close(self) -> None:
         self._discard_jobs()
         self.dismiss(self._stage_result())
+
+    def action_escape(self) -> None:
+        if self._blur_input():
+            return
+        self.action_close()
+
+    def action_back(self) -> None:
+        if self._focused_input() is not None:
+            return
+        self.action_close()
+
+    def action_cursor_down(self) -> None:
+        self._move_cursor(1)
+
+    def action_cursor_up(self) -> None:
+        self._move_cursor(-1)
+
+    def _focused_input(self) -> Input | None:
+        focused = self.focused
+        if isinstance(focused, Input):
+            return focused
+        return None
+
+    def _blur_input(self) -> bool:
+        box = self._focused_input()
+        if box is None:
+            return False
+        self.query_one("#scan-left").focus()
+        return True
+
+    def _move_cursor(self, delta: int) -> None:
+        if self._focused_input() is not None:
+            return
+        picker = self.query_one("#scan-model-pick", OptionList)
+        if picker.display and self._focus_in(picker):
+            self._move_options(picker, delta)
+            return
+        related = self.query_one("#scan-related-list", OptionList)
+        if self._focus_in(related):
+            self._move_options(related, delta)
+            return
+        chips = list(self.query(".scan-chip"))
+        current = self._chip_from_focus()
+        if chips and current is not None:
+            index = chips.index(current)
+            nxt = index + delta
+            if 0 <= nxt < len(chips):
+                self._focus_widget(chips[nxt])
+            return
+        if chips:
+            target = chips[0] if delta > 0 else chips[-1]
+            self._focus_widget(target)
+            return
+        related.focus()
+        self._move_options(related, delta)
+
+    def _focus_in(self, widget) -> bool:
+        focused = self.focused
+        if focused is None:
+            return False
+        return focused is widget or widget in focused.ancestors
+
+    def _chip_from_focus(self) -> Button | None:
+        focused = self.focused
+        if focused is None:
+            return None
+        if focused.has_class("scan-chip") and isinstance(focused, Button):
+            return focused
+        if focused.has_class("scan-meta"):
+            parent = focused.parent
+            if parent is not None:
+                matches = list(parent.query(".scan-chip"))
+                if matches and isinstance(matches[0], Button):
+                    return matches[0]
+        return None
+
+    def _move_options(self, listing: OptionList, delta: int) -> None:
+        if delta > 0:
+            listing.action_cursor_down()
+        else:
+            listing.action_cursor_up()
+        listing.scroll_to_highlight()
+
+    def _focus_widget(self, widget) -> None:
+        widget.focus()
+        widget.scroll_visible()
 
     def action_help(self) -> None:
         box = self.query_one("#scan-help", Static)

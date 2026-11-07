@@ -738,6 +738,13 @@ class RenamerApp(App[None]):
         color: $text;
         text-style: bold;
     }
+    ReviewScreen .scan-chip:focus, ReviewScreen .scan-meta:focus {
+        text-style: underline;
+    }
+    ReviewScreen .scan-chip.-on:focus, ReviewScreen .scan-meta.-on:focus {
+        text-style: bold underline;
+    }
+    ReviewScreen OptionList:focus { border: tall $accent; }
     ReviewScreen #scan-actions { height: auto; dock: bottom; }
     ReviewScreen #scan-model-pick { height: auto; max-height: 8; }
     ReviewScreen #scan-related-list { height: 1fr; min-height: 6; }

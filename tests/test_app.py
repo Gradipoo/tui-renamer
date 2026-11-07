@@ -1390,7 +1390,7 @@ async def test_scan_suffix_preview_accept_reopen_refresh_apply(tmp_path: Path) -
         add.value = "gamma"
         add.focus()
         await pilot.press("enter")
-        await pilot.press("escape")
+        review.action_close()
         await pilot.pause()
         assert not notes_path_for(photo).exists()
         await pilot.press("S")
@@ -1574,3 +1574,185 @@ async def test_scan_metadata_only_apply_without_rename(tmp_path: Path) -> None:
         loaded = piexif.load(str(photo))
         assert b"lake" in loaded["0th"][piexif.ImageIFD.ImageDescription]
         assert notes_path_for(photo).exists()
+
+
+async def test_scan_jk_moves_chips_without_toggle(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo)
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        add = review.query_one("#scan-add", Input)
+        add.value = "alpha"
+        add.focus()
+        await pilot.press("enter")
+        add.value = "beta"
+        await pilot.press("enter")
+        await pilot.pause()
+        chips = list(review.query(".scan-chip"))
+        chips[0].focus()
+        await pilot.pause()
+        review.action_cursor_down()
+        await pilot.pause()
+        assert review.focused is chips[1]
+        assert review.bits[0].use_name is False
+        assert review.bits[1].use_name is False
+        review.action_cursor_up()
+        await pilot.pause()
+        assert review.focused is chips[0]
+
+
+async def test_scan_jk_related_highlight_does_not_read(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_ui import ReviewScreen
+
+    front = tmp_path / "trip_a.jpg"
+    back = tmp_path / "trip_b.jpg"
+    extra = tmp_path / "zz.jpg"
+    _jpeg_photo(front, (1, 1, 1))
+    _jpeg_photo(back, (2, 2, 2))
+    _jpeg_photo(extra, (3, 3, 3))
+    backend = MockBackend(vision_models=["mock"])
+    app = RenamerApp(tmp_path)
+    app.scan_backend = backend
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        before = list(backend.recognize_calls)
+        review.action_related()
+        review.action_cursor_down()
+        await pilot.pause()
+        assert review.related is None
+        assert backend.recognize_calls == before
+        review.action_cursor_up()
+        await pilot.pause()
+        assert review.related is None
+        assert backend.recognize_calls == before
+
+
+async def test_scan_model_jk_does_not_read_until_enter(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_config import load_scan_settings
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo)
+    backend = MockBackend(vision_models=["gemma3:4b", "qwen3.5:2b"], loaded_models=["gemma3:4b"])
+    app = RenamerApp(tmp_path)
+    app.scan_backend = backend
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        picker = review.query_one("#scan-model-pick", OptionList)
+        assert picker.display is True
+        picker.focus()
+        review.action_cursor_down()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert backend.recognize_calls == []
+        picker.action_select()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert load_scan_settings().model in {"gemma3:4b", "qwen3.5:2b"}
+        assert len(backend.recognize_calls) == 1
+
+
+async def test_scan_input_types_jkq_escape_blurs_tab_leaves(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo)
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        add = review.query_one("#scan-add", Input)
+        add.focus()
+        await pilot.press("j")
+        await pilot.press("k")
+        await pilot.press("q")
+        await pilot.pause()
+        assert add.value == "jkq"
+        assert isinstance(app.screen, ReviewScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ReviewScreen)
+        assert add.value == "jkq"
+        assert not isinstance(review.focused, Input)
+        add.focus()
+        await pilot.press("tab")
+        await pilot.pause()
+        assert review.focused is not add
+
+
+async def test_scan_q_closes_keeps_suffix_app_running(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "keep.jpg"
+    _jpeg_photo(photo)
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        add = review.query_one("#scan-add", Input)
+        add.value = "lake"
+        add.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        review.query_one("#scan-left").focus()
+        review._toggle_name(review.bits[0])
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause()
+        assert not isinstance(app.screen, ReviewScreen)
+        assert app.preview_for(0) == "keep-lake.jpg"
+        assert app.is_running
+
+
+async def test_main_jk_and_q_unchanged_outside_scan(tmp_path: Path) -> None:
+    one = tmp_path / "a.txt"
+    two = tmp_path / "b.txt"
+    one.write_text("a", encoding="utf-8")
+    two.write_text("b", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert app._cursor == 0
+        await pilot.press("j")
+        await pilot.pause()
+        assert app._cursor == 1
+        await pilot.press("k")
+        await pilot.pause()
+        assert app._cursor == 0
+        keys = [binding.key for binding in RenamerApp.BINDINGS]
+        assert "q" in keys
+        quit_action = next(binding.action for binding in RenamerApp.BINDINGS if binding.key == "q")
+        assert quit_action == "quit"
