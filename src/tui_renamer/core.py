@@ -614,14 +614,27 @@ def _show(moment: datetime, zone: tzinfo) -> str:
     return f"{shown.strftime('%Y-%m-%d %H:%M:%S')} {format_offset(shown)}"
 
 
+def utc_from_timestamp(stamp: float) -> datetime | None:
+    """UTC datetime for a POSIX timestamp. None when the platform cannot convert it.
+
+    Windows rejects some pre-1970 values that NTFS can still store.
+    """
+    try:
+        return datetime.fromtimestamp(stamp, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
 def _fs_times(path: Path) -> tuple[datetime | None, datetime | None]:
     try:
         stat = path.stat()
     except OSError:
         return None, None
-    modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-    birth_ts = getattr(stat, "st_birthtime", stat.st_ctime)
-    birth = datetime.fromtimestamp(birth_ts, tz=timezone.utc)
+    modified = utc_from_timestamp(stat.st_mtime)
+    birth_ts = getattr(stat, "st_birthtime", None)
+    if birth_ts is None:
+        birth_ts = stat.st_ctime
+    birth = utc_from_timestamp(birth_ts)
     return modified, birth
 
 

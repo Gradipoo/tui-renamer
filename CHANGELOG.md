@@ -10,6 +10,7 @@
 - Photo review name tags keep their typed labels. Lowercase, drop symbols, spaces to dashes, and dots to dashes format those tags in the New filename.
 - A written calendar day used in an S filename uses the ordinary YYYY-MM-DD-HHMMSS stamp. Date-only days use 12:00. That noon is assumed.
 - A whole chip label that is an English calendar day, including model tokens and typed `Oct 20, 1994`, uses that stamp. A sentence that contains a date does not.
+- Inspecting a file after writing a pre-1970 capture date no longer crashes on Windows.
 
 ## 0.1.3
 

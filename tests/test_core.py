@@ -42,6 +42,7 @@ from tui_renamer.core import (
     show_not_oldest_warning,
     strip_existing_timestamps,
     timeline_bins,
+    utc_from_timestamp,
 )
 
 UTC = timezone.utc
@@ -661,3 +662,13 @@ def test_timeline_bins_mark_the_highlight_and_skip_empty_clocks() -> None:
     assert timeline_bins([None, None], 4, 0) == ""
     crowded = timeline_bins([early, early, early, early, early], 3, 1)
     assert "#" in crowded
+
+
+def test_utc_from_timestamp_skips_platform_invalid_values() -> None:
+    epoch = utc_from_timestamp(0)
+    assert epoch is not None
+    assert epoch.year == 1970
+    assert utc_from_timestamp(1e30) is None
+    written = datetime(1961, 7, 4, 12, 0, 0, tzinfo=UTC)
+    converted = utc_from_timestamp(written.timestamp())
+    assert converted is None or converted == written

@@ -15,6 +15,7 @@ from pathlib import Path
 from rich.style import Style
 from rich.text import Text
 
+from tui_renamer.core import utc_from_timestamp
 from tui_renamer.scan_pairing import (
     BACK_TAGS,
     FRONT_TAGS,
@@ -127,9 +128,9 @@ def stat_clocks(path: Path) -> FileClocks:
         stat = path.stat()
     except OSError:
         return FileClocks()
-    mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+    mtime = utc_from_timestamp(stat.st_mtime)
     birth_ts = getattr(stat, "st_birthtime", None)
-    birth = None if birth_ts is None else datetime.fromtimestamp(birth_ts, tz=timezone.utc)
+    birth = None if birth_ts is None else utc_from_timestamp(birth_ts)
     return FileClocks(mtime=mtime, birth=birth)
 
 
