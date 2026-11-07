@@ -71,6 +71,7 @@ from tui_renamer.core import (
     resolve_tz,
     show_not_oldest_warning,
     timeline_bins,
+    utc_from_timestamp,
 )
 from tui_renamer.journal import Batch, Journal, MetaOp, RenameOp
 from tui_renamer.metadata import (
@@ -2906,9 +2907,18 @@ class RenamerApp(App[None]):
 
     def action_undo(self) -> None:
         self._begin()
+        self._preview_gen += 1
+        self.workers.cancel_group(self, "preview")
+        self.workers.cancel_group(self, "preview-show")
+        self._thumbs = file_preview.ThumbCache()
+        self._facts.clear()
+        self.query("#preview-image").remove()
 
         def restore_birth(path: Path, birth: float) -> None:
-            set_birthtime(path, datetime.fromtimestamp(birth).astimezone(), setfile=self.setfile)
+            moment = utc_from_timestamp(birth)
+            if moment is None:
+                return
+            set_birthtime(path, moment.astimezone(), setfile=self.setfile)
 
         last = self.journal.batches[-1] if self.journal.batches else None
         reverse = (

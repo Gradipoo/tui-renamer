@@ -26,6 +26,7 @@ None.
 ## Known gotchas
 
 - `datetime.fromtimestamp` on Windows raises `OSError: [Errno 22]` for some pre-1970 `st_birthtime` values after a written-day capture write. `utc_from_timestamp` returns None instead of crashing inspect/preview.
+- Windows `Path.rename` refuses to replace an existing destination. Journal undo uses `os.replace`, then copy plus unlink if replace is blocked (file in use). Undo also drops the preview widget and cache first so the image file is not held open.
 - `piexif.load` on a JPEG Pillow just saved still returns a tiny EXIF blob, so "no exif" is not the same as `had_exif is False`.
 - Filename date planning uses `source_tz is None` for the system zone. Passing the local tzinfo is not the same call.
 - The dashed timestamp strip (`YYYY-MM-DD-HHMMSS` at either end) always runs, even when every toggle is off.

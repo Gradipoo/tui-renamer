@@ -117,6 +117,43 @@ def test_failed_copy_is_reported_and_times_still_restore(
     assert abs(path.stat().st_mtime - old) < 1
 
 
+def test_undo_rename_replaces_an_existing_source_name(tmp_path: Path) -> None:
+    src = tmp_path / "keep.jpg"
+    dst = tmp_path / "keep-1994-10-20-120000.jpg"
+    src.write_text("orig", encoding="utf-8")
+    src.rename(dst)
+    leftover = tmp_path / "keep.jpg"
+    leftover.write_text("stale", encoding="utf-8")
+    journal = Journal(tmp_path / "undo")
+    journal.push(Batch("rename", [RenameOp(src, dst)]))
+    result = journal.undo()
+    assert result is not None
+    assert result.notes == []
+    assert src.read_text(encoding="utf-8") == "orig"
+    assert not dst.exists()
+
+
+def test_undo_rename_copies_when_replace_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "keep.jpg"
+    dst = tmp_path / "keep-1994-10-20-120000.jpg"
+    src.write_text("orig", encoding="utf-8")
+    src.rename(dst)
+    journal = Journal(tmp_path / "undo")
+    journal.push(Batch("rename", [RenameOp(src, dst)]))
+
+    def blocked(_src: str | os.PathLike[str], _dst: str | os.PathLike[str]) -> None:
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(os, "replace", blocked)
+    result = journal.undo()
+    assert result is not None
+    assert result.notes == []
+    assert src.read_text(encoding="utf-8") == "orig"
+    assert not dst.exists()
+
+
 def test_cleanup_removes_the_temp_copy(tmp_path: Path) -> None:
     path = tmp_path / "clip.mov"
     path.write_bytes(b"video")
