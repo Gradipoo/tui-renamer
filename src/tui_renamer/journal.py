@@ -116,15 +116,25 @@ class Journal:
 
 
 def _undo_rename(op: RenameOp, notes: list[str]) -> bool:
+    if op.src.exists() and not op.dst.exists():
+        return True
     if not op.dst.exists():
         notes.append(f"{op.dst.name} is missing, so it was not restored")
         return False
     try:
-        op.dst.rename(op.src)
+        os.replace(op.dst, op.src)
+        return True
     except OSError as exc:
-        notes.append(f"{op.dst.name}: {exc}")
-        return False
-    return True
+        try:
+            shutil.copy2(op.dst, op.src)
+            try:
+                op.dst.unlink()
+            except OSError:
+                pass
+        except OSError:
+            notes.append(f"{op.dst.name}: {exc}")
+            return False
+        return op.src.exists()
 
 
 def _undo_meta(

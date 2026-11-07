@@ -83,6 +83,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     _spec("Actions", "T", "Timezone", "Choose a timezone", "timezone"),
     _spec("Actions", "u", "Undo", "Undo the last batch", "undo"),
     _spec("Actions", "P", "Preview", "Show or hide the preview", "preview", "preview_on"),
+    _spec(
+        "Actions",
+        "S",
+        "Scan review",
+        "Review this photo. j/k move, q back. Ollama is optional",
+        "scan_review",
+    ),
     _spec("Actions", "ctrl+0", "Reset view", "Reset preview and zoom", "reset_view"),
     _spec("Actions", "r", "Refresh", "Reload the folder", "reload_files"),
     _spec("Actions", "?", "Help", "Show commands", "help"),
@@ -98,6 +105,7 @@ FILE_ACTIONS = {
     "mtime_mode",
     "write_timezone",
     "write_geodata",
+    "scan_review",
 }
 
 

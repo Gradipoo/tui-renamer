@@ -48,6 +48,7 @@ from tui_renamer.core import (
     date_source,
     datetime_for_write,
     delta_text,
+    filename_clock_text,
     filter_timezones,
     fit_middle,
     flag_letter,
@@ -63,14 +64,16 @@ from tui_renamer.core import (
     neighbor_flags,
     parse_filename_datetime,
     plan_filename_dates,
+    preview_base,
     preview_name,
     rename_paths,
     reset_name_rules,
     resolve_tz,
     show_not_oldest_warning,
     timeline_bins,
+    utc_from_timestamp,
 )
-from tui_renamer.journal import Batch, Journal, RenameOp
+from tui_renamer.journal import Batch, Journal, MetaOp, RenameOp
 from tui_renamer.metadata import (
     IMAGE_EXTENSIONS,
     PIEXIF_AVAILABLE,
@@ -85,7 +88,27 @@ from tui_renamer.metadata import (
     timezone_write_message,
     write_file_metadata_and_offset,
     write_geodata,
+    write_image_description,
 )
+from tui_renamer.scan_backend import OllamaBackend, ScanBackend
+from tui_renamer.scan_bits import (
+    PendingScan,
+    ScanSession,
+    StageResult,
+    apply_scan_suffix,
+    format_scan_parts,
+    format_scan_selected,
+    strip_accepted_suffix,
+)
+from tui_renamer.scan_config import load_scan_settings
+from tui_renamer.scan_notes import (
+    ScanNotes,
+    notes_path_for,
+    notes_renames,
+    rewrite_pairing_names,
+    save_notes,
+)
+from tui_renamer.scan_ui import ReviewScreen
 from tui_renamer.search import (
     find_label,
     first_at_or_after,
@@ -137,6 +160,7 @@ BUTTON_TIPS = {
     "act-gps": "Write JSON location into EXIF",
     "act-refresh": "Reload the folder",
     "act-reset": "Reset name options",
+    "act-scan": "Review this photo",
 }
 
 
@@ -430,6 +454,7 @@ class FileTable(DataTable):
         Binding("pagedown", "app.page_down", show=False),
         Binding("g", "app.leader_g", show=False),
         Binding("G", "app.goto_end", show=False),
+        Binding("S", "app.scan_review", show=False),
     ]
 
     def __init__(self, **kwargs: object) -> None:
@@ -569,6 +594,7 @@ class OptionsPane(Vertical):
                 "r Refresh", id="act-refresh", compact=True, tooltip=BUTTON_TIPS["act-refresh"]
             )
             yield Button("0 Reset", id="act-reset", compact=True, tooltip=BUTTON_TIPS["act-reset"])
+            yield Button("S Photo", id="act-scan", compact=True, tooltip=BUTTON_TIPS["act-scan"])
 
 
 SOURCE_STYLE = {
@@ -694,7 +720,46 @@ class RenamerApp(App[None]):
     .-zoom-preview #detail-scroll { display: none; }
     .-zoom-preview #preview-slot { height: 1fr; max-height: 100%; }
     .-zoom-preview #preview-image { height: 1fr; }
-    ConfirmScreen, CommandScreen, TimezoneScreen, InsertScreen { align: center middle; }
+    ConfirmScreen, CommandScreen, TimezoneScreen, InsertScreen,
+        ReviewScreen { align: center middle; }
+    ReviewScreen #scan-dialog {
+        width: 96;
+        max-width: 98%;
+        height: 90%;
+        max-height: 90%;
+        background: $panel;
+        border: thick $primary;
+        padding: 1 2;
+    }
+    ReviewScreen #scan-body { height: 1fr; }
+    ReviewScreen #scan-left, ReviewScreen #scan-right { width: 1fr; height: 1fr; }
+    ReviewScreen.-narrow #scan-body { layout: vertical; }
+    ReviewScreen #scan-previews { height: 10; }
+    ReviewScreen #scan-orig-slot, ReviewScreen #scan-rel-slot { width: 1fr; height: 10; }
+    ReviewScreen.-narrow #scan-previews { layout: vertical; height: auto; }
+    ReviewScreen.-narrow #scan-orig-slot, ReviewScreen.-narrow #scan-rel-slot { height: 8; }
+    ReviewScreen #scan-name-preview { height: auto; color: $text-muted; }
+    ReviewScreen #scan-chips { layout: vertical; height: auto; }
+    ReviewScreen .scan-chip-row { height: auto; }
+    ReviewScreen .scan-chip { width: 1fr; color: $text-muted; }
+    ReviewScreen .scan-meta { width: auto; color: $text-muted; }
+    ReviewScreen .scan-chip.-on, ReviewScreen .scan-meta.-on {
+        background: $accent;
+        color: $text;
+        text-style: bold;
+    }
+    ReviewScreen .scan-chip:focus, ReviewScreen .scan-meta:focus {
+        text-style: underline;
+    }
+    ReviewScreen .scan-chip.-on:focus, ReviewScreen .scan-meta.-on:focus {
+        text-style: bold underline;
+    }
+    ReviewScreen OptionList:focus { border: tall $accent; }
+    ReviewScreen #scan-actions { height: auto; dock: bottom; }
+    ReviewScreen #scan-model-pick { height: auto; max-height: 8; }
+    ReviewScreen #scan-related-list { height: 1fr; min-height: 6; }
+    ReviewScreen #scan-help { height: auto; max-height: 10; }
+    ReviewScreen #scan-cmd { height: auto; }
     #dialog {
         width: 72;
         max-width: 90%;
@@ -767,6 +832,7 @@ class RenamerApp(App[None]):
         Binding("T", "timezone", show=False),
         Binding("u", "undo", show=False),
         Binding("r", "reload_files", show=False),
+        Binding("S", "scan_review", show=False),
     ]
 
     def __init__(self, directory: Path, debug: bool = False) -> None:
@@ -809,6 +875,11 @@ class RenamerApp(App[None]):
         self._new_width = 8
         self._zoom: str | None = None
         self._syncing = False
+        self.scan_backend: ScanBackend | None = None
+        self.scan_pending: dict[str, PendingScan] = {}
+        self.scan_suffix: dict[str, list[str]] = {}
+        self.scan_accepted: dict[str, list[str]] = {}
+        self.scan_sessions: dict[str, ScanSession] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -830,7 +901,7 @@ class RenamerApp(App[None]):
         self.preview_on = saved.preview
         self.query_one("#preview-slot").set_class(not saved.preview, "-off")
         self._set_zoom(saved.zoom, persist=False)
-        self.rules.datetime_stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        self.rules.datetime_stamp = filename_clock_text(datetime.now())
         self.reload_files()
         if not self.exiftool:
             self.set_status(
@@ -878,7 +949,7 @@ class RenamerApp(App[None]):
             return
         if not self.rules.add_datetime or len(self.screen_stack) > 1:
             return
-        stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        stamp = filename_clock_text(datetime.now())
         if stamp != self.rules.datetime_stamp:
             self.rules.datetime_stamp = stamp
             self.refresh_view()
@@ -903,6 +974,16 @@ class RenamerApp(App[None]):
         self._cursor = 0
         self.visual = False
         self.anchor = None
+        alive = {path.resolve() for path in self.files}
+        self.scan_pending = {
+            key: item for key, item in self.scan_pending.items() if item.path.resolve() in alive
+        }
+        names = {str(path) for path in self.files}
+        self.scan_suffix = {key: parts for key, parts in self.scan_suffix.items() if key in names}
+        self.scan_accepted = {
+            key: parts for key, parts in self.scan_accepted.items() if key in names
+        }
+        self.scan_sessions = {key: item for key, item in self.scan_sessions.items() if key in names}
 
     def target_zone(self) -> tzinfo:
         return resolve_tz(self.rules.source_tz)
@@ -924,9 +1005,20 @@ class RenamerApp(App[None]):
         path = self.files[index]
         if index in self.locked:
             return self.locked[index]
+        key = str(path)
+        accepted = self.scan_accepted.get(key, [])
+        parts = self._formatted_scan_parts(path)
         if index in self.manual:
-            return self.manual[index]
-        return preview_name(path.name, self.facts_for(path), self.rules)
+            return apply_scan_suffix(self.manual[index], parts, accepted=accepted)
+        file_stem, _ext = os.path.splitext(path.name)
+        bare = strip_accepted_suffix(file_stem, accepted)
+        stem, ext = preview_base(path.name, self.facts_for(path), self.rules, stem=bare)
+        return apply_scan_suffix(
+            path.name,
+            parts,
+            accepted=[],
+            stem=stem if stem else "",
+        )
 
     def refresh_view(self) -> None:
         self._recompute_changing()
@@ -2080,7 +2172,7 @@ class RenamerApp(App[None]):
             state = "on" if self.rules.use_json_data else "off"
             self.set_status(f"JSON data is {state}")
         if field == "add_datetime" and self.rules.add_datetime:
-            self.rules.datetime_stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            self.rules.datetime_stamp = filename_clock_text(datetime.now())
         self.refresh_view()
 
     def _sync_options(self) -> None:
@@ -2139,9 +2231,63 @@ class RenamerApp(App[None]):
             "act-gps": "write_geodata",
             "act-refresh": "reload_files",
             "act-reset": "reset_rules",
+            "act-scan": "scan_review",
         }.get(event.button.id or "")
         if run:
             getattr(self, f"action_{run}")()
+
+    def action_scan_review(self) -> None:
+        self._begin()
+        if self._find_open or not self.files:
+            return
+        start = self.files[self._cursor]
+        settings = load_scan_settings()
+        backend = self.scan_backend or OllamaBackend(host=settings.host)
+        facts = self.facts_for(start)
+
+        def done(result: StageResult | None) -> None:
+            if result is None:
+                return
+            self.stage_scan_review(result, refresh=True, closing=True)
+
+        stem, ext = self._ordinary_stem_ext(self._cursor)
+        key = str(start)
+        self.push_screen(
+            ReviewScreen(
+                self.files,
+                start=start,
+                backend=backend,
+                settings=settings,
+                zone=self.target_zone(),
+                has_capture=facts.has_exif,
+                base_stem=stem,
+                base_ext=ext,
+                locked=self._cursor in self.locked,
+                accepted_suffix=list(self.scan_accepted.get(key, [])),
+                session=self.scan_sessions.get(key),
+            ),
+            done,
+        )
+
+    def stage_scan_review(
+        self,
+        result: StageResult,
+        *,
+        refresh: bool = True,
+        closing: bool = False,
+    ) -> None:
+        key = str(result.subject)
+        self.scan_suffix[key] = list(result.suffix_parts)
+        if result.session is not None:
+            self.scan_sessions[key] = result.session
+        if closing:
+            if result.pending is not None:
+                self.scan_pending[key] = result.pending
+            else:
+                self.scan_pending.pop(key, None)
+        if closing and refresh:
+            self.set_status(result.message)
+            self.refresh_view()
 
     def action_reset_rules(self) -> None:
         self._begin()
@@ -2254,7 +2400,7 @@ class RenamerApp(App[None]):
             return
         if not self.files:
             return
-        stem, extension = split_stem(self.preview_for(self._cursor))
+        stem, extension = split_stem(self._ordinary_name(self._cursor))
 
         def done(result: tuple[str, str] | None) -> None:
             if not result:
@@ -2307,15 +2453,90 @@ class RenamerApp(App[None]):
 
         self.push_screen(TimezoneScreen(self.rules.source_tz), done)
 
+    def _formatted_scan_parts(self, path: Path) -> list[str]:
+        key = str(path)
+        session = self.scan_sessions.get(key)
+        if session is not None:
+            return format_scan_selected(session.bits, self.rules)
+        return format_scan_parts(self.scan_suffix.get(key, []), self.rules)
+
+    def _remap_scan_map(
+        self, store: dict[str, list[str]], path_map: dict[Path, Path]
+    ) -> dict[str, list[str]]:
+        moved: dict[str, list[str]] = {}
+        for key, parts in store.items():
+            dest = path_map.get(Path(key), Path(key))
+            moved[str(dest)] = parts
+        return moved
+
+    def _remap_sessions(self, path_map: dict[Path, Path]) -> dict[str, ScanSession]:
+        moved: dict[str, ScanSession] = {}
+        for key, session in self.scan_sessions.items():
+            dest = path_map.get(Path(key), Path(key))
+            moved[str(dest)] = session
+        return moved
+
+    def _write_scan_notes(self, targets: set[Path]) -> list[str]:
+        errors: list[str] = []
+        for path in targets:
+            session = self.scan_sessions.get(str(path))
+            if session is None:
+                continue
+            payload = ScanNotes(
+                front=path.name,
+                back=session.related_name,
+                pairing_reason=session.related_reason or "none",
+                pairing_confirmed=session.related_name is not None,
+                engine=session.engine or "manual",
+                model=session.model if session.engine else "",
+                raw_transcription=session.raw,
+                notes="",
+                dates=[item.date for item in session.bits if item.date is not None],
+                bits=session.bits,
+                related_reason=session.related_reason,
+                name_suffix=list(
+                    self.scan_accepted.get(
+                        str(path), format_scan_selected(session.bits, self.rules)
+                    )
+                ),
+            )
+            try:
+                save_notes(notes_path_for(path), payload)
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+        return errors
+
+    def _ordinary_name(self, index: int) -> str:
+        path = self.files[index]
+        if index in self.locked:
+            return self.locked[index]
+        if index in self.manual:
+            return self.manual[index]
+        return preview_name(path.name, self.facts_for(path), self.rules)
+
+    def _ordinary_stem_ext(self, index: int) -> tuple[str, str]:
+        path = self.files[index]
+        if index in self.locked:
+            return os.path.splitext(self.locked[index])
+        if index in self.manual:
+            return os.path.splitext(self.manual[index])
+        accepted = self.scan_accepted.get(str(path), [])
+        file_stem, _ext = os.path.splitext(path.name)
+        bare = strip_accepted_suffix(file_stem, accepted)
+        return preview_base(path.name, self.facts_for(path), self.rules, stem=bare)
+
     def _rename_pairs(self) -> list[tuple[Path, str]]:
         names: dict[int, str] = dict(self.locked)
-        for index, name in self.manual.items():
-            names.setdefault(index, name)
-        for index in self.selected:
-            if index in names or index >= len(self.files):
+        for index, path in enumerate(self.files):
+            if index in names:
                 continue
-            path = self.files[index]
-            new_name = preview_name(path.name, self.facts_for(path), self.rules)
+            if (
+                index not in self.selected
+                and index not in self.manual
+                and str(path) not in self.scan_suffix
+            ):
+                continue
+            new_name = self.preview_for(index)
             if new_name != path.name:
                 names[index] = new_name
         pairs: list[tuple[Path, str]] = []
@@ -2341,23 +2562,112 @@ class RenamerApp(App[None]):
             self._ask_mtime()
             return
         pairs = [(src, name) for src, name in self._rename_pairs() if src.name != name]
-        if not pairs:
+        pending = list(self.scan_pending.values())
+        if not pairs and not pending:
             self.set_status("No changes to apply.")
             self._update_status()
             return
-        self._ask(f"Rename {len(pairs)} files?", lambda: self._do_rename(pairs))
+        parts = []
+        if pairs:
+            parts.append(f"Rename {len(pairs)} files")
+        date_n = sum(1 for item in pending if item.moment is not None)
+        desc_n = sum(1 for item in pending if item.description)
+        skip_n = sum(
+            1
+            for item in pending
+            if item.moment is not None and not item.overwrite and self.facts_for(item.path).has_exif
+        )
+        if date_n:
+            extra = f", skip {skip_n} existing capture dates" if skip_n else ""
+            parts.append(f"write {date_n} written calendar-day capture date(s) at noon{extra}")
+        if desc_n:
+            parts.append(f"write {desc_n} description(s) on JPEG/TIFF")
+        question = "; ".join(parts) + "? Session undo only. y or n"
+        self._ask(question, lambda: self._do_apply(pairs, pending))
 
     def _do_rename(self, pairs: list[tuple[Path, str]]) -> None:
-        outcome = rename_paths(pairs)
-        self.journal.push(Batch("rename", [RenameOp(src, dst) for src, dst in outcome.done]))
+        self._do_apply(pairs, [])
+
+    def _do_apply(
+        self,
+        pairs: list[tuple[Path, str]],
+        pending: list[PendingScan],
+    ) -> None:
+        ops: list[RenameOp | MetaOp] = []
+        path_map: dict[Path, Path] = {}
+        renamed = 0
+        conflicts = 0
+        errors: list[str] = []
+        note_targets = {src for src, _name in pairs}
+        note_targets.update(item.path for item in pending)
+        for path in note_targets:
+            key = str(path)
+            if key in self.scan_suffix:
+                self.scan_accepted[key] = self._formatted_scan_parts(path)
+        errors.extend(self._write_scan_notes(note_targets))
+        if pairs:
+            outcome = rename_paths(pairs)
+            ops.extend(RenameOp(src, dst) for src, dst in outcome.done)
+            extra = notes_renames(outcome.done)
+            if extra:
+                sidecar_out = rename_paths(extra)
+                ops.extend(RenameOp(src, dst) for src, dst in sidecar_out.done)
+                name_map = {src.name: dst.name for src, dst in outcome.done}
+                for _src, dst in sidecar_out.done:
+                    rewrite_pairing_names(dst, name_map)
+            path_map = {src: dst for src, dst in outcome.done}
+            self.scan_suffix = self._remap_scan_map(self.scan_suffix, path_map)
+            self.scan_accepted = self._remap_scan_map(self.scan_accepted, path_map)
+            self.scan_sessions = self._remap_sessions(path_map)
+            renamed = len(outcome.done)
+            conflicts = outcome.conflicts
+            errors = list(outcome.errors)
+        skipped = 0
+        dates = 0
+        descs = 0
+        for item in pending:
+            path = path_map.get(item.path, item.path)
+            if not path.exists():
+                continue
+            facts = self.facts_for(path)
+            write_date = item.moment is not None
+            if write_date and not item.overwrite and facts.has_exif:
+                write_date = False
+                skipped += 1
+            write_desc = bool(item.description) and path.suffix.lower() in IMAGE_EXTENSIONS
+            if not write_date and not write_desc:
+                continue
+            try:
+                op = self.journal.snapshot(path)
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            if write_date and item.moment is not None:
+                set_filesystem_times(path, item.moment, setfile=self.setfile)
+                if write_file_metadata_and_offset(path, item.moment, exiftool=self.exiftool):
+                    dates += 1
+            if write_desc and write_image_description(path, item.description):
+                descs += 1
+            ops.append(op)
+        kind = "apply" if pending else "rename"
+        self.journal.push(Batch(kind, ops))
+        self.scan_pending.clear()
         self.reload_files()
-        message = f"Renamed {len(outcome.done)} files."
-        if outcome.conflicts:
-            message += f" {outcome.conflicts} conflicts."
-        if outcome.errors:
-            message += f" {len(outcome.errors)} errors."
-            self.debug("; ".join(outcome.errors))
-        self.set_status(message)
+        parts: list[str] = []
+        if pairs:
+            parts.append(f"Renamed {renamed} files.")
+            if conflicts:
+                parts.append(f"{conflicts} conflicts.")
+        if dates:
+            parts.append(f"Wrote {dates} capture date(s).")
+        if skipped:
+            parts.append(f"Skipped {skipped} existing capture date(s).")
+        if descs:
+            parts.append(f"Wrote {descs} description(s).")
+        if errors:
+            parts.append(f"{len(errors)} errors.")
+            self.debug("; ".join(errors))
+        self.set_status(" ".join(parts) if parts else "Applied.")
         self.refresh_view()
 
     def _ask_mtime(self) -> None:
@@ -2597,15 +2907,34 @@ class RenamerApp(App[None]):
 
     def action_undo(self) -> None:
         self._begin()
+        self._preview_gen += 1
+        self.workers.cancel_group(self, "preview")
+        self.workers.cancel_group(self, "preview-show")
+        self._thumbs = file_preview.ThumbCache()
+        self._facts.clear()
+        self.query("#preview-image").remove()
 
         def restore_birth(path: Path, birth: float) -> None:
-            set_birthtime(path, datetime.fromtimestamp(birth).astimezone(), setfile=self.setfile)
+            moment = utc_from_timestamp(birth)
+            if moment is None:
+                return
+            set_birthtime(path, moment.astimezone(), setfile=self.setfile)
 
+        last = self.journal.batches[-1] if self.journal.batches else None
+        reverse = (
+            {op.dst: op.src for op in last.ops if isinstance(op, RenameOp)}
+            if last is not None
+            else {}
+        )
         result = self.journal.undo(restore_birth=restore_birth)
         if result is None:
             self.set_status("Nothing to undo.")
             self._update_status()
             return
+        if reverse:
+            self.scan_suffix = self._remap_scan_map(self.scan_suffix, reverse)
+            self.scan_accepted = self._remap_scan_map(self.scan_accepted, reverse)
+            self.scan_sessions = self._remap_sessions(reverse)
         self.reload_files()
         message = f"Undid {result.kind} ({result.restored} restored)."
         if result.notes:

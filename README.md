@@ -214,7 +214,40 @@ rn -d
 
 `rn` reads the terminal. If stdin is not a terminal, it exits. On Linux it also exits if the terminal device goes away, so closing the window does not leave the process running.
 
-Hidden files and `.json` sidecars are not listed. Sidecars are read when JSON mode is on. Sidecar lookup matches Google Takeout names, including `name.jpg.json`.
+Hidden files and `.json` sidecars are not listed. Sidecars are read when JSON mode is on. Sidecar lookup matches Google Takeout names, including `name.jpg.json`. Notes from scan review use `name.jpg.rn-notes.json` and are never used as Takeout dates.
+
+## Photo review
+
+`S` opens an optional review for the highlighted photo. Regular renaming is unchanged. Review does not start on its own. A related file is never required.
+
+You can type chips by hand, or send the chosen image to a local [Ollama](https://ollama.com) vision model that you already installed and started. `rn` does not identify people from appearance, and it does not infer sensitive attributes. Manual names are fine. Related-file candidates are listed with labels (Likely, Possible, Unlikely). Size alone is never Likely. Lack of evidence is not disproven. You choose a related file if you want one. The folder is not analyzed in bulk.
+
+Name chips stage an ordered suffix on the main New column as soon as you turn them on. Esc keeps that staging. The suffix is appended to the ordinary rename result. It is not a replacement for insert or the date and geo options. An empty ordinary stem plus tags becomes `tag1-tag2.ext` with no leading hyphen. Chip labels stay as typed. Lowercase, drop symbols, spaces to dashes, and dots to dashes apply to those tags in the New name, the same way they apply to the ordinary stem. Metadata is a separate control on a chip, off by default, and can be on without a filename tag. Images stay unchanged until you Apply on the main screen. Apply writes the notes sidecar, the rename, and any queued metadata. Opening, reading, toggling, or Esc does not write next to the photo. Existing capture dates are skipped unless you turn on overwrite in the overlay. Session undo covers that Apply batch. It does not recover files after you quit. Locked files keep their locked name. S tags do not rename a locked row.
+
+A year stays a year. Only a complete written calendar day can become capture metadata, using noon if you opt in. The same complete calendar day, as a whole chip label such as `Oct 20, 1994`, uses the ordinary `YYYY-MM-DD-HHMMSS` stamp in the filename. Date-only text uses 12:00. That noon is assumed, not a captured clock. A time already present in the written date is kept. A sentence that merely contains a date stays as text. Year, month, season, inferred, and unresolved ambiguous dates never become EXIF or a full timestamp. Filename recognition does not turn metadata on. Partial dates can still go in the sidecar and in a name you approve. Description writes JPEG/TIFF ImageDescription. Other types keep the text in the sidecar.
+
+Reading is optional. On a local host, a saved vision model is read when you open `S`. First use shows installed vision models instead of a typing field. `rn` does not install Ollama, pull a model, start the server, or upload images on its own. Host defaults to `http://127.0.0.1:11434`. A host that is not loopback is never auto-uploaded. The first Read must be confirmed, because the image is sent to that host.
+
+These tags were checked against the official library. They are not a handwriting-accuracy ranking, and we have not evaluated them on real scans.
+
+| Pick | Command | Download (not runtime RAM) | License | Source |
+| --- | --- | --- | --- | --- |
+| Light | `ollama pull qwen3.5:2b` | about 2.7 to 3.1 GB | Apache License 2.0 | [qwen3.5:2b](https://ollama.com/library/qwen3.5:2b) |
+| Default | `ollama pull gemma3:4b` | about 3.4 GB | Gemma Terms of Use | [gemma3:4b](https://ollama.com/library/gemma3:4b) |
+| Larger | `ollama pull gemma4:e4b` | about 6.6 to 9.5 GB | Gemma Terms of Use | [gemma4](https://ollama.com/library/gemma4) |
+
+`gemma3:270m` and `gemma3:1b` are text-only on the library page. Do not use those for a photo back. Official vision docs use `/api/generate` with an `images` array and a JSON `format` schema: [Vision](https://docs.ollama.com/capabilities/vision), [Generate](https://docs.ollama.com/api/generate). Installed models are listed with [GET /api/tags](https://docs.ollama.com/api/tags) and checked for vision with [POST /api/show](https://docs.ollama.com/api-reference/show-model-details) (`capabilities` includes `vision`). Discovery runs only against loopback. GPU notes: [Hardware](https://docs.ollama.com/gpu).
+
+```bash
+# your machine, not rn
+# https://ollama.com/download
+ollama serve
+ollama pull gemma3:4b
+```
+
+In photo review, pick an installed vision model, or type an override and press Enter. `i` shows local installed vision models (a loaded mark when Ollama reports one). `j`/`k` move the focused chip row, related list, or model list without toggling or reading. `r` and the Original button always read the current photo. The first related candidate is previewed automatically. Highlighting another file only changes that comparison. `R` and the Related Read button read the highlighted file. Both sets of chips stay, with source on each chip. `x` cancels. `b` focuses related-file suggestions. `?` shows setup help. `q` or Esc keeps the staged name and returns to the file table. Esc first leaves a text field and keeps what you typed. In a text field, `j`, `k`, and `q` are ordinary characters. The live New name is shown in the overlay. The model name is stored in `scan.json` next to the view settings. Total system RAM, when readable, is a conservative hint only. It is not free RAM or GPU VRAM.
+
+This path is not an accuracy claim. Mock tests check chips, sidecar rules, date precision, and the UI. They do not measure real handwriting recognition.
 
 An empty folder still opens. Press `r` after you add files.
 
@@ -263,6 +296,7 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `B` | Write JSON location into EXIF GPS |
 | `T` | Choose a timezone |
 | `P` | Show or hide the preview |
+| `S` | Photo review for the highlighted image |
 | `u` | Undo the last batch (this session only) |
 | `r` | Reload the folder |
 | `?`, `:`, Ctrl+P, `h`, F1 | Commands. Type to filter. `?` closes it, including from the filter |

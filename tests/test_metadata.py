@@ -33,6 +33,7 @@ from tui_renamer.metadata import (
     windows_filetime,
     write_file_metadata_and_offset,
     write_geodata,
+    write_image_description,
     write_image_exif_datetime,
 )
 from tui_renamer.preview import HEIF_SUFFIXES, heif_ready
@@ -235,6 +236,16 @@ def test_filesystem_time_and_birth_command(tmp_path: Path, monkeypatch: pytest.M
     assert set_birthtime(path, moment, setfile="SetFile", runner=runner) is False
 
 
+def test_inspect_file_after_written_day_fs_times(tmp_path: Path) -> None:
+    """Windows cannot convert some pre-1970 birth times. Inspect must not raise."""
+    path = tmp_path / "plain.jpg"
+    _jpeg(path)
+    moment = datetime(1961, 7, 4, 12, 0, 0, tzinfo=UTC)
+    set_filesystem_times(path, moment, setfile=None)
+    facts = inspect_file(path, RenameRules(), UTC)
+    assert facts.modtime is None or facts.modtime.tzinfo is not None
+
+
 def test_windows_filetime_epoch() -> None:
     low, high = windows_filetime(0)
     assert (high << 32) | low == 11644473600 * 10_000_000
@@ -263,3 +274,14 @@ def test_snapshot_mode() -> None:
     assert snapshot_mode(Path("a.heic")) == "copy"
     assert snapshot_mode(Path("a.png")) == "copy"
     assert snapshot_mode(Path("a.txt")) == "times"
+
+
+def test_write_image_description_jpeg_only(tmp_path: Path) -> None:
+    path = tmp_path / "photo.jpg"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(path, format="JPEG")
+    assert write_image_description(path, "picnic; lake") is True
+    loaded = piexif.load(str(path))
+    assert loaded["0th"][piexif.ImageIFD.ImageDescription] == b"picnic; lake"
+    png = tmp_path / "photo.png"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(png, format="PNG")
+    assert write_image_description(png, "picnic") is False

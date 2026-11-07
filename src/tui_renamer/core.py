@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from tui_renamer.scan_notes import takeout_sidecar
+
 try:
     from zoneinfo import ZoneInfo, available_timezones
 
@@ -205,6 +207,11 @@ def list_files(directory: Path) -> list[Path]:
     return sorted(found, key=lambda path: path.name.lower())
 
 
+def filename_clock_text(moment: datetime) -> str:
+    """Same YYYY-MM-DD-HHMMSS stamp orig, mod, and today use in names."""
+    return moment.strftime("%Y-%m-%d-%H%M%S")
+
+
 def strip_existing_timestamps(basename: str) -> str:
     """Drop a YYYY-MM-DD-HHMMSS stamp glued to either end of the stem."""
     basename = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{6}-", "", basename)
@@ -225,9 +232,17 @@ def clean_filename(basename: str, rules: RenameRules) -> str:
     return name.strip("-_")
 
 
-def preview_name(filename: str, facts: FileFacts, rules: RenameRules) -> str:
-    """Build the new filename. An empty result keeps the original name."""
+def preview_base(
+    filename: str,
+    facts: FileFacts,
+    rules: RenameRules,
+    *,
+    stem: str | None = None,
+) -> tuple[str, str]:
+    """Stem and extension for the new name. Stem may be empty."""
     orig_base, ext = os.path.splitext(filename)
+    if stem is not None:
+        orig_base = stem
     if rules.strip_original_name:
         core = ""
     elif rules.strip_to_text:
@@ -253,7 +268,13 @@ def preview_name(filename: str, facts: FileFacts, rules: RenameRules) -> str:
             time_suffix += f"-{facts.origtime_text}"
     geo_part = f"{facts.geodata}-" if rules.add_geodata and facts.geodata else ""
     new_base = re.sub(r"--+", "-", f"{time_prefix}{geo_part}{core}{time_suffix}").strip("-_")
-    return (new_base + ext) if new_base else filename
+    return new_base, ext
+
+
+def preview_name(filename: str, facts: FileFacts, rules: RenameRules) -> str:
+    """Build the new filename. An empty result keeps the original name."""
+    stem, ext = preview_base(filename, facts, rules)
+    return (stem + ext) if stem else filename
 
 
 def show_not_oldest_warning(facts: FileFacts, rules: RenameRules) -> bool:
@@ -593,14 +614,27 @@ def _show(moment: datetime, zone: tzinfo) -> str:
     return f"{shown.strftime('%Y-%m-%d %H:%M:%S')} {format_offset(shown)}"
 
 
+def utc_from_timestamp(stamp: float) -> datetime | None:
+    """UTC datetime for a POSIX timestamp. None when the platform cannot convert it.
+
+    Windows rejects some pre-1970 values that NTFS can still store.
+    """
+    try:
+        return datetime.fromtimestamp(stamp, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
 def _fs_times(path: Path) -> tuple[datetime | None, datetime | None]:
     try:
         stat = path.stat()
     except OSError:
         return None, None
-    modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-    birth_ts = getattr(stat, "st_birthtime", stat.st_ctime)
-    birth = datetime.fromtimestamp(birth_ts, tz=timezone.utc)
+    modified = utc_from_timestamp(stat.st_mtime)
+    birth_ts = getattr(stat, "st_birthtime", None)
+    if birth_ts is None:
+        birth_ts = stat.st_ctime
+    birth = utc_from_timestamp(birth_ts)
     return modified, birth
 
 
@@ -686,7 +720,7 @@ def load_facts(
     json_photo: datetime | None = None
     json_created: datetime | None = None
     if rules.use_json_data:
-        sidecar = next((item for item in json_candidates(path) if item.exists()), None)
+        sidecar = takeout_sidecar(path, json_candidates(path))
         facts.sidecar = sidecar
         if sidecar is not None:
             try:
@@ -754,11 +788,11 @@ def load_facts(
     if final_orig:
         aware = final_orig.astimezone(zone)
         facts.origtime = aware
-        facts.origtime_text = aware.strftime("%Y-%m-%d-%H%M%S")
+        facts.origtime_text = filename_clock_text(aware)
     if final_mod:
         aware = final_mod.astimezone(zone)
         facts.modtime = aware
-        facts.modtime_text = aware.strftime("%Y-%m-%d-%H%M%S")
+        facts.modtime_text = filename_clock_text(aware)
     _set_winner(
         facts,
         json_orig if rules.use_json_data else None,
