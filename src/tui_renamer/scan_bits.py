@@ -38,7 +38,13 @@ class Bit:
 
     def tooltip(self) -> str:
         origin = "written" if self.origin == "written" else "inferred"
-        return f"{self.kind}. Source {self.source}. {origin}. Model {self.model or 'manual'}."
+        line = f"{self.kind}. Source {self.source}. {origin}. Model {self.model or 'manual'}."
+        stamp = scan_date_name_stamp(self.date) if self.date is not None else None
+        if stamp is None:
+            return line
+        if stamp[1] == "date":
+            return line + " Name uses 12:00. That clock is assumed, not read from the photo."
+        return line + " Name uses the time written on the date."
 
     def caption(self) -> str:
         mark = "name " if self.use_name else ""
@@ -97,6 +103,39 @@ def selected_labels(bits: list[Bit]) -> list[str]:
     chosen = [(index, item) for index, item in enumerate(bits) if item.use_name]
     chosen.sort(key=lambda pair: (pair[1].name_order or 0, pair[0]))
     return [item.label.strip() for _index, item in chosen if item.label.strip()]
+
+
+def scan_date_name_stamp(date: ScanDate) -> tuple[str, str] | None:
+    """Filename clock for a written calendar day. None means keep the chip label.
+
+    Date-only days use 12:00, the same noon fill filename dates use. A time
+    already in the written text is kept. Partial and inferred dates are skipped.
+    """
+    if not can_queue_capture(date):
+        return None
+    assert date.year is not None and date.month is not None and date.day is not None
+    from tui_renamer.core import filename_clock_text, parse_filename_datetime
+
+    parsed, precision = parse_filename_datetime(date.text)
+    if parsed is not None and precision in {"second", "minute"}:
+        return filename_clock_text(parsed), precision
+    moment = datetime(date.year, date.month, date.day, 12, 0, 0)
+    return filename_clock_text(moment), "date"
+
+
+def name_token_for_bit(item: Bit) -> str:
+    if item.kind == "date" and item.date is not None:
+        stamp = scan_date_name_stamp(item.date)
+        if stamp is not None:
+            return stamp[0]
+    return item.label.strip()
+
+
+def format_scan_selected(bits: list[Bit], rules: RenameRules) -> list[str]:
+    chosen = [(index, item) for index, item in enumerate(bits) if item.use_name]
+    chosen.sort(key=lambda pair: (pair[1].name_order or 0, pair[0]))
+    labels = [name_token_for_bit(item) for _index, item in chosen]
+    return format_scan_parts(labels, rules)
 
 
 def format_scan_part(text: str, rules: RenameRules) -> str:

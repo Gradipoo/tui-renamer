@@ -1533,6 +1533,86 @@ async def test_scan_suffix_format_toggles_keep_raw_labels(tmp_path: Path) -> Non
         assert app.preview_for(other_index) == "plain.jpg"
 
 
+async def test_scan_written_day_filename_clock_apply_reopen(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_bits import Bit
+    from tui_renamer.scan_dates import ScanDate
+    from tui_renamer.scan_notes import load_notes, notes_path_for
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "keep.jpg"
+    other = tmp_path / "plain.jpg"
+    _jpeg_photo(photo, (8, 8, 8))
+    _jpeg_photo(other, (9, 9, 9))
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        day = ScanDate("day", "Oct 20, 1994", 1994, 10, 20, origin="written")
+        item = Bit(
+            kind="date",
+            label="Oct 20, 1994",
+            source=photo.name,
+            model="",
+            origin="written",
+            date=day,
+            manual=True,
+        )
+        review.bits.append(item)
+        review._toggle_name(item)
+        shown = str(review.query_one("#scan-name-preview").render())
+        assert "New: keep-1994-10-20-120000.jpg" in shown
+        assert item.label == "Oct 20, 1994"
+        assert "12:00" in item.tooltip()
+        review.action_close()
+        await pilot.pause()
+        assert app.scan_suffix[str(photo)] == ["Oct 20, 1994"]
+        assert app.preview_for(0) == "keep-1994-10-20-120000.jpg"
+        app.rules.remove_caps = True
+        app.rules.remove_special = True
+        app.rules.replace_spaces = True
+        app.rules.replace_dots = True
+        assert app.preview_for(0) == "keep-1994-10-20-120000.jpg"
+        other_index = next(
+            index for index, path in enumerate(app.files) if path.name == "plain.jpg"
+        )
+        assert app.preview_for(other_index) == "plain.jpg"
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        labels = [chip.label for chip in review.bits]
+        assert "Oct 20, 1994" in labels
+        shown = str(review.query_one("#scan-name-preview").render())
+        assert "New: keep-1994-10-20-120000.jpg" in shown
+        review.action_close()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        renamed = tmp_path / "keep-1994-10-20-120000.jpg"
+        assert renamed.exists()
+        loaded = load_notes(notes_path_for(renamed))
+        assert loaded is not None
+        assert loaded.name_suffix == ["1994-10-20-120000"]
+        assert loaded.raw_transcription == ""
+        assert any(chip.label == "Oct 20, 1994" for chip in loaded.bits)
+        assert app.preview_for(0) == "keep-1994-10-20-120000.jpg"
+        assert app._rename_pairs() == []
+        await pilot.press("u")
+        await pilot.pause()
+        assert photo.exists()
+        assert app.scan_suffix[str(photo)] == ["Oct 20, 1994"]
+        assert app.preview_for(0) == "keep-1994-10-20-120000.jpg"
+        assert other.exists()
+        assert app.preview_for(other_index) == "plain.jpg"
+
+
 async def test_scan_lock_ignores_suffix(tmp_path: Path) -> None:
     from tui_renamer.scan_backend import MockBackend
     from tui_renamer.scan_ui import ReviewScreen

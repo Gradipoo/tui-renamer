@@ -8,6 +8,7 @@
 - Photo review shows the original thumbnail beside a highlighted related preview. `r` always reads the original. `R` reads only the highlighted comparison. Name chips append an ordered hyphen suffix on the ordinary rename, including after strip original. Esc keeps the staged name. Overlay Accept is gone. Metadata is a separate chip control. Related files rank by name partners, close stems, and comparable times, strongest first. Locked names stay frozen.
 - Photo review `j`/`k` move the focused chip row, related list, or model list. `q` goes back without quitting. Esc leaves a text field first.
 - Photo review name tags keep their typed labels. Lowercase, drop symbols, spaces to dashes, and dots to dashes format those tags in the New filename.
+- A written calendar day used in an S filename uses the ordinary YYYY-MM-DD-HHMMSS stamp. Date-only days use 12:00. That noon is assumed.
 
 ## 0.1.3
 

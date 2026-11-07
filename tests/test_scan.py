@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import json
 import urllib.error
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
-from tui_renamer.core import RenameRules, json_candidates, load_facts, rename_paths
+from tui_renamer.core import (
+    RenameRules,
+    filename_clock_text,
+    json_candidates,
+    load_facts,
+    rename_paths,
+)
 from tui_renamer.scan_backend import (
     BackendError,
     MockBackend,
@@ -27,7 +33,9 @@ from tui_renamer.scan_bits import (
     description_from_bits,
     format_scan_part,
     format_scan_parts,
+    format_scan_selected,
     join_scan_name,
+    scan_date_name_stamp,
     selected_labels,
     strip_accepted_suffix,
 )
@@ -416,6 +424,7 @@ def test_recommendations_and_setup_text() -> None:
     assert "example.test" in blob
     assert LIGHT.pull_command() in blob
     assert DEFAULT.pull_command() in blob
+    assert "12:00" in blob
     body = json.dumps({"error": "this model does not support images"}).encode()
     with pytest.raises(BackendError, match="text-only"):
         parse_ollama_body(body, model="gemma3:1b")
@@ -671,6 +680,68 @@ def test_format_scan_parts_follows_rename_rules() -> None:
         stem="2020-01-01-000000-photo",
     )
     assert stamped == "2020-01-01-000000-photo-aunt-may.jpg"
+
+
+def _date_bit(date: ScanDate, *, use_name: bool = True, name_order: int = 1) -> Bit:
+    return Bit(
+        kind="date",
+        label=date.text,
+        source="a.jpg",
+        model="",
+        origin=date.origin,
+        date=date,
+        use_name=use_name,
+        name_order=name_order,
+    )
+
+
+def test_written_day_filename_uses_existing_clock() -> None:
+    noon = filename_clock_text(datetime(1994, 10, 20, 12, 0, 0))
+    assert noon == "1994-10-20-120000"
+    oct_day = ScanDate("day", "Oct 20, 1994", 1994, 10, 20, origin="written")
+    assert scan_date_name_stamp(oct_day) == (noon, "date")
+    selected = [_date_bit(oct_day)]
+    assert selected_labels(selected) == ["Oct 20, 1994"]
+    assert format_scan_selected(selected, RenameRules()) == [noon]
+    combo = RenameRules(
+        remove_caps=True,
+        remove_special=True,
+        replace_spaces=True,
+        replace_dots=True,
+    )
+    assert format_scan_selected(selected, combo) == [noon]
+    timed = ScanDate("day", "1994-10-20-143015", 1994, 10, 20, origin="written")
+    assert scan_date_name_stamp(timed) == ("1994-10-20-143015", "second")
+    minute = ScanDate("day", "1994-10-20-1430", 1994, 10, 20, origin="written")
+    assert scan_date_name_stamp(minute) == ("1994-10-20-143000", "minute")
+    year = ScanDate("year", "1952", 1952, origin="written")
+    assert scan_date_name_stamp(year) is None
+    assert format_scan_selected([_date_bit(year)], RenameRules()) == ["1952"]
+    month = ScanDate("month", "June 1952", 1952, 6, origin="written")
+    assert format_scan_selected([_date_bit(month)], RenameRules()) == ["June 1952"]
+    season = ScanDate("season", "summer 1961", 1961, season="summer", origin="written")
+    assert format_scan_selected([_date_bit(season)], RenameRules()) == ["summer 1961"]
+    uncertain = ScanDate("day", "Oct 20, 1994", 1994, 10, 20, uncertain=True, origin="written")
+    assert format_scan_selected([_date_bit(uncertain)], RenameRules()) == ["Oct 20, 1994"]
+    inferred = ScanDate("day", "Oct 20, 1994", 1994, 10, 20, origin="inferred")
+    assert format_scan_selected([_date_bit(inferred)], RenameRules()) == ["Oct 20, 1994"]
+    text = Bit(
+        kind="text",
+        label="Oct 20, 1994",
+        source="a.jpg",
+        model="",
+        origin="written",
+        use_name=True,
+        name_order=1,
+    )
+    assert format_scan_selected([text], RenameRules()) == ["Oct 20, 1994"]
+    alt = parse_date_text("1952 or 1953")
+    assert all(item.uncertain for item in alt)
+    assert format_scan_selected([_date_bit(alt[0])], RenameRules()) == [alt[0].text]
+    chip = _date_bit(oct_day)
+    assert "12:00" in chip.tooltip()
+    assert "assumed" in chip.tooltip()
+    assert chip.label == "Oct 20, 1994"
 
 
 def test_notes_roundtrip_keeps_name_suffix(tmp_path: Path) -> None:

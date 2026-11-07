@@ -48,6 +48,7 @@ from tui_renamer.core import (
     date_source,
     datetime_for_write,
     delta_text,
+    filename_clock_text,
     filter_timezones,
     fit_middle,
     flag_letter,
@@ -95,6 +96,7 @@ from tui_renamer.scan_bits import (
     StageResult,
     apply_scan_suffix,
     format_scan_parts,
+    format_scan_selected,
     strip_accepted_suffix,
 )
 from tui_renamer.scan_config import load_scan_settings
@@ -898,7 +900,7 @@ class RenamerApp(App[None]):
         self.preview_on = saved.preview
         self.query_one("#preview-slot").set_class(not saved.preview, "-off")
         self._set_zoom(saved.zoom, persist=False)
-        self.rules.datetime_stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        self.rules.datetime_stamp = filename_clock_text(datetime.now())
         self.reload_files()
         if not self.exiftool:
             self.set_status(
@@ -946,7 +948,7 @@ class RenamerApp(App[None]):
             return
         if not self.rules.add_datetime or len(self.screen_stack) > 1:
             return
-        stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        stamp = filename_clock_text(datetime.now())
         if stamp != self.rules.datetime_stamp:
             self.rules.datetime_stamp = stamp
             self.refresh_view()
@@ -1003,9 +1005,8 @@ class RenamerApp(App[None]):
         if index in self.locked:
             return self.locked[index]
         key = str(path)
-        raw = self.scan_suffix.get(key, [])
         accepted = self.scan_accepted.get(key, [])
-        parts = format_scan_parts(raw, self.rules)
+        parts = self._formatted_scan_parts(path)
         if index in self.manual:
             return apply_scan_suffix(self.manual[index], parts, accepted=accepted)
         file_stem, _ext = os.path.splitext(path.name)
@@ -2170,7 +2171,7 @@ class RenamerApp(App[None]):
             state = "on" if self.rules.use_json_data else "off"
             self.set_status(f"JSON data is {state}")
         if field == "add_datetime" and self.rules.add_datetime:
-            self.rules.datetime_stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            self.rules.datetime_stamp = filename_clock_text(datetime.now())
         self.refresh_view()
 
     def _sync_options(self) -> None:
@@ -2451,6 +2452,13 @@ class RenamerApp(App[None]):
 
         self.push_screen(TimezoneScreen(self.rules.source_tz), done)
 
+    def _formatted_scan_parts(self, path: Path) -> list[str]:
+        key = str(path)
+        session = self.scan_sessions.get(key)
+        if session is not None:
+            return format_scan_selected(session.bits, self.rules)
+        return format_scan_parts(self.scan_suffix.get(key, []), self.rules)
+
     def _remap_scan_map(
         self, store: dict[str, list[str]], path_map: dict[Path, Path]
     ) -> dict[str, list[str]]:
@@ -2487,7 +2495,7 @@ class RenamerApp(App[None]):
                 related_reason=session.related_reason,
                 name_suffix=list(
                     self.scan_accepted.get(
-                        str(path), format_scan_parts(session.suffix_parts, self.rules)
+                        str(path), format_scan_selected(session.bits, self.rules)
                     )
                 ),
             )
@@ -2593,9 +2601,8 @@ class RenamerApp(App[None]):
         note_targets.update(item.path for item in pending)
         for path in note_targets:
             key = str(path)
-            raw = self.scan_suffix.get(key, [])
             if key in self.scan_suffix:
-                self.scan_accepted[key] = format_scan_parts(raw, self.rules)
+                self.scan_accepted[key] = self._formatted_scan_parts(path)
         errors.extend(self._write_scan_notes(note_targets))
         if pairs:
             outcome = rename_paths(pairs)

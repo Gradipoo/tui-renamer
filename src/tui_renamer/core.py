@@ -207,6 +207,11 @@ def list_files(directory: Path) -> list[Path]:
     return sorted(found, key=lambda path: path.name.lower())
 
 
+def filename_clock_text(moment: datetime) -> str:
+    """Same YYYY-MM-DD-HHMMSS stamp orig, mod, and today use in names."""
+    return moment.strftime("%Y-%m-%d-%H%M%S")
+
+
 def strip_existing_timestamps(basename: str) -> str:
     """Drop a YYYY-MM-DD-HHMMSS stamp glued to either end of the stem."""
     basename = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{6}-", "", basename)
@@ -770,11 +775,11 @@ def load_facts(
     if final_orig:
         aware = final_orig.astimezone(zone)
         facts.origtime = aware
-        facts.origtime_text = aware.strftime("%Y-%m-%d-%H%M%S")
+        facts.origtime_text = filename_clock_text(aware)
     if final_mod:
         aware = final_mod.astimezone(zone)
         facts.modtime = aware
-        facts.modtime_text = aware.strftime("%Y-%m-%d-%H%M%S")
+        facts.modtime_text = filename_clock_text(aware)
     _set_winner(
         facts,
         json_orig if rules.use_json_data else None,

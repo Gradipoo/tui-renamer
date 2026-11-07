@@ -108,6 +108,8 @@ def setup_lines(
         "Ollama, pull a model, or start the server.",
         "j/k move chips, related files, and the model list. q or Esc goes back and "
         "keeps the staged name. Esc first leaves a text field. r reads original, R related.",
+        "A written calendar day in the filename uses YYYY-MM-DD-HHMMSS. Date-only "
+        "days use 12:00. That clock is assumed, not read from the photo.",
         f"Install: {DOWNLOAD_PAGE} then {SERVE_COMMAND}.",
         f"Light: {LIGHT.pull_command()}  ({LIGHT.download}, {LIGHT.license}).",
         f"Default: {DEFAULT.pull_command()}  ({DEFAULT.download}, {DEFAULT.license}).",

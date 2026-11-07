@@ -24,7 +24,7 @@ from tui_renamer.scan_bits import (
     bits_from_recognition,
     capture_from_bits,
     description_from_bits,
-    format_scan_parts,
+    format_scan_selected,
     join_scan_name,
     selected_labels,
     strip_accepted_suffix,
@@ -531,7 +531,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         name = join_scan_name(
             stem,
             self.base_ext,
-            format_scan_parts(selected_labels(self.bits), self._name_rules()),
+            format_scan_selected(self.bits, self._name_rules()),
             fallback=self.subject.name,
         )
         box.update(f"New: {name}")
