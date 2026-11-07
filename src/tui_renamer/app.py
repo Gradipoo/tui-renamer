@@ -89,9 +89,15 @@ from tui_renamer.metadata import (
     write_image_description,
 )
 from tui_renamer.scan_backend import OllamaBackend, ScanBackend
-from tui_renamer.scan_bits import PendingScan, StageResult, apply_scan_suffix
+from tui_renamer.scan_bits import PendingScan, ScanSession, StageResult, apply_scan_suffix
 from tui_renamer.scan_config import load_scan_settings
-from tui_renamer.scan_notes import notes_renames, rewrite_pairing_names
+from tui_renamer.scan_notes import (
+    ScanNotes,
+    notes_path_for,
+    notes_renames,
+    rewrite_pairing_names,
+    save_notes,
+)
 from tui_renamer.scan_ui import ReviewScreen
 from tui_renamer.search import (
     find_label,
@@ -723,9 +729,11 @@ class RenamerApp(App[None]):
     ReviewScreen.-narrow #scan-previews { layout: vertical; height: auto; }
     ReviewScreen.-narrow #scan-orig-slot, ReviewScreen.-narrow #scan-rel-slot { height: 8; }
     ReviewScreen #scan-name-preview { height: auto; color: $text-muted; }
-    ReviewScreen #scan-chips { layout: grid; grid-size: 2; height: auto; }
+    ReviewScreen #scan-chips { layout: vertical; height: auto; }
+    ReviewScreen .scan-chip-row { height: auto; }
     ReviewScreen .scan-chip { width: 1fr; color: $text-muted; }
-    ReviewScreen .scan-chip.-on {
+    ReviewScreen .scan-meta { width: auto; color: $text-muted; }
+    ReviewScreen .scan-chip.-on, ReviewScreen .scan-meta.-on {
         background: $accent;
         color: $text;
         text-style: bold;
@@ -854,6 +862,7 @@ class RenamerApp(App[None]):
         self.scan_pending: dict[str, PendingScan] = {}
         self.scan_suffix: dict[str, list[str]] = {}
         self.scan_accepted: dict[str, list[str]] = {}
+        self.scan_sessions: dict[str, ScanSession] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -957,6 +966,7 @@ class RenamerApp(App[None]):
         self.scan_accepted = {
             key: parts for key, parts in self.scan_accepted.items() if key in names
         }
+        self.scan_sessions = {key: item for key, item in self.scan_sessions.items() if key in names}
 
     def target_zone(self) -> tzinfo:
         return resolve_tz(self.rules.source_tz)
@@ -2219,14 +2229,7 @@ class RenamerApp(App[None]):
         def done(result: StageResult | None) -> None:
             if result is None:
                 return
-            key = str(result.subject)
-            self.scan_suffix[key] = list(result.suffix_parts)
-            if result.suffix_parts:
-                self.scan_accepted[key] = list(result.suffix_parts)
-            if result.pending is not None:
-                self.scan_pending[key] = result.pending
-            self.set_status(result.message)
-            self.refresh_view()
+            self.stage_scan_review(result, refresh=True, closing=True)
 
         stem, ext = self._ordinary_stem_ext(self._cursor)
         key = str(start)
@@ -2242,9 +2245,32 @@ class RenamerApp(App[None]):
                 base_ext=ext,
                 locked=self._cursor in self.locked,
                 accepted_suffix=list(self.scan_accepted.get(key, [])),
+                session=self.scan_sessions.get(key),
             ),
             done,
         )
+
+    def stage_scan_review(
+        self,
+        result: StageResult,
+        *,
+        refresh: bool = True,
+        closing: bool = False,
+    ) -> None:
+        key = str(result.subject)
+        self.scan_suffix[key] = list(result.suffix_parts)
+        if result.suffix_parts:
+            self.scan_accepted[key] = list(result.suffix_parts)
+        if result.session is not None:
+            self.scan_sessions[key] = result.session
+        if closing:
+            if result.pending is not None:
+                self.scan_pending[key] = result.pending
+            else:
+                self.scan_pending.pop(key, None)
+        if closing and refresh:
+            self.set_status(result.message)
+            self.refresh_view()
 
     def action_reset_rules(self) -> None:
         self._begin()
@@ -2419,6 +2445,39 @@ class RenamerApp(App[None]):
             moved[str(dest)] = parts
         return moved
 
+    def _remap_sessions(self, path_map: dict[Path, Path]) -> dict[str, ScanSession]:
+        moved: dict[str, ScanSession] = {}
+        for key, session in self.scan_sessions.items():
+            dest = path_map.get(Path(key), Path(key))
+            moved[str(dest)] = session
+        return moved
+
+    def _write_scan_notes(self, targets: set[Path]) -> list[str]:
+        errors: list[str] = []
+        for path in targets:
+            session = self.scan_sessions.get(str(path))
+            if session is None:
+                continue
+            payload = ScanNotes(
+                front=path.name,
+                back=session.related_name,
+                pairing_reason=session.related_reason or "none",
+                pairing_confirmed=session.related_name is not None,
+                engine=session.engine or "manual",
+                model=session.model if session.engine else "",
+                raw_transcription=session.raw,
+                notes="",
+                dates=[item.date for item in session.bits if item.date is not None],
+                bits=session.bits,
+                related_reason=session.related_reason,
+                name_suffix=list(session.suffix_parts),
+            )
+            try:
+                save_notes(notes_path_for(path), payload)
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+        return errors
+
     def _ordinary_name(self, index: int) -> str:
         path = self.files[index]
         if index in self.locked:
@@ -2508,6 +2567,9 @@ class RenamerApp(App[None]):
         renamed = 0
         conflicts = 0
         errors: list[str] = []
+        note_targets = {src for src, _name in pairs}
+        note_targets.update(item.path for item in pending)
+        errors.extend(self._write_scan_notes(note_targets))
         if pairs:
             outcome = rename_paths(pairs)
             ops.extend(RenameOp(src, dst) for src, dst in outcome.done)
@@ -2521,6 +2583,7 @@ class RenamerApp(App[None]):
             path_map = {src: dst for src, dst in outcome.done}
             self.scan_suffix = self._remap_scan_map(self.scan_suffix, path_map)
             self.scan_accepted = self._remap_scan_map(self.scan_accepted, path_map)
+            self.scan_sessions = self._remap_sessions(path_map)
             renamed = len(outcome.done)
             conflicts = outcome.conflicts
             errors = list(outcome.errors)

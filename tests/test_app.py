@@ -723,7 +723,7 @@ def _jpeg_photo(path: Path, color: tuple[int, int, int] = (10, 20, 30)) -> None:
 
 async def test_scan_review_is_off_at_startup_then_accepts(tmp_path: Path) -> None:
     from tui_renamer.scan_backend import MockBackend
-    from tui_renamer.scan_notes import load_notes, notes_path_for
+    from tui_renamer.scan_notes import notes_path_for
     from tui_renamer.scan_ui import ReviewScreen
 
     photo = tmp_path / "solo.jpg"
@@ -754,14 +754,13 @@ async def test_scan_review_is_off_at_startup_then_accepts(tmp_path: Path) -> Non
         first = list(review.query(".scan-chip"))[0]
         assert "name" in str(first.label)
         assert "written" in review.bits[0].tooltip()
-        review.action_accept()
+        assert review.bits[0].use_meta is False
+        review.action_close()
         await pilot.pause()
         assert not isinstance(app.screen, ReviewScreen)
-        notes = load_notes(notes_path_for(photo))
-        assert notes is not None
-        assert notes.pairing_confirmed is False
-        assert notes.raw_transcription
-        assert notes.bits
+        assert not notes_path_for(photo).exists()
+        preview = app.preview_for(0)
+        assert "Aunt" in preview or "June" in preview or "1952" in preview
 
 
 async def test_scan_review_escape_does_not_write(tmp_path: Path) -> None:
@@ -838,7 +837,7 @@ async def test_scan_review_compact_status_help_installed_and_manual(
     from tui_renamer.scan_backend import MockBackend
     from tui_renamer.scan_config import load_scan_settings
     from tui_renamer.scan_dates import ScanDate
-    from tui_renamer.scan_notes import load_notes, notes_path_for
+    from tui_renamer.scan_notes import notes_path_for
     from tui_renamer.scan_ui import ReviewScreen
 
     photo = tmp_path / "solo.jpg"
@@ -875,11 +874,11 @@ async def test_scan_review_compact_status_help_installed_and_manual(
         await pilot.press("enter")
         await pilot.pause()
         assert any("1952" in item.label for item in review.bits)
-        review.action_accept()
+        review.action_close()
         await pilot.pause()
-        notes = load_notes(notes_path_for(photo))
-        assert notes is not None
-        kinds = [item.date.kind for item in notes.bits if item.date is not None]
+        assert not notes_path_for(photo).exists()
+        session = app.scan_sessions[str(photo)]
+        kinds = [item.date.kind for item in session.bits if item.date is not None]
         assert "year" in kinds
 
 
@@ -991,15 +990,15 @@ async def test_scan_review_stage_apply_overwrite_skip_and_undo(tmp_path: Path) -
         review.action_read()
         await review.workers.wait_for_complete()
         await pilot.pause()
-        for index, bit in enumerate(review.bits):
+        for bit in review.bits:
             if bit.kind in {"date", "token", "text"}:
-                bit.cycle()
-                if bit.can_meta():
-                    bit.cycle()
-        review._paint_chips()
-        review.action_accept()
+                if not bit.use_name:
+                    review._toggle_name(bit)
+                if bit.can_meta() and not bit.use_meta:
+                    review._toggle_meta(bit)
+        review.action_close()
         await pilot.pause()
-        assert notes_path_for(photo).exists()
+        assert not notes_path_for(photo).exists()
         assert read_exif(photo).naive == before
         await pilot.press("enter")
         question = str(app.screen.query_one("#confirm-question").render())
@@ -1048,16 +1047,15 @@ async def test_scan_review_apply_writes_written_day_and_description(
         await review.workers.wait_for_complete()
         await pilot.pause()
         people = next(item for item in review.bits if item.kind == "people")
-        people.cycle()
-        people.cycle()
         assert people.use_name is False
         for bit in review.bits:
             if bit.kind in {"date", "token"}:
                 bit.use_name = True
                 bit.use_meta = True
-        review.action_accept()
+        review._paint_chips()
+        review.action_close()
         await pilot.pause()
-        assert notes_path_for(photo).exists()
+        assert not notes_path_for(photo).exists()
         assert read_exif(photo).naive is None
         assert app.scan_pending
         item = next(iter(app.scan_pending.values()))
@@ -1070,6 +1068,7 @@ async def test_scan_review_apply_writes_written_day_and_description(
         await pilot.pause()
         renamed = sorted(tmp_path.glob("plain-*.jpg"))
         assert renamed
+        assert notes_path_for(renamed[0]).exists()
         assert "Wrote" in app._message
         clock = read_exif(renamed[0])
         assert clock.naive is not None
@@ -1251,7 +1250,7 @@ async def test_scan_narrow_viewport_keeps_actions(tmp_path: Path) -> None:
         assert review.query_one("#scan-right").display
         assert review.query_one("#scan-orig-slot").display
         assert review.query_one("#scan-rel-slot").display
-        assert review.query_one("#scan-accept").display
+        assert review.query_one("#scan-close").display
         assert review.query_one("#scan-actions").display
         assert review.query_one("#scan-read").display
         assert review.query_one("#scan-read-related").display
@@ -1359,26 +1358,23 @@ async def test_scan_suffix_preview_accept_reopen_refresh_apply(tmp_path: Path) -
         await pilot.pause()
         alpha = next(item for item in review.bits if item.label == "alpha")
         beta = next(item for item in review.bits if item.label == "beta")
-        review._cycle_bit(beta)
-        review._cycle_bit(alpha)
-        review._paint_name_preview()
+        review._toggle_name(beta)
+        review._toggle_name(alpha)
         shown = str(review.query_one("#scan-name-preview").render())
         assert "New: keep-beta-alpha.jpg" in shown
         while beta.use_name:
-            review._cycle_bit(beta)
-        review._cycle_bit(beta)
-        review._paint_name_preview()
+            review._toggle_name(beta)
+        review._toggle_name(beta)
         shown = str(review.query_one("#scan-name-preview").render())
         assert "New: keep-alpha-beta.jpg" in shown
         alpha.label = "alpha-edit"
         review._paint_name_preview()
         shown = str(review.query_one("#scan-name-preview").render())
         assert "New: keep-alpha-edit-beta.jpg" in shown
-        review.action_accept()
+        review.action_close()
         await pilot.pause()
-        notes = load_notes(notes_path_for(photo))
-        assert notes is not None
-        assert notes.name_suffix == ["alpha-edit", "beta"]
+        assert not notes_path_for(photo).exists()
+        assert app.scan_sessions[str(photo)].suffix_parts == ["alpha-edit", "beta"]
         assert app.preview_for(0) == "keep-alpha-edit-beta.jpg"
         app.rules.strip_original_name = True
         assert app.preview_for(0) == "alpha-edit-beta.jpg"
@@ -1396,15 +1392,13 @@ async def test_scan_suffix_preview_accept_reopen_refresh_apply(tmp_path: Path) -
         await pilot.press("enter")
         await pilot.press("escape")
         await pilot.pause()
-        notes = load_notes(notes_path_for(photo))
-        assert notes is not None
-        assert "gamma" not in notes.name_suffix
+        assert not notes_path_for(photo).exists()
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
         assert isinstance(review, ReviewScreen)
         labels = [item.label for item in review.bits]
-        assert "gamma" not in labels
+        assert "gamma" in labels
         assert "alpha-edit" in labels
         assert "beta" in labels
         review.action_close()
@@ -1454,11 +1448,129 @@ async def test_scan_lock_ignores_suffix(tmp_path: Path) -> None:
         add.focus()
         await pilot.press("enter")
         item = review.bits[0]
-        review._cycle_bit(item)
-        review._paint_name_preview()
+        review._toggle_name(item)
         shown = str(review.query_one("#scan-name-preview").render())
         assert shown.startswith("Locked:")
-        review.action_accept()
+        review.action_close()
         await pilot.pause()
         assert app.preview_for(0) == "lockme.jpg"
         assert app._rename_pairs()[0][1] == "lockme.jpg"
+
+
+async def test_scan_name_toggle_off_does_not_add_meta(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo)
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        add = review.query_one("#scan-add", Input)
+        add.value = "picnic"
+        add.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        chip = list(review.query(".scan-chip"))[0]
+        chip.press()
+        await pilot.pause()
+        assert review.bits[0].use_name is True
+        assert review.bits[0].use_meta is False
+        list(review.query(".scan-chip"))[0].press()
+        await pilot.pause()
+        assert review.bits[0].use_name is False
+        assert review.bits[0].use_meta is False
+        meta = list(review.query(".scan-meta"))[0]
+        meta.press()
+        await pilot.pause()
+        assert review.bits[0].use_meta is True
+        assert review.bits[0].use_name is False
+        review.action_close()
+        await pilot.pause()
+        assert app.preview_for(0) == "solo.jpg"
+        assert app.scan_pending
+
+
+async def test_scan_first_candidate_preview_keeps_original_read(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_ui import ReviewScreen
+
+    front = tmp_path / "trip_a.jpg"
+    back = tmp_path / "trip_b.jpg"
+    _jpeg_photo(front, (1, 1, 1))
+    _jpeg_photo(back, (2, 2, 2))
+    backend = MockBackend(vision_models=["mock"], loaded_models=["mock"])
+    app = RenamerApp(tmp_path)
+    app.scan_backend = backend
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert review.related is None
+        assert review.highlight == back
+        review.query_one("#scan-model", Input).value = "mock"
+        review.action_read()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        assert backend.recognize_calls[-1][0].endswith("trip_a.jpg")
+        assert all(not call[0].endswith("trip_b.jpg") for call in backend.recognize_calls)
+
+
+async def test_scan_metadata_only_apply_without_rename(tmp_path: Path) -> None:
+    import piexif
+
+    from tui_renamer.metadata import read_exif
+    from tui_renamer.scan_backend import MockBackend
+    from tui_renamer.scan_dates import ScanDate
+    from tui_renamer.scan_notes import notes_path_for
+    from tui_renamer.scan_ui import ReviewScreen
+
+    photo = tmp_path / "keep.jpg"
+    _jpeg_photo(photo, (3, 4, 5))
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend(
+        transcription="",
+        dates=[ScanDate("day", "1961-07-04", 1961, 7, 4, origin="written")],
+        tokens=["lake"],
+        people_present=False,
+        people_count=None,
+    )
+    async with app.run_test(size=(120, 42)) as pilot:
+        await pilot.pause()
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review.query_one("#scan-model", Input).value = "mock"
+        review.action_read()
+        await review.workers.wait_for_complete()
+        await pilot.pause()
+        for bit in review.bits:
+            if bit.can_meta() and not bit.use_meta:
+                review._toggle_meta(bit)
+            assert bit.use_name is False
+        review.action_close()
+        await pilot.pause()
+        assert app.preview_for(0) == "keep.jpg"
+        assert app.scan_pending
+        assert not notes_path_for(photo).exists()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        assert photo.exists()
+        clock = read_exif(photo)
+        assert clock.naive is not None
+        assert clock.naive.date().isoformat() == "1961-07-04"
+        loaded = piexif.load(str(photo))
+        assert b"lake" in loaded["0th"][piexif.ImageIFD.ImageDescription]
+        assert notes_path_for(photo).exists()

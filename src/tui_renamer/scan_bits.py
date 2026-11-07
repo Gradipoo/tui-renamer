@@ -17,7 +17,7 @@ MAX_LABEL = 80
 
 @dataclass
 class Bit:
-    """One extracted fact. Click cycles off, name, then metadata when allowed."""
+    """One extracted fact. Name and metadata are independent on/off flags."""
 
     kind: str
     label: str
@@ -37,29 +37,23 @@ class Bit:
         return f"{self.kind}. Source {self.source}. {origin}. Model {self.model or 'manual'}."
 
     def caption(self) -> str:
-        flags = []
-        if self.use_name:
-            flags.append("name")
-        if self.use_meta:
-            flags.append("meta")
-        prefix = "+".join(flags) + " " if flags else ""
-        return f"{prefix}{self.label}"[:MAX_LABEL]
+        mark = "name " if self.use_name else ""
+        return f"{mark}{self.label}"[:MAX_LABEL]
 
     def can_meta(self) -> bool:
         if self.kind == "date":
             return self.date is not None and can_queue_capture(self.date)
         return self.kind in {"token", "text"}
 
-    def cycle(self) -> None:
-        if not self.use_name and not self.use_meta:
-            self.use_name = True
+    def toggle_name(self) -> None:
+        self.use_name = not self.use_name
+        if not self.use_name:
+            self.name_order = 0
+
+    def toggle_meta(self) -> None:
+        if not self.can_meta():
             return
-        if self.use_name and not self.use_meta and self.can_meta():
-            self.use_meta = True
-            return
-        self.use_name = False
-        self.use_meta = False
-        self.name_order = 0
+        self.use_meta = not self.use_meta
 
 
 @dataclass
@@ -73,11 +67,26 @@ class PendingScan:
 
 
 @dataclass
+class ScanSession:
+    """In-memory review state. The notes sidecar is written on Apply."""
+
+    bits: list[Bit] = field(default_factory=list)
+    suffix_parts: list[str] = field(default_factory=list)
+    engine: str = ""
+    raw: str = ""
+    model: str = ""
+    related_name: str | None = None
+    related_reason: str = ""
+    overwrite: bool = False
+
+
+@dataclass
 class StageResult:
     message: str
     subject: Path
     suffix_parts: list[str] = field(default_factory=list)
     pending: PendingScan | None = None
+    session: ScanSession | None = None
 
 
 def slug_piece(text: str) -> str:

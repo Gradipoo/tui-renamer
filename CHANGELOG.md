@@ -5,7 +5,7 @@
 - Photo review (`S`) analyzes the highlighted image. Related files are optional. Results are chips you pick for a staged name and supported metadata. Accept writes a notes sidecar. Apply confirms disk rename and metadata. Recognition uses local Ollama only when you ask.
 - Photo review lists local vision models (with a loaded mark when Ollama reports one), warns before sending an image to a non-local host, and keeps long setup text in Help. It does not pull models or start the server.
 - Photo review does not focus the model field. First use shows installed vision models. A saved local model is read on open. Remote hosts never auto-upload. Findings and related suggestions sit in two columns.
-- Photo review shows the original thumbnail beside a highlighted related preview. `r` always reads the original. `R` reads only the highlighted comparison. Name chips append an ordered hyphen suffix on the ordinary rename, including after strip original. Esc discards unaccepted overlay edits. Locked names stay frozen.
+- Photo review shows the original thumbnail beside a highlighted related preview. `r` always reads the original. `R` reads only the highlighted comparison. Name chips append an ordered hyphen suffix on the ordinary rename, including after strip original. Esc keeps the staged name. Overlay Accept is gone. Metadata is a separate chip control. Related files rank by name partners, close stems, and comparable times, strongest first. Locked names stay frozen.
 
 ## 0.1.3
 

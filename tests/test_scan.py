@@ -30,7 +30,7 @@ from tui_renamer.scan_bits import (
     slug_piece,
     strip_accepted_suffix,
 )
-from tui_renamer.scan_candidates import score_candidates
+from tui_renamer.scan_candidates import FileClocks, aware_delta, score_candidates
 from tui_renamer.scan_config import host_is_local
 from tui_renamer.scan_dates import ScanDate, can_queue_capture, parse_date_text, parse_model_dates
 from tui_renamer.scan_models import (
@@ -502,6 +502,79 @@ def test_related_candidate_tiers(tmp_path: Path) -> None:
     neighbor = score_candidates(one, [one, two])[0]
     assert neighbor.tier == "possible"
     assert neighbor.label == "Possible"
+
+
+def test_related_ranks_closer_time_before_alphabetical(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    subject = tmp_path / "item-1.jpg"
+    later_alpha = tmp_path / "item-0.jpg"
+    closer = tmp_path / "item-2.jpg"
+    _jpeg(subject)
+    _jpeg(later_alpha)
+    _jpeg(closer)
+    now = datetime(2020, 1, 1, 12, 0, tzinfo=timezone.utc)
+    clocks = {
+        subject: FileClocks(mtime=now),
+        later_alpha: FileClocks(mtime=now + timedelta(seconds=90)),
+        closer: FileClocks(mtime=now + timedelta(seconds=3)),
+    }
+    rows = score_candidates(subject, [subject, later_alpha, closer], clocks=clocks)
+    assert rows[0].path.name == "item-2.jpg"
+    assert rows[0].tier == "possible"
+    assert "mtime" in rows[0].reason
+    assert rows[1].path.name == "item-0.jpg"
+
+
+def test_related_time_rules_and_pairs_beat_size(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    front = tmp_path / "trip_a.jpg"
+    back = tmp_path / "trip_b.jpg"
+    bulky = tmp_path / "other.jpg"
+    _jpeg(front, (40, 30))
+    _jpeg(back, (80, 60), (9, 9, 9))
+    _jpeg(bulky, (41, 30), (2, 2, 2))
+    now = datetime(2020, 1, 1, 12, 0, tzinfo=timezone.utc)
+    clocks = {
+        front: FileClocks(mtime=now),
+        back: FileClocks(mtime=now),
+        bulky: FileClocks(mtime=now),
+    }
+    rows = score_candidates(front, [front, back, bulky], clocks=clocks)
+    assert rows[0].path.name == "trip_b.jpg"
+    assert rows[0].tier == "likely"
+    by_name = {item.path.name: item for item in rows}
+    assert by_name["other.jpg"].tier != "likely"
+    naive = datetime(2020, 1, 1, 12, 0)
+    assert aware_delta(now, None) is None
+    assert aware_delta(now, naive) is None
+    missing = FileClocks()
+    empty = score_candidates(
+        front,
+        [front, bulky],
+        clocks={front: missing, bulky: missing},
+    )
+    assert empty[0].tier != "likely"
+
+
+def test_bit_name_toggle_does_not_enable_meta() -> None:
+    bit = Bit(
+        kind="text",
+        label="picnic",
+        source="a.jpg",
+        model="",
+        origin="written",
+    )
+    bit.toggle_name()
+    assert bit.use_name is True
+    assert bit.use_meta is False
+    bit.toggle_name()
+    assert bit.use_name is False
+    assert bit.use_meta is False
+    bit.toggle_meta()
+    assert bit.use_meta is True
+    assert bit.use_name is False
 
 
 def test_list_loaded_models_uses_ps() -> None:
