@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-## 0.1.5
+## 0.1.6
 
-- Update release version to v0.1.5.
+- Update release version to v0.1.6.
 
 ## 0.1.4
 
