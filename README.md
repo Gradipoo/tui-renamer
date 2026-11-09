@@ -37,7 +37,7 @@ brew install gradipoo/tap/rn
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.5` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.6` is pushed.
 
 | File | System |
 | --- | --- |
