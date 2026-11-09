@@ -1441,7 +1441,11 @@ class RenamerApp(App[None]):
                 status = "NO DATE" if parsed is None else "ERR"
                 new_cell = self._styled(new_str, self._new_width, "dim")
             else:
-                new_cell = _format_date_diff(item.cur, item.target, zone)
+                # `changing` flag is passed as a keyword argument to keep the
+                # line under the 100‑char limit and improve readability.
+                new_cell = _format_date_diff(
+                    item.cur, item.target, zone, changing=item in plan.todo
+                )
                 status = "UPDATE" if item in plan.todo else "UNCHANGED"
             if index in self.selected:
                 status = "SELECTED"
@@ -2979,14 +2983,43 @@ def _format_stamp(stamp: float, zone: tzinfo | None) -> str:
         return "Error"
 
 
-def _format_date_diff(cur_stamp: float | None, target_stamp: float, zone: tzinfo | None) -> Text:
+def _format_date_diff(
+    cur_stamp: float | None,
+    target_stamp: float,
+    zone: tzinfo | None,
+    *,
+    changing: bool = False,
+) -> Text:
+    """Return a Rich :class:`~rich.text.Text` object representing the date
+    difference between *cur_stamp* and *target_stamp*.
+
+    When *changing* is ``True`` the whole string is styled as ``"dark_orange"``
+    to match the normal mode's "will change" styling.  The per‑segment
+    ``yellow``/``dim`` logic from the original implementation is omitted because
+    the cell already conveys the change state via the outer style.
+    """
+
     target_str = _format_stamp(target_stamp, zone)
     if cur_stamp is None or target_str == "Error":
+        # No current stamp or formatting error – just show the target as plain
+        # text.  ``changing`` is irrelevant because the cell will not be
+        # highlighted in this scenario.
         return Text(target_str)
+
     cur_str = _format_stamp(cur_stamp, zone)
     if cur_str == "Error" or cur_str == target_str:
+        # Identical or error – dim the output so it mirrors the existing
+        # behaviour for unchanged dates.
         return Text(target_str, style="dim")
 
+    # ``changing`` indicates that the file is scheduled to be renamed.  In that
+    # case we override any per‑segment styling and paint the whole cell in a
+    # single orange tone.
+    if changing:
+        return Text(target_str, style="dark_orange")
+
+    # If we get here ``changing`` is ``False`` and we want the original
+    # segment‑based highlighting.
     try:
         cur_dt = datetime.fromtimestamp(cur_stamp, tz=zone)
         target_dt = datetime.fromtimestamp(target_stamp, tz=zone)
