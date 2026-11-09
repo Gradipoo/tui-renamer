@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.5
+
+- Update release version to v0.1.5.
+
 ## 0.1.4
 
 - Photo review (`S`) with optional local Ollama vision. Ollama and the model are a separate install. `rn` does not download models at runtime. Real handwriting accuracy is not guaranteed.
