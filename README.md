@@ -164,7 +164,7 @@ On Windows, activate with `.venv\Scripts\activate`. Use Python 3.12 or newer for
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.5` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.6` is pushed.
 
 | File | System |
 | --- | --- |
