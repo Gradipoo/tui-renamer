@@ -74,8 +74,8 @@ class Rn < Formula
   end
 
   resource "textual" do
-    url "https://files.pythonhosted.org/packages/00/21/39a76b01bd5eea82a04baaca7580e105d8c59450df03998345bb2cfb307b/textual-8.2.8.tar.gz"
-    sha256 "3f106a9fbc73e39dd266c9712432087de78a6d644084c7c241d6a25c3169115b"
+  url "https://files.pythonhosted.org/packages/93/41/04c4009eae55fa6aec19be901914e92ca53976cbc1b0238322bd1b41b079/tui-renamer-0.1.6.tar.gz"
+  sha256 "934104c4009eae55fa6aec19be901914e92ca53976cbc1b0238322bd1b41b079"
   end
 
   resource "textual-image" do
