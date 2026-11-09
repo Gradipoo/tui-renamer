@@ -256,6 +256,29 @@ async def test_date_toggle_checks_the_option(tmp_path: Path) -> None:
         assert box.value is False
 
 
+async def test_filename_date_mode_diff_and_cache(tmp_path: Path) -> None:
+    first = tmp_path / "2024-01-15-noon.txt"
+    first.write_text("x", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("D")
+        await pilot.pause()
+        assert app.date_mode is True
+        rows = app._date_rows()
+        assert len(rows) == 1
+        new_cell = rows[0][6]
+        assert "2024-01-15" in new_cell.plain
+        # Verify plan caching
+        plan1 = app.cached_date_plan()
+        plan2 = app.cached_date_plan()
+        assert plan1 is plan2
+        detail = app._detail_text()
+        assert "Filename Date Target" in detail.plain
+        assert "target" in detail.plain
+        assert "diff" in detail.plain
+
+
 async def test_options_strip_shows_each_toggle_on_one_line(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)

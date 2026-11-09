@@ -210,6 +210,20 @@ def test_filename_date_patterns() -> None:
         "2024-02-31-ok-2024-03-01.jpg": (datetime(2024, 3, 1), "date"),
         "120240101.jpg": (None, None),
         "202401011.jpg": (None, None),
+        "20240101T123456.jpg": (datetime(2024, 1, 1, 12, 34, 56), "second"),
+        "2024-01-01T12:34:56.jpg": (datetime(2024, 1, 1, 12, 34, 56), "second"),
+        "20240101_123456_789.jpg": (datetime(2024, 1, 1, 12, 34, 56), "second"),
+        "2024-01-01-123456-789.jpg": (datetime(2024, 1, 1, 12, 34, 56), "second"),
+        "IMG-20240101-WA0001.jpg": (datetime(2024, 1, 1), "date"),
+        "Screenshot 2024-01-01 at 12.34.56.png": (datetime(2024, 1, 1, 12, 34, 56), "second"),
+        "Screenshot_20240101-123456.png": (datetime(2024, 1, 1, 12, 34, 56), "second"),
+        "18950512.jpg": (datetime(1895, 5, 12), "date"),
+        "photo-1994-October-20.jpg": (datetime(1994, 10, 20), "date"),
+        "Oct 20, 1994.jpg": (datetime(1994, 10, 20), "date"),
+        "Aunt May_October 20, 1994_picnic.jpg": (datetime(1994, 10, 20), "date"),
+        "20th October 1994.jpg": (datetime(1994, 10, 20), "date"),
+        "picnic-20-Oct-1994.jpg": (datetime(1994, 10, 20), "date"),
+        "prefix_20240101_v2_20240101_143000.jpg": (datetime(2024, 1, 1, 14, 30, 0), "second"),
     }
     for name, expected in cases.items():
         assert parse_filename_datetime(name) == expected

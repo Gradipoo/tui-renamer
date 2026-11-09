@@ -42,6 +42,7 @@ from tui_renamer.commands import (
 )
 from tui_renamer.core import (
     ZONEINFO_AVAILABLE,
+    DatePlan,
     DatePlanItem,
     FileFacts,
     RenameRules,
@@ -880,6 +881,8 @@ class RenamerApp(App[None]):
         self.scan_suffix: dict[str, list[str]] = {}
         self.scan_accepted: dict[str, list[str]] = {}
         self.scan_sessions: dict[str, ScanSession] = {}
+        self._date_plan: DatePlan | None = None
+        self._date_plan_key: tuple[tuple[Path, ...], tzinfo | None] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -971,6 +974,8 @@ class RenamerApp(App[None]):
         self.locked.clear()
         self.manual.clear()
         self._facts.clear()
+        self._date_plan = None
+        self._date_plan_key = None
         self._cursor = 0
         self.visual = False
         self.anchor = None
@@ -992,6 +997,13 @@ class RenamerApp(App[None]):
         if self.rules.source_tz:
             return resolve_tz(self.rules.source_tz)
         return None
+
+    def cached_date_plan(self) -> DatePlan:
+        key = (tuple(self.files), self.plan_zone())
+        if self._date_plan is None or self._date_plan_key != key:
+            self._date_plan = plan_filename_dates(self.files, self.plan_zone())
+            self._date_plan_key = key
+        return self._date_plan
 
     def facts_for(self, path: Path) -> FileFacts:
         key = (str(path), self.rules.source_tz, self.rules.use_json_data)
@@ -1036,7 +1048,7 @@ class RenamerApp(App[None]):
         if not self.files:
             return
         if self.date_mode:
-            plan = plan_filename_dates(self.files, self.plan_zone())
+            plan = self.cached_date_plan()
             todo = {item.path for item in plan.todo}
             for index, path in enumerate(self.files):
                 if path not in todo:
@@ -1096,7 +1108,7 @@ class RenamerApp(App[None]):
     def _status_code(self, index: int) -> str:
         path = self.files[index]
         if self.date_mode:
-            plan = plan_filename_dates(self.files, self.plan_zone())
+            plan = self.cached_date_plan()
             by_path = {item.path: item for item in plan.todo + plan.same}
             item = by_path.get(path)
             if item is None:
@@ -1416,7 +1428,7 @@ class RenamerApp(App[None]):
         return "UNCHANGED"
 
     def _date_rows(self) -> list[tuple[str, Text, Text, Text, Text, str, Text, str]]:
-        plan = plan_filename_dates(self.files, self.plan_zone())
+        plan = self.cached_date_plan()
         by_path = {item.path: item for item in plan.todo + plan.same}
         zone = self.plan_zone()
         rows: list[tuple[str, Text, Text, Text, Text, str, Text, str]] = []
@@ -1425,15 +1437,15 @@ class RenamerApp(App[None]):
             current = self._clock(path, zone)
             if item is None:
                 parsed, _precision = parse_filename_datetime(path.name)
-                new = "---" if parsed is None else "Error"
+                new_str = "---" if parsed is None else "Error"
                 status = "NO DATE" if parsed is None else "ERR"
+                new_cell = self._styled(new_str, self._new_width, "dim")
             else:
-                new = _format_stamp(item.target, zone)
+                new_cell = _format_date_diff(item.cur, item.target, zone)
                 status = "UPDATE" if item in plan.todo else "UNCHANGED"
             if index in self.selected:
                 status = "SELECTED"
             file_style = "" if index in self._changing else "dim"
-            new_style = "" if index in self._changing else "dim"
             name_span, _new_span = self._name_spans(path.name, self.preview_for(index))
             source, flag, missing = self._mark_cells(index, path)
             rows.append(
@@ -1444,7 +1456,7 @@ class RenamerApp(App[None]):
                     missing,
                     self._styled(path.name, self._name_width, file_style, name_span),
                     current,
-                    self._styled(new, self._new_width, new_style),
+                    new_cell,
                     self._short_status(status),
                 )
             )
@@ -1517,6 +1529,17 @@ class RenamerApp(App[None]):
                 text.append(f"  {candidate.label}\n    {candidate.text}\n")
         else:
             text.append("  none\n", style="dim")
+        if self.date_mode:
+            plan = self.cached_date_plan()
+            by_path = {item.path: item for item in plan.todo + plan.same}
+            item = by_path.get(path)
+            if item is not None:
+                text.append("\nFilename Date Target\n", style="bold")
+                zone = self.plan_zone()
+                target_str = _format_stamp(item.target, zone)
+                text.append(f"  target  {target_str}\n")
+                summary = _format_diff_summary(item.cur, item.target, item.prec, item.nudged)
+                text.append(f"  diff    {summary}\n")
         text.append("\nWinner\n", style="bold")
         source_name = SOURCE_NAME.get(facts.winner_source, "none")
         text.append(f"  original  {facts.origtime_text or 'none'}\n")
@@ -2950,4 +2973,71 @@ def _local_zone() -> tzinfo:
 
 
 def _format_stamp(stamp: float, zone: tzinfo | None) -> str:
-    return datetime.fromtimestamp(stamp, tz=zone).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        return datetime.fromtimestamp(stamp, tz=zone).strftime("%Y-%m-%d %H:%M:%S")
+    except (OSError, OverflowError, ValueError):
+        return "Error"
+
+
+def _format_date_diff(cur_stamp: float | None, target_stamp: float, zone: tzinfo | None) -> Text:
+    target_str = _format_stamp(target_stamp, zone)
+    if cur_stamp is None or target_str == "Error":
+        return Text(target_str)
+    cur_str = _format_stamp(cur_stamp, zone)
+    if cur_str == "Error" or cur_str == target_str:
+        return Text(target_str, style="dim")
+
+    try:
+        cur_dt = datetime.fromtimestamp(cur_stamp, tz=zone)
+        target_dt = datetime.fromtimestamp(target_stamp, tz=zone)
+        date_changed = cur_dt.date() != target_dt.date()
+        time_changed = cur_dt.time() != target_dt.time()
+    except (OSError, OverflowError, ValueError):
+        return Text(target_str)
+
+    date_style = "yellow" if date_changed else "dim"
+    time_style = "yellow" if time_changed else "dim"
+
+    res = Text()
+    res.append(target_str[:10], style=date_style)
+    res.append(" ")
+    res.append(target_str[11:], style=time_style)
+    return res
+
+
+def _format_diff_summary(
+    cur_stamp: float | None, target_stamp: float, prec: str, nudged: bool
+) -> str:
+    parts: list[str] = []
+    if prec == "kept":
+        parts.append("date-only; kept existing clock")
+    elif prec == "date":
+        parts.append("date-only; set to 12:00")
+    elif prec in ("second", "minute"):
+        parts.append("exact timestamp from filename")
+    if nudged:
+        parts.append("nudged +1s (collision)")
+
+    if cur_stamp is not None:
+        delta = target_stamp - cur_stamp
+        if abs(delta) < 1:
+            diff_str = "no change"
+        else:
+            sign = "+" if delta > 0 else "-"
+            secs = abs(int(delta))
+            days, rem = divmod(secs, 86400)
+            hrs, rem = divmod(rem, 3600)
+            mins, _ = divmod(rem, 60)
+            d_parts: list[str] = []
+            if days:
+                d_parts.append(f"{days}d")
+            if hrs:
+                d_parts.append(f"{hrs}h")
+            if mins and not days:
+                d_parts.append(f"{mins}m")
+            if not d_parts:
+                d_parts.append(f"{secs}s")
+            diff_str = sign + " ".join(d_parts)
+    else:
+        diff_str = "unknown"
+    return diff_str + " (" + ", ".join(parts) + ")"

@@ -28,8 +28,54 @@ except ImportError:  # pragma: no cover - Python 3.9+ has zoneinfo
 # A date, and optionally a time, in a filename.
 # Groups: Y, M, D, [hh, mm, [ss]].
 FILENAME_DATE_RE = re.compile(
-    r"(?<!\d)((?:19|20)\d\d)[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])"
-    r"(?:[-_ T.]?([01]\d|2[0-3])[-_.:]?([0-5]\d)(?:[-_.:]?([0-5]\d))?)?(?!\d)"
+    r"(?<!\d)((?:18|19|20)\d\d)[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])"
+    r"(?:(?:[-_ T.]|\s+at\s+)([01]\d|2[0-3])[-_.:]?([0-5]\d)"
+    r"(?:[-_.:]?([0-5]\d)(?:[.,_-]\d{1,6})?)?)?(?!\d)",
+    re.I,
+)
+
+_NATURAL_MONTH_NAMES = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sept": 9,
+    "sep": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
+_NATURAL_MONTH_ALT = "|".join(sorted(_NATURAL_MONTH_NAMES, key=len, reverse=True))
+
+_NATURAL_YMD_RE = re.compile(
+    rf"(?<![a-zA-Z0-9])(1[6-9]\d\d|20\d\d)[-_.\s]+({_NATURAL_MONTH_ALT})\.?[-_.\s]+"
+    r"(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?(?![a-zA-Z0-9])",
+    re.I,
+)
+_NATURAL_MDY_RE = re.compile(
+    rf"(?<![a-zA-Z0-9])({_NATURAL_MONTH_ALT})\.?[-_.\s]+(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?"
+    rf"(?:,)?[-_.\s]+(1[6-9]\d\d|20\d\d)(?![a-zA-Z0-9])",
+    re.I,
+)
+_NATURAL_DMY_RE = re.compile(
+    rf"(?<![a-zA-Z0-9])(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?[-_.\s]+({_NATURAL_MONTH_ALT})\.?"
+    rf"(?:,)?[-_.\s]+(1[6-9]\d\d|20\d\d)(?![a-zA-Z0-9])",
+    re.I,
 )
 
 EXCLUDED_TZ_PREFIXES = ("Etc/", "posix/", "right/", "SystemV/")
@@ -382,11 +428,15 @@ def rename_paths(pairs: list[tuple[Path, str]]) -> RenameOutcome:
 
 def parse_filename_datetime(name: str) -> tuple[datetime | None, str | None]:
     """Return a naive datetime and 'second', 'minute', or 'date'."""
-    for match in FILENAME_DATE_RE.finditer(Path(name).stem):
+    stem = Path(name).stem
+    first_date_only: datetime | None = None
+    for match in FILENAME_DATE_RE.finditer(stem):
         year, month, day, hour, minute, second = match.groups()
         try:
             if hour is None:
-                return datetime(int(year), int(month), int(day)), "date"
+                if first_date_only is None:
+                    first_date_only = datetime(int(year), int(month), int(day))
+                continue
             precision = "second" if second else "minute"
             return (
                 datetime(int(year), int(month), int(day), int(hour), int(minute), int(second or 0)),
@@ -394,6 +444,36 @@ def parse_filename_datetime(name: str) -> tuple[datetime | None, str | None]:
             )
         except ValueError:
             continue
+    if first_date_only is not None:
+        return first_date_only, "date"
+
+    for match in _NATURAL_YMD_RE.finditer(stem):
+        try:
+            y = int(match.group(1))
+            m_idx = _NATURAL_MONTH_NAMES[match.group(2).casefold()]
+            d = int(match.group(3))
+            return datetime(y, m_idx, d), "date"
+        except ValueError:
+            continue
+
+    for match in _NATURAL_MDY_RE.finditer(stem):
+        try:
+            m_idx = _NATURAL_MONTH_NAMES[match.group(1).casefold()]
+            d = int(match.group(2))
+            y = int(match.group(3))
+            return datetime(y, m_idx, d), "date"
+        except ValueError:
+            continue
+
+    for match in _NATURAL_DMY_RE.finditer(stem):
+        try:
+            d = int(match.group(1))
+            m_idx = _NATURAL_MONTH_NAMES[match.group(2).casefold()]
+            y = int(match.group(3))
+            return datetime(y, m_idx, d), "date"
+        except ValueError:
+            continue
+
     return None, None
 
 
