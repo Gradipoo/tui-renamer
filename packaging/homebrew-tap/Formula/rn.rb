@@ -10,7 +10,7 @@ class Rn < Formula
   # placeholder ``<sha1>`` and ``<sha256>`` so the user can update them
   # after verifying the file.
   url "https://files.pythonhosted.org/packages/source/t/tui-renamer/tui-renamer-0.1.6.tar.gz"
-  sha256 "<sha256>"  # <-- replace with the SHA‑256 of the downloaded tarball
+  sha256 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   license "GPL-3.0-only"
 
   depends_on "cmake" => :build
