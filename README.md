@@ -37,7 +37,7 @@ brew install gradipoo/tap/rn
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.6` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.7` is pushed.
 
 | File | System |
 | --- | --- |
@@ -164,7 +164,7 @@ On Windows, activate with `.venv\Scripts\activate`. Use Python 3.12 or newer for
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.6` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.7` is pushed.
 
 | File | System |
 | --- | --- |
@@ -303,6 +303,20 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `q` | Quit |
 
 While `g` is waiting, the status line shows `g then g: first file`.
+
+Press `E` or click **Use earliest date** in the rename options to stage one date
+per file. The line below the file list shows the highlighted file's earliest
+available date and source before you choose it, even with the detail pane hidden.
+The button says **ON** while active. Each file uses its own earliest embedded
+capture, enabled JSON sidecar, file creation, or file modification date. Filename
+dates and today are excluded. Ties use a stable source label. With no eligible
+date, the hint says “No date available” and no stamp is added.
+
+Earliest turns off Date (today), Mod, and Orig. Turning any of those on turns
+Earliest off; their existing combinations still work. Prefix/Suffix placement,
+locks, manual edits, and batch scope work as usual. This only stages filenames.
+Apply still asks for confirmation, and metadata and file-time write modes remain
+separate.
 
 The options strip under the file list shows the name toggles, the date, mtime, and preview modes, and the buttons for apply, undo, zone, write zone, GPS, refresh, and reset. A click sets the same value as the key.
 

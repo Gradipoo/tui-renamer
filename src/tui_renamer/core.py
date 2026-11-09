@@ -94,6 +94,7 @@ MIN_SANE_YEAR = 1990
 class RenameRules:
     """Toggles that build a new filename. source_tz None means the system zone."""
 
+    use_earliest: bool = False
     add_datetime: bool = False
     add_modtime: bool = False
     add_origtime: bool = False
@@ -143,6 +144,8 @@ class FileFacts:
     geodata_raw: dict[str, float] | None = None
     sidecar: Path | None = None
     candidates: list[DateCandidate] = field(default_factory=list)
+    # Retain a date for filename staging when a broken sidecar hides legacy candidates.
+    earliest_fallback: DateCandidate | None = None
     json_error: bool = False
     winner_source: str = ""
     winner_instant: datetime | None = None
@@ -186,6 +189,7 @@ class RenameOutcome:
 
 def reset_name_rules(rules: RenameRules) -> None:
     """Clear name toggles. The timezone override stays."""
+    rules.use_earliest = False
     rules.add_datetime = False
     rules.add_modtime = False
     rules.add_origtime = False
@@ -225,6 +229,8 @@ def active_steps(rules: RenameRules) -> list[Step]:
     if rules.replace_spaces:
         steps.append(Step("p", "Dashes", "green"))
     times: list[Step] = []
+    if rules.use_earliest:
+        times.append(Step("E", "Earliest", "yellow"))
     if rules.add_datetime:
         times.append(Step("d", "Date", "yellow"))
     if rules.add_modtime:
@@ -256,6 +262,32 @@ def list_files(directory: Path) -> list[Path]:
 def filename_clock_text(moment: datetime) -> str:
     """Same YYYY-MM-DD-HHMMSS stamp orig, mod, and today use in names."""
     return moment.strftime("%Y-%m-%d-%H%M%S")
+
+
+def earliest_date(facts: FileFacts) -> DateCandidate | None:
+    """Earliest eligible instant, with labels breaking ties deterministically."""
+    if facts.earliest_fallback is not None:
+        return facts.earliest_fallback
+    eligible = [
+        candidate
+        for candidate in facts.candidates
+        if candidate.instant is not None and candidate.label not in {"Filename", "Geodata"}
+    ]
+    return (
+        min(eligible, key=lambda c: (c.instant.astimezone(timezone.utc), c.label))
+        if eligible
+        else None
+    )
+
+
+def earliest_source(candidate: DateCandidate) -> str:
+    if candidate.label == "birth":
+        return "File created"
+    if candidate.label == "mtime":
+        return "File modified"
+    if candidate.label.startswith("EXIF"):
+        return "Camera capture (EXIF)"
+    return candidate.label
 
 
 def strip_existing_timestamps(basename: str) -> str:
@@ -312,6 +344,15 @@ def preview_base(
             time_suffix += f"-{facts.modtime_text}"
         if rules.add_origtime and facts.origtime_text:
             time_suffix += f"-{facts.origtime_text}"
+    if rules.use_earliest:
+        candidate = earliest_date(facts)
+        stamp = (
+            filename_clock_text(candidate.instant.astimezone(resolve_tz(rules.source_tz)))
+            if candidate is not None
+            else ""
+        )
+        time_prefix = f"{stamp}-" if stamp and rules.use_prefix else ""
+        time_suffix = f"-{stamp}" if stamp and not rules.use_prefix else ""
     geo_part = f"{facts.geodata}-" if rules.add_geodata and facts.geodata else ""
     new_base = re.sub(r"--+", "-", f"{time_prefix}{geo_part}{core}{time_suffix}").strip("-_")
     return new_base, ext
@@ -788,8 +829,9 @@ def load_facts(
 ) -> FileFacts:
     """Pick original and modified times the way the curses script did.
 
-    JSON wins only while JSON mode is on. A JSON parse error hides EXIF and
-    filesystem times. A missing offset uses the selected zone.
+    JSON wins only while JSON mode is on. A JSON parse error hides the legacy
+    original/modified winners, but retains candidates for earliest filename staging.
+    A missing offset uses the selected zone.
     """
     facts = FileFacts(has_gps=has_gps)
     filename_dt, filename_prec = parse_filename_datetime(path.name)
@@ -807,10 +849,10 @@ def load_facts(
                 data = json.loads(sidecar.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError, UnicodeError):
                 _mark_json_error(facts, filename_instant)
-                return facts
+                data = {}
             if not isinstance(data, dict):
                 _mark_json_error(facts, filename_instant)
-                return facts
+                data = {}
             json_photo = parse_json_time_field(data.get("photoTakenTime"))
             json_created = parse_json_time_field(data.get("creationTime"))
             json_orig = json_photo or json_created
@@ -860,6 +902,13 @@ def load_facts(
         facts.candidates.append(DateCandidate("mtime", _show(fs_mod, zone), instant=fs_mod))
     if fs_birth is not None:
         facts.candidates.append(DateCandidate("birth", _show(fs_birth, zone), instant=fs_birth))
+
+    if facts.json_error:
+        facts.earliest_fallback = earliest_date(facts)
+        facts.candidates = [c for c in facts.candidates if c.label == "Filename"]
+        facts.has_exif = False
+        facts.has_offset = False
+        return facts
 
     if rules.use_json_data and (json_orig or json_mod or facts.geodata):
         facts.source = "json"

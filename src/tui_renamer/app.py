@@ -49,6 +49,8 @@ from tui_renamer.core import (
     date_source,
     datetime_for_write,
     delta_text,
+    earliest_date,
+    earliest_source,
     filename_clock_text,
     filter_timezones,
     fit_middle,
@@ -121,6 +123,7 @@ from tui_renamer.search import (
 from tui_renamer.view_config import ViewState, clear_view, load_view, save_view
 
 TOGGLE_FIELDS = {
+    "E": "use_earliest",
     "d": "add_datetime",
     "m": "add_modtime",
     "o": "add_origtime",
@@ -136,6 +139,7 @@ TOGGLE_FIELDS = {
 }
 
 TOGGLE_TIPS = {
+    "use_earliest": "Stage the earliest available date for each filename",
     "add_datetime": "Add today's date and time",
     "add_modtime": "Add the modified time",
     "add_origtime": "Add the original time",
@@ -563,6 +567,12 @@ class OptionsPane(Vertical):
             button.styles.line_pad = 0
 
     def compose(self) -> ComposeResult:
+        yield Button(
+            "E Use earliest date",
+            id="opt-use_earliest",
+            compact=True,
+            tooltip=TOGGLE_TIPS["use_earliest"],
+        )
         with WrappingRow(id="opt-toggles"):
             for key, field, label in OPTION_FIELDS:
                 yield OptionToggle(key, label, tooltip=TOGGLE_TIPS[field], id=f"opt-{field}")
@@ -656,6 +666,7 @@ class RenamerApp(App[None]):
     #body { height: 1fr; }
     #files { width: 1fr; height: 100%; }
     #detail { width: 1fr; height: 100%; }
+    #earliest-hint { height: auto; padding: 0 1; }
     #options { height: auto; padding: 0 1; }
     #opt-toggles, #opt-modes, #opt-actions {
         layout: grid;
@@ -809,6 +820,7 @@ class RenamerApp(App[None]):
         Binding("v", "visual", show=False),
         Binding("a", "select_all", show=False),
         Binding("A", "select_none", show=False),
+        Binding("E", "toggle('use_earliest')", show=False),
         Binding("d", "toggle('add_datetime')", show=False),
         Binding("m", "toggle('add_modtime')", show=False),
         Binding("o", "toggle('add_origtime')", show=False),
@@ -890,6 +902,7 @@ class RenamerApp(App[None]):
         with Horizontal(id="body"):
             yield FileTable(id="files")
             yield DetailPane(id="detail")
+        yield Static("", id="earliest-hint", markup=False)
         yield OptionsPane(id="options")
         yield Input(placeholder="find", id="find", select_on_focus=True)
         yield Static("", id="status")
@@ -1498,11 +1511,39 @@ class RenamerApp(App[None]):
     def _update_detail(self) -> None:
         if not self.is_mounted:
             return
+        self.query_one("#earliest-hint", Static).update(self._earliest_hint())
         try:
             self.query_one("#detail-body", Static).update(self._detail_text())
         except NoMatches:
             return
         self._schedule_preview()
+
+    def _earliest_hint(self) -> str:
+        if not self.files:
+            return "No date available"
+        facts = self.facts_for(self.files[self._cursor])
+        candidate = earliest_date(facts)
+        if candidate is None:
+            return "Earliest for this file · No date available"
+        moment = candidate.instant.astimezone(self.target_zone())
+        source = earliest_source(candidate)
+        hint = f"Earliest for this file · {moment:%Y-%m-%d %H:%M} · {source}"
+        chosen = []
+        if self.rules.add_origtime and facts.origtime:
+            chosen.append(facts.origtime)
+        if self.rules.add_modtime and facts.modtime:
+            chosen.append(facts.modtime)
+        if self.rules.add_datetime:
+            _label, today = mtime_source(
+                facts,
+                RenameRules(add_datetime=True, datetime_stamp=self.rules.datetime_stamp),
+                _local_zone(),
+            )
+            if today is not None:
+                chosen.append(today)
+        if any(date > candidate.instant for date in chosen):
+            hint += f". {source} is earlier. Choose ‘Use earliest date’."
+        return hint
 
     def _detail_text(self) -> Text:
         text = Text()
@@ -2193,6 +2234,11 @@ class RenamerApp(App[None]):
         self._set_rule(field, not getattr(self.rules, field))
 
     def _set_rule(self, field: str, value: bool) -> None:
+        if value and field == "use_earliest":
+            for manual in ("add_datetime", "add_modtime", "add_origtime"):
+                setattr(self.rules, manual, False)
+        elif value and field in {"add_datetime", "add_modtime", "add_origtime"}:
+            self.rules.use_earliest = False
         setattr(self.rules, field, value)
         if field == "use_json_data":
             self._facts.clear()
@@ -2212,6 +2258,9 @@ class RenamerApp(App[None]):
             self.query_one("#opt-date_mode", OptionToggle).set_value(self.date_mode)
             self.query_one("#opt-mtime_mode", OptionToggle).set_value(self.mtime_mode)
             self.query_one("#opt-preview", OptionToggle).set_value(self.preview_on)
+            self.query_one("#opt-use_earliest", Button).label = (
+                "E Use earliest date · ON" if self.rules.use_earliest else "E Use earliest date"
+            )
             zone = self.rules.source_tz or "Local"
             self.query_one("#act-zone", Button).label = f"T {zone}"
         except NoMatches:
@@ -2250,6 +2299,9 @@ class RenamerApp(App[None]):
         self._set_rule(field, event.value)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "opt-use_earliest":
+            self.action_toggle("use_earliest")
+            return
         run = {
             "act-apply": "apply",
             "act-undo": "undo",
