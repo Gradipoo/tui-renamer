@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.7
+
+- Add a visible Use earliest date button and `E` shortcut to stage each file's earliest eligible date in its filename.
+- Show the highlighted file's earliest date and source even with the detail pane hidden, plus a hint when a manually chosen date is newer.
+- Keep filename staging separate from metadata writes and preserve locks, manual edits, and Apply confirmation.
+
 ## 0.1.6
 
 - Update release version to v0.1.6.
