@@ -3,14 +3,8 @@ class Rn < Formula
 
   desc "Keyboard-driven terminal UI for batch renaming"
   homepage "https://github.com/Gradipoo/tui-renamer"
-  # Updated for the 0.1.6 release.  The URL points to the source tarball
-  # on PyPI; the leading hash directory (`62/10/...`) is the SHA‑1 of the
-  # file contents and must be replaced with the hash for 0.1.6 once you
-  # have downloaded the tarball.  For the initial commit we leave the
-  # placeholder ``<sha1>`` and ``<sha256>`` so the user can update them
-  # after verifying the file.
-  url "https://files.pythonhosted.org/packages/source/t/tui-renamer/tui-renamer-0.1.6.tar.gz"
-  sha256 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  url "https://files.pythonhosted.org/packages/74/4b/ff4575141348c7ef08ac9a5bc99aba5a3b907064da10c2684518aaf792d3/tui_renamer-0.1.6.tar.gz"
+  sha256 "934104c4009eae55fa6aec19be901914e92ca53976cbc1b0238322bd1b41b079"
   license "GPL-3.0-only"
 
   depends_on "cmake" => :build
