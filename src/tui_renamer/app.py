@@ -1007,10 +1007,11 @@ class RenamerApp(App[None]):
         self.journal.cleanup()
 
     def on_resize(self, event: object) -> None:
-        width = getattr(getattr(event, "size", None), "width", self.size.width)
-        if self.is_mounted and not self._rebuilding:
-            self._apply_layout(width)
-            self.refresh_view()
+        size = getattr(event, "size", self.size)
+        if self.is_mounted:
+            self._apply_layout(size.width)
+            if not self._rebuilding:
+                self.refresh_view()
             self.call_after_refresh(self._fit_table_columns)
 
     def _apply_layout(self, width: int) -> None:

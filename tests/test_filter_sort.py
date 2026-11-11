@@ -337,3 +337,18 @@ async def test_column_fit_keeps_queued_cursor_movement(tmp_path: Path, monkeypat
         old_key = table.ordered_rows[0].key
         app.on_data_table_row_highlighted(DataTable.RowHighlighted(table, 0, old_key))
         assert app._cursor == 121
+
+
+async def test_resize_events_apply_during_table_rebuild(tmp_path: Path) -> None:
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app._begin_rebuild()
+        try:
+            await pilot.resize_terminal(80, 30)
+            assert app.query_one("#body").has_class("-narrow")
+            await pilot.resize_terminal(120, 40)
+            assert not app.query_one("#body").has_class("-narrow")
+        finally:
+            app._end_rebuild()
+        await pilot.pause()
