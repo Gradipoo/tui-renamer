@@ -9,7 +9,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, OptionList, Static
+from textual.widgets import Button, Collapsible, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from tui_renamer.core import RenameRules
@@ -112,19 +112,31 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         with Vertical(id="scan-dialog"):
             yield Static("Photo review", markup=False)
             yield Static("", id="scan-status", markup=False)
-            yield Static("", id="scan-models", markup=False)
+            yield Static("", id="scan-name-preview", markup=False)
+            yield Static(
+                "Staged only · main-screen Apply writes names, notes and queued metadata.",
+                id="scan-save-hint",
+                markup=False,
+            )
             with Horizontal(id="scan-body"):
                 with VerticalScroll(id="scan-left"):
                     yield Static("", id="scan-photo", markup=False)
                     with Horizontal(id="scan-previews"):
                         yield Vertical(id="scan-orig-slot")
                         yield Vertical(id="scan-rel-slot")
-                    yield Static("", id="scan-name-preview", markup=False)
+                    yield Static("Name and metadata · independent toggles", classes="scan-heading")
                     yield Static("", id="scan-source", markup=False)
                     yield Horizontal(id="scan-chips")
                     yield Input(placeholder="add a name or date chip", id="scan-add")
-                    yield OptionList(id="scan-model-pick")
-                    yield Input(placeholder="model override, Enter reads", id="scan-model")
+                    with Collapsible(
+                        title=f"Reading setup · {self.settings.model or 'choose a model'}",
+                        collapsed=bool(self.settings.model),
+                        id="scan-reading-setup",
+                    ):
+                        yield Static(f"Host: {self.settings.host}", markup=False)
+                        yield Static("", id="scan-models", markup=False)
+                        yield OptionList(id="scan-model-pick")
+                        yield Input(placeholder="model override, Enter reads", id="scan-model")
                 with VerticalScroll(id="scan-right"):
                     yield Static("Related (highlight to preview, R to read)", markup=False)
                     yield OptionList(id="scan-related-list")
@@ -172,7 +184,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
                     tooltip="Setup help",
                 )
                 yield Button(
-                    "Esc Close",
+                    "Esc Back · keep staging",
                     id="scan-close",
                     compact=True,
                     tooltip="Close and keep the staged name (q or Esc)",
@@ -320,6 +332,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         self.query_one("#scan-overwrite", Button).label = label
 
     def action_installed(self) -> None:
+        self.query_one("#scan-reading-setup", Collapsible).collapsed = False
         if not self._local:
             self._status("Installed list is only for a local Ollama host.")
             return
@@ -551,7 +564,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         self._chip_gen += 1
         for index, item in enumerate(self.bits):
             button = Button(
-                item.caption(),
+                f"Name {'ON' if item.use_name else 'off'} · {item.caption()}",
                 id=f"scan-bit-{self._chip_gen}-{index}",
                 compact=True,
                 tooltip=item.tooltip(),
@@ -562,7 +575,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
             pieces: list[Button] = [button]
             if item.can_meta():
                 meta = Button(
-                    "meta",
+                    "Metadata ON" if item.use_meta else "Metadata off",
                     id=f"scan-meta-{self._chip_gen}-{index}",
                     compact=True,
                     tooltip="Use this chip for metadata, not the filename",
@@ -637,6 +650,10 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         else:
             line = f"Remote host {self.settings.host}."
         self.query_one("#scan-models", Static).update(line)
+        group = self.query_one("#scan-reading-setup", Collapsible)
+        group.title = f"Reading setup · {self._model_value() or 'choose a model'}"
+        if self._discover_error or (self._local and names == []):
+            group.collapsed = False
 
     def _fill_slot(self, slot, path: Path | None, kind: str) -> None:
         slot.remove_children()
@@ -709,6 +726,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         self._fill_related_preview(chosen, self._preview_job)
 
     def _show_model_chooser(self) -> None:
+        self.query_one("#scan-reading-setup", Collapsible).collapsed = False
         names = self._installed or []
         picker = self.query_one("#scan-model-pick", OptionList)
         picker.clear_options()
@@ -730,6 +748,7 @@ class ReviewScreen(ModalScreen[StageResult | None]):
     def _persist_model(self, model: str) -> None:
         save_scan_settings(ScanSettings(host=self.settings.host, model=model))
         self.settings = ScanSettings(host=self.settings.host, model=model)
+        self.query_one("#scan-reading-setup", Collapsible).title = f"Reading setup · {model}"
 
     def _cancel_ocr(self) -> None:
         for worker in self.workers:

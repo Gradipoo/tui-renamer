@@ -11,7 +11,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.coordinate import Coordinate
 from textual.geometry import Region
-from textual.widgets import DataTable, Input, OptionList, Static
+from textual.widgets import Collapsible, DataTable, Input, OptionList, Static
 
 from tui_renamer.app import (
     CommandScreen,
@@ -279,62 +279,48 @@ async def test_filename_date_mode_diff_and_cache(tmp_path: Path) -> None:
         assert "diff" in detail.plain
 
 
-async def test_options_strip_shows_each_toggle_on_one_line(tmp_path: Path) -> None:
+async def test_option_groups_collapse_and_keep_active_settings_visible(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
-    async with app.run_test(size=(200, 40)) as pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        await pilot.press("d")
+        for group in app.query("#options Collapsible"):
+            assert group.collapsed
+        await pilot.press("d", "c")
         await pilot.pause()
-        options = app.query_one("#options")
-        inner = options.content_region
         on = app.query_one("#opt-add_datetime", OptionToggle)
         off = app.query_one("#opt-add_modtime", OptionToggle)
         assert on.has_class("-on")
         assert not off.has_class("-on")
         assert _background(on) != _background(off)
-        for toggle in app.query(OptionToggle):
-            assert toggle.size.height == 1
-            assert inner.contains_region(toggle.region)
-            chip = toggle.render()
-            assert chip.plain == f" {toggle.key_name} {toggle.caption} "
-            assert chip.plain[1 + len(toggle.key_name)] == " "
-            assert f"{toggle.key_name} {toggle.caption}" in _painted(toggle)
-            assert toggle.tooltip
-            key_spans = [
-                span
-                for span in chip.spans
-                if span.start == 1 and span.end == 1 + len(toggle.key_name)
-            ]
-            assert key_spans
-            style = str(key_spans[0].style)
-            assert "underline" in style and "bold" in style
-        for button in app.query("#opt-actions Button"):
-            assert button.size.height == 1
-            assert inner.contains_region(button.region)
-            assert str(button.label) in _painted(button)
-            assert button.tooltip
-        idle = _background(off)
-        assert await pilot.hover("#opt-add_modtime")
+        cleanup = app.query_one("#group-cleanup", Collapsible)
+        assert cleanup.collapsed
+        assert "lower" in cleanup.title
+        cleanup.collapsed = False
         await pilot.pause()
-        assert _background(off) != idle
+        for toggle in app.query(OptionToggle):
+            chip = toggle.render()
+            assert (
+                chip.plain
+                == f" {toggle.key_name} {toggle.caption} {'ON' if toggle.value else 'off'} "
+            )
+            assert toggle.tooltip
+            assert "underline" in str(chip.spans[0].style)
         off.focus()
         await pilot.pause()
-        assert _background(off) != idle
-        assert app.query_one("#opt-toggles").size.height == 1
-        await pilot.resize_terminal(72, 40)
-        await pilot.pause()
-        options = app.query_one("#options")
-        inner = options.content_region
-        assert app.query_one("#opt-toggles").size.height >= 2
-        for toggle in app.query(OptionToggle):
+        assert _background(off) != _background(on)
+        for width in (120, 72):
+            await pilot.resize_terminal(width, 40)
+            await pilot.pause()
+            toggle = app.query_one("#opt-remove_caps", OptionToggle)
+            toggle.scroll_visible(animate=False)
+            await pilot.pause()
             assert toggle.size.height == 1
-            assert inner.contains_region(toggle.region)
-            assert toggle.render().plain == f" {toggle.key_name} {toggle.caption} "
-            assert f"{toggle.key_name} {toggle.caption}" in _painted(toggle)
-        for button in app.query("#opt-actions Button"):
-            assert button.size.height == 1
-            assert inner.contains_region(button.region)
+            assert "c lower ON" in _painted(toggle)
+            assert app.query_one("#options").content_region.contains_region(toggle.region)
+            bar = app.query_one("#batch-bar")
+            assert bar.region.bottom <= app.size.height
+            assert bar.content_region.contains_region(app.query_one("#act-apply").region)
 
 
 async def test_commands_overlay_filters_and_closes(tmp_path: Path) -> None:
@@ -412,16 +398,16 @@ async def test_change_overview(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        assert "1 of 2 will change" in app.sub_title
+        assert "1 of 2 previews differ" in app.sub_title
         table = app.query_one(DataTable)
         labels = [column.label.plain for column in table.columns.values()]
         assert labels[:4] == ["Sel", "Src", "Flag", "Miss"]
-        assert labels[-1] == "Stat"
+        assert labels[-1] == "State"
         widths = {column.label.plain: column.width for column in table.columns.values()}
         assert widths["Src"] == 3
         assert widths["Flag"] == 4
         assert widths["Miss"] == 4
-        assert widths["Stat"] == 4
+        assert widths["State"] == 11
         assert widths["Sel"] == 3
         plain = table.get_cell_at(Coordinate(1, 4))
         assert _is_dim(plain)
@@ -466,8 +452,8 @@ async def test_warning_jump_timeline_and_detail(tmp_path: Path) -> None:
         await pilot.press("!")
         assert table.cursor_row == 0
         detail = str(app.query_one("#detail-body").render())
-        assert "Src EXIF" in detail
-        assert "Flag looks like a timezone offset" in detail
+        assert "Date source: EXIF" in detail
+        assert "Warning: looks like a timezone offset" in detail
         assert "timezone" in detail.lower()
         assert "-5h" in detail
         assert "#" in str(app.query_one("#timeline").render())
@@ -673,7 +659,7 @@ async def test_video_source_letter_is_quicktime(tmp_path: Path) -> None:
         assert table.get_cell_at(Coordinate(0, 1)).plain == "Q"
         assert "e" not in table.get_cell_at(Coordinate(0, 3)).plain
         detail = str(app.query_one("#detail-body").render())
-        assert "Src QuickTime" in detail
+        assert "Date source: QuickTime" in detail
 
 
 async def test_at_jumps_to_the_previous_warning(tmp_path: Path) -> None:
@@ -2092,3 +2078,102 @@ async def test_main_jk_and_q_unchanged_outside_scan(tmp_path: Path) -> None:
         assert "q" in keys
         quit_action = next(binding.action for binding in RenamerApp.BINDINGS if binding.key == "q")
         assert quit_action == "quit"
+
+
+async def test_edit_name_stages_on_enter_and_escape_cancels(tmp_path: Path) -> None:
+    from tui_renamer.app import InsertScreen
+
+    source = tmp_path / "original.txt"
+    source.write_text("keep", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        assert isinstance(app.screen, InsertScreen)
+        app.screen.query_one("#stem", Input).value = "staged"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is app.screen_stack[0]
+        assert app.manual[0] == "staged.txt"
+        assert source.read_text(encoding="utf-8") == "keep"
+        assert not (tmp_path / "staged.txt").exists()
+        await pilot.press("i")
+        app.screen.query_one("#stem", Input).value = "discarded"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.manual[0] == "staged.txt"
+        assert source.exists()
+
+
+async def test_refresh_cancel_preserves_staged_work(tmp_path: Path) -> None:
+    from tui_renamer.app import ConfirmScreen
+
+    (tmp_path / "original.txt").write_text("keep", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.selected.add(0)
+        app.manual[0] = "staged.txt"
+        app.locked[0] = "locked.txt"
+        await pilot.press("r")
+        assert isinstance(app.screen, ConfirmScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.selected == {0}
+        assert app.manual == {0: "staged.txt"}
+        assert app.locked == {0: "locked.txt"}
+        await pilot.press("r", "y")
+        await pilot.pause()
+        assert not app.selected
+        assert not app.manual
+        assert not app.locked
+        assert (tmp_path / "original.txt").exists()
+
+
+async def test_layout_prioritizes_files_and_review_actions_fit(tmp_path: Path) -> None:
+    from tui_renamer.scan_backend import MockBackend
+
+    photo = tmp_path / "solo.jpg"
+    _jpeg_photo(photo)
+    app = RenamerApp(tmp_path)
+    app.scan_backend = MockBackend()
+    async with app.run_test(size=(140, 42)) as pilot:
+        await pilot.pause()
+        assert app.query_one("#files").size.width > app.query_one("#detail").size.width
+        await pilot.resize_terminal(60, 24)
+        await pilot.pause()
+        assert app.query_one("#files").size.height > app.query_one("#detail").size.height
+        await pilot.press("S")
+        await pilot.pause()
+        review = app.screen
+        dialog = review.query_one("#scan-dialog").content_region
+        for ident in (
+            "scan-close",
+            "scan-read",
+            "scan-read-related",
+            "scan-name-preview",
+            "scan-save-hint",
+        ):
+            widget = review.query_one(f"#{ident}")
+            assert widget.region.height > 0
+            assert dialog.contains_region(widget.region)
+
+
+async def test_focused_option_enter_toggles_without_apply(tmp_path: Path) -> None:
+    source = tmp_path / "PHOTO.txt"
+    source.write_text("keep", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.selected.add(0)
+        app.query_one("#group-cleanup", Collapsible).collapsed = False
+        await pilot.pause()
+        app.query_one("#opt-remove_caps").focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.rules.remove_caps
+        assert app.screen is app.screen_stack[0]
+        assert source.exists()
+        await pilot.press("space")
+        await pilot.pause()
+        assert not app.rules.remove_caps

@@ -38,6 +38,7 @@ class MetaOp:
 class Batch:
     kind: str
     ops: list[RenameOp | MetaOp] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -100,7 +101,7 @@ class Journal:
         if not self.batches:
             return None
         batch = self.batches.pop()
-        notes: list[str] = []
+        notes = list(batch.notes)
         restored = 0
         for op in reversed(batch.ops):
             if isinstance(op, RenameOp):

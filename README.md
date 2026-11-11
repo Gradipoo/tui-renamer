@@ -222,7 +222,7 @@ Hidden files and `.json` sidecars are not listed. Sidecars are read when JSON mo
 
 You can type chips by hand, or send the chosen image to a local [Ollama](https://ollama.com) vision model that you already installed and started. `rn` does not identify people from appearance, and it does not infer sensitive attributes. Manual names are fine. Related-file candidates are listed with labels (Likely, Possible, Unlikely). Size alone is never Likely. Lack of evidence is not disproven. You choose a related file if you want one. The folder is not analyzed in bulk.
 
-Name chips stage an ordered suffix on the main New column as soon as you turn them on. Esc keeps that staging. The suffix is appended to the ordinary rename result. It is not a replacement for insert or the date and geo options. An empty ordinary stem plus tags becomes `tag1-tag2.ext` with no leading hyphen. Chip labels stay as typed. Lowercase, drop symbols, spaces to dashes, and dots to dashes apply to those tags in the New name, the same way they apply to the ordinary stem. Metadata is a separate control on a chip, off by default, and can be on without a filename tag. Images stay unchanged until you Apply on the main screen. Apply writes the notes sidecar, the rename, and any queued metadata. Opening, reading, toggling, or Esc does not write next to the photo. Existing capture dates are skipped unless you turn on overwrite in the overlay. Session undo covers that Apply batch. It does not recover files after you quit. Locked files keep their locked name. S tags do not rename a locked row.
+Name chips stage an ordered suffix on the main New column as soon as you turn them on. Esc keeps that staging. The suffix is appended to the ordinary rename result. It is not a replacement for insert or the date and geo options. An empty ordinary stem plus tags becomes `tag1-tag2.ext` with no leading hyphen. Chip labels stay as typed. Lowercase, drop symbols, spaces to dashes, and dots to dashes apply to those tags in the New name, the same way they apply to the ordinary stem. Metadata is a separate control on a chip, off by default, and can be on without a filename tag. Images stay unchanged until you Apply on the main screen. Apply writes the notes sidecar, the rename, and any queued metadata. Opening, reading, toggling, or Esc does not write next to the photo. Existing capture dates are skipped unless you turn on overwrite in the overlay. Session undo records the renames and metadata snapshots from that Apply batch. It does not restore the contents of photo-review notes, and newly created notes may remain. It does not recover files after you quit. Locked files keep their locked name. S tags do not rename a locked row.
 
 A year stays a year. Only a complete written calendar day can become capture metadata, using noon if you opt in. The same complete calendar day, as a whole chip label such as `Oct 20, 1994`, uses the ordinary `YYYY-MM-DD-HHMMSS` stamp in the filename. Date-only text uses 12:00. That noon is assumed, not a captured clock. A time already present in the written date is kept. A sentence that merely contains a date stays as text. Year, month, season, inferred, and unresolved ambiguous dates never become EXIF or a full timestamp. Filename recognition does not turn metadata on. Partial dates can still go in the sidecar and in a name you approve. Description writes JPEG/TIFF ImageDescription. Other types keep the text in the sidecar.
 
@@ -310,7 +310,7 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `0` | Reset name options |
 | Ctrl+0 | Reset preview and zoom |
 | `!` / `@` | Next or previous warning |
-| `i` | Edit this name. Esc saves. Enter saves and renames |
+| `i` | Edit this name. Enter stages. Esc cancels |
 | `l` / `L` / `U` | Lock this file / lock selected / unlock all |
 | Enter | Apply the current mode. Asks first |
 | `D` | Filename date mode. Enter sets dates and EXIF |
@@ -341,9 +341,43 @@ locks, manual edits, and batch scope work as usual. This only stages filenames.
 Apply still asks for confirmation, and metadata and file-time write modes remain
 separate.
 
-The options strip under the file list shows the name toggles, the date, mtime, and preview modes, and the buttons for apply, undo, zone, write zone, GPS, refresh, and reset. A click sets the same value as the key.
+Controls are grouped by what they do:
 
-The detail pane shows every date candidate for the highlighted file, which one wins, the zone, geodata, and a character diff of the old and new name. The line under the file name spells out the overview marks. Insertions are green. Deletions are red.
+| Group | Effect |
+| --- | --- |
+| Filename preview | Date stamps, sidecar names and locations, placement, timezone, and reset naming rules. These controls do not write files. |
+| Filename cleanup | Optional text transformations. Collapsed initially; the title lists active transformations. |
+| Staged edits and selection | Manual names, photo review, locks, selection, and discard manual name. Apply writes staged changes. |
+| Metadata and file times | Choose the filename-date or file-time Apply mode. Write timezone and Write GPS each have their own confirmation. |
+| View and session | Picture visibility, reset preview/zoom, and Refresh folder. |
+| Batch bar | Pending Apply scope, Apply, the named Undo action, and Last result. Always outside the scrolling options. |
+
+Less-used groups start collapsed. Click a group title, or focus it with Tab and
+press Enter or Space. Existing shortcuts work while a group is collapsed. Active
+cleanup settings and write modes remain visible in group titles. Toggles show ON
+or off; Enter or Space toggles a focused option.
+
+The batch bar counts actual pending renames, metadata files, notes files, hidden
+targets, and selections. Filename previews alone do not queue a rename. Manual
+names, frozen names, and photo-review staging can contribute targets without a
+selection. Filters do not exclude hidden staged work from Apply. In filename-date
+mode, no selection means all files; file-time mode requires a selection. Other
+staged name and photo-review work waits until you leave those write modes.
+
+Reset naming rules keeps manual names, locks, selection, and photo-review work.
+Clear selection clears visible and hidden selections while keeping staged edits.
+Discard manual name asks before clearing only the highlighted file's manual name;
+it keeps locks and photo-review tags. Reset preview/zoom keeps filters and staged
+work. Reset in Filter and sort only resets filters and sorting.
+
+Wide terminals give the file table more space than the inspector. Narrow terminals
+stack them; short narrow terminals show the table, with `2` for Detail and `4` for
+Preview. Photo review keeps the proposed name and staging reminder above scrolling
+content. Reading setup can collapse once a model is saved; Models opens it without
+reading an image. Model selection, reading, and remote-host confirmation keep their
+existing behavior.
+
+The table uses readable states such as Preview, Selected, Manual name, Locked name, and Unchanged. Preview means the proposed name differs, not that Apply will rename it. The detail pane spells out the compact date-source, warning, and missing-metadata codes. It shows before/after names, date candidates, the winning source, timezone, geodata, and a character diff. Insertions are green. Deletions are red.
 
 Esc closes find first, then leaves a zoomed pane, then leaves visual, filename date, or mtime mode.
 
@@ -351,11 +385,23 @@ Esc closes find first, then leaves a zoomed pane, then leaves visual, filename d
 
 MOV, MP4, and M4V use the QuickTime creation date when the file stores one. That source is Q. A video with no capture date is not marked as missing EXIF. `exiftool` is only a fallback for reading those files, and it is still required to write video, HEIC, and PNG metadata.
 
-Locked names stay put when you change toggles. A manual edit is used until you lock that file. Refresh clears selection, locks, and manual edits.
+Locked names stay put when you change toggles. A manual edit is used until you lock that file. Refresh asks before clearing selection, locks, and staged manual names. Cancel keeps that work. Photo-review staging is retained for files still present.
 
 Filename dates understand `2024-01-31-142500`, `IMG_20240131_142500`, `2024-01-31 14.25.00`, `2024-01-31_1425`, `20240131`, `20240101T123456`, subsecond timestamps, app conventions (such as `IMG-YYYYMMDD-WA0001` or macOS/Android screenshots), and natural written days (such as `October 20, 1994` or `1994-Oct-20`). A date with no time becomes 12:00, unless the file's calendar day already matches, in which case the clock is left alone. If two files land on the same second, the later one is nudged by one second.
 
-Undo remembers renames and metadata writes until you quit. JPEG and TIFF EXIF is restored from the previous segment. Files written with `exiftool` are copied to a temp folder first. If that copy fails, the write still happens and the status line says that file cannot be undone.
+Undo remembers recorded rename steps and metadata snapshots until you quit. Its
+button names the most recent recorded batch. JPEG and TIFF EXIF is restored from
+the previous segment. Files written with `exiftool` are copied to a temp folder
+first. If that copy fails, metadata bytes cannot be restored; file times can still
+be restored. Photo-review notes contents are not backed up, and newly created
+notes may remain after undo.
+
+After Apply, metadata writes, or undo, **Last result** opens a scrollable report of
+affected files, successful changes, skipped writes, collisions, failures, and undo
+coverage. It is also available through Commands. A partial failure does not erase
+successful changes from the result or the session journal. Failed work is not
+automatically retried. Check the result and re-stage the work you want to retry.
+Results and undo history last only for the current session.
 
 ## License
 
