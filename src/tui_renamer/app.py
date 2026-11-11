@@ -25,6 +25,7 @@ from textual.widget import Widget
 from textual.widgets import (
     Button,
     Checkbox,
+    Collapsible,
     DataTable,
     Footer,
     Header,
@@ -173,17 +174,17 @@ BUTTON_TIPS = {
 
 OPTION_FIELDS = (
     ("d", "add_datetime", "Date"),
-    ("m", "add_modtime", "Mod"),
-    ("o", "add_origtime", "Orig"),
+    ("m", "add_modtime", "Modified time"),
+    ("o", "add_origtime", "Original date"),
     ("e", "use_json_data", "JSON"),
     ("b", "add_geodata", "Geo"),
     ("t", "use_prefix", "Prefix"),
     ("x", "strip_original_name", "Strip"),
     ("y", "strip_to_text", "Text"),
     ("c", "remove_caps", "lower"),
-    ("s", "remove_special", "Sym"),
-    ("p", "replace_spaces", "Dash"),
-    (".", "replace_dots", "Dot"),
+    ("s", "remove_special", "Remove symbols"),
+    ("p", "replace_spaces", "Spaces → dashes"),
+    (".", "replace_dots", "Dots → dashes"),
 )
 
 
@@ -268,6 +269,30 @@ class ConfirmScreen(ModalScreen[bool]):
             self.dismiss(True)
         elif event.button.id == "no":
             self.dismiss(False)
+
+
+class ResultScreen(ModalScreen[None]):
+    """Read-only details for the most recent batch operation."""
+
+    BINDINGS = [Binding("escape,q", "dismiss(None)", show=False)]
+
+    def __init__(self, report: str) -> None:
+        super().__init__()
+        self.report = report
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static("Last batch result", markup=False)
+            with VerticalScroll(id="result-scroll"):
+                yield Static(self.report, id="result-details", markup=False)
+            yield Button("Back", id="result-close")
+
+    def on_mount(self) -> None:
+        self.query_one("#result-close", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "result-close":
+            self.dismiss(None)
 
 
 class FilterSortScreen(ModalScreen[TableView | None]):
@@ -405,9 +430,9 @@ class CommandScreen(ModalScreen[str | None]):
 
 
 class InsertScreen(ModalScreen[tuple[str, str]]):
-    """Edit the stem. Escape saves. Enter saves and renames."""
+    """Stage a name without writing to disk."""
 
-    BINDINGS = [Binding("escape", "save", show=False)]
+    BINDINGS = [Binding("escape", "dismiss(None)", show=False)]
 
     def __init__(self, stem: str, extension: str) -> None:
         super().__init__()
@@ -419,7 +444,12 @@ class InsertScreen(ModalScreen[tuple[str, str]]):
             yield Static("Edit name", markup=False)
             yield Input(value=self.stem, id="stem", select_on_focus=True)
             yield Static(self.extension or "(no extension)", id="extension", markup=False)
-            yield Static("Esc saves. Enter saves and renames.", markup=False)
+            yield Static(
+                "Enter stages this name. Apply on the main screen writes changes.", markup=False
+            )
+            with Horizontal(classes="edit-actions"):
+                yield Button("Stage name", id="edit-stage", variant="primary")
+                yield Button("Cancel", id="edit-cancel")
 
     def on_mount(self) -> None:
         self.query_one("#stem", Input).focus()
@@ -428,10 +458,15 @@ class InsertScreen(ModalScreen[tuple[str, str]]):
         return self.query_one("#stem", Input).value + self.extension
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(("rename", event.value + self.extension))
+        self.dismiss(("save", event.value + self.extension))
 
-    def action_save(self) -> None:
+    @on(Button.Pressed, "#edit-stage")
+    def stage_name(self) -> None:
         self.dismiss(("save", self._full()))
+
+    @on(Button.Pressed, "#edit-cancel")
+    def cancel_name(self) -> None:
+        self.dismiss(None)
 
 
 class TimezoneScreen(ModalScreen[str | None]):
@@ -548,6 +583,7 @@ class OptionToggle(Static):
     """One-line chip, such as ` d Date `. A click assigns the other state."""
 
     can_focus = True
+    BINDINGS = [Binding("enter,space", "toggle", show=False)]
 
     class Changed(Message):
         def __init__(self, toggle: OptionToggle, value: bool) -> None:
@@ -584,7 +620,7 @@ class OptionToggle(Static):
         text.append(" ")
         text.append(self.key_name, style="bold underline")
         text.append(" ", style=Style(bold=False))
-        text.append(f"{self.caption} ")
+        text.append(f"{self.caption} {'ON' if self._value else 'off'} ")
         return text
 
     def set_value(self, value: bool) -> None:
@@ -595,7 +631,7 @@ class OptionToggle(Static):
 
     def get_content_width(self, container: Size, viewport: Size) -> int:
         del container, viewport
-        return 1 + len(self.key_name) + 1 + len(self.caption) + 1
+        return 1 + len(self.key_name) + 1 + len(self.caption) + 5
 
     def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
         del container, viewport, width
@@ -603,6 +639,9 @@ class OptionToggle(Static):
 
     def on_click(self, event: Click) -> None:
         event.stop()
+        self.action_toggle()
+
+    def action_toggle(self) -> None:
         self.set_value(not self._value)
         self.post_message(self.Changed(self, self._value))
 
@@ -630,45 +669,87 @@ class OptionsPane(Vertical):
             button.styles.line_pad = 0
 
     def compose(self) -> ComposeResult:
-        yield Button(
-            "E Use earliest date",
-            id="opt-use_earliest",
-            compact=True,
-            tooltip=TOGGLE_TIPS["use_earliest"],
-        )
+        yield Static("Filename preview · no disk writes", classes="option-heading")
         with WrappingRow(id="opt-toggles"):
-            for key, field, label in OPTION_FIELDS:
-                yield OptionToggle(key, label, tooltip=TOGGLE_TIPS[field], id=f"opt-{field}")
-        with WrappingRow(id="opt-modes"):
-            yield OptionToggle(
-                "D", "Filename date", tooltip=TOGGLE_TIPS["date_mode"], id="opt-date_mode"
-            )
-            yield OptionToggle("M", "mtime", tooltip=TOGGLE_TIPS["mtime_mode"], id="opt-mtime_mode")
-            yield OptionToggle(
-                "P",
-                "Preview",
-                value=True,
-                tooltip=TOGGLE_TIPS["preview"],
-                id="opt-preview",
-            )
-        with WrappingRow(id="opt-actions"):
             yield Button(
-                "Enter Apply", id="act-apply", compact=True, tooltip=BUTTON_TIPS["act-apply"]
-            )
-            yield Button("u Undo", id="act-undo", compact=True, tooltip=BUTTON_TIPS["act-undo"])
-            yield Button("T Local", id="act-zone", compact=True, tooltip=BUTTON_TIPS["act-zone"])
-            yield Button(
-                "W Write zone",
-                id="act-write-zone",
+                "E Use earliest date",
+                id="opt-use_earliest",
                 compact=True,
-                tooltip=BUTTON_TIPS["act-write-zone"],
+                tooltip=TOGGLE_TIPS["use_earliest"],
             )
-            yield Button("B GPS", id="act-gps", compact=True, tooltip=BUTTON_TIPS["act-gps"])
+            for key, field, label in OPTION_FIELDS[:6]:
+                yield OptionToggle(key, label, tooltip=TOGGLE_TIPS[field], id=f"opt-{field}")
+            yield Button("T Timezone", id="act-zone", compact=True, tooltip=BUTTON_TIPS["act-zone"])
             yield Button(
-                "r Refresh", id="act-refresh", compact=True, tooltip=BUTTON_TIPS["act-refresh"]
+                "0 Reset naming rules",
+                id="act-reset",
+                compact=True,
+                tooltip="Reset filename rules. Keeps manual names, locks and photo-review staging.",
             )
-            yield Button("0 Reset", id="act-reset", compact=True, tooltip=BUTTON_TIPS["act-reset"])
-            yield Button("S Photo", id="act-scan", compact=True, tooltip=BUTTON_TIPS["act-scan"])
+        with Collapsible(title="Filename cleanup", id="group-cleanup"):
+            with WrappingRow(classes="option-row", id="opt-cleanup"):
+                for key, field, label in OPTION_FIELDS[6:]:
+                    yield OptionToggle(key, label, tooltip=TOGGLE_TIPS[field], id=f"opt-{field}")
+        with Collapsible(title="Staged edits and selection", id="group-staging"):
+            yield Static(
+                "Stage changes here; main-screen Apply writes them.", classes="option-note"
+            )
+            with WrappingRow(classes="option-row"):
+                for ident, label, tip in (
+                    ("act-edit", "i Edit name", "Stage a manual name for this file"),
+                    ("act-scan", "S Photo review", BUTTON_TIPS["act-scan"]),
+                    ("act-lock", "l Lock name", "Freeze or unfreeze this proposed name"),
+                    ("act-lock-selected", "L Lock selected", "Freeze selected proposed names"),
+                    ("act-unlock", "U Unlock all", "Release all frozen names"),
+                    ("act-select-all", "a Select visible", "Keep hidden selections too"),
+                    (
+                        "act-clear-selection",
+                        "A Clear selection",
+                        "Clear visible and hidden selections; keep staged edits",
+                    ),
+                    (
+                        "act-discard-name",
+                        "Discard manual name",
+                        "Ask before discarding only this file's manual name",
+                    ),
+                ):
+                    yield Button(label, id=ident, compact=True, tooltip=tip)
+        with Collapsible(title="Metadata and file times", id="group-metadata"):
+            yield Static("Choose Apply mode · filenames stay unchanged", classes="option-note")
+            with WrappingRow(id="opt-modes"):
+                yield OptionToggle(
+                    "D",
+                    "Dates from filenames",
+                    tooltip=TOGGLE_TIPS["date_mode"],
+                    id="opt-date_mode",
+                )
+                yield OptionToggle(
+                    "M", "Set file times", tooltip=TOGGLE_TIPS["mtime_mode"], id="opt-mtime_mode"
+                )
+            yield Static("Write actions · each asks for confirmation", classes="option-note")
+            with WrappingRow(classes="option-row"):
+                for ident, label in (
+                    ("act-write-zone", "W Write timezone"),
+                    ("act-gps", "B Write GPS"),
+                ):
+                    yield Button(label, id=ident, compact=True, tooltip=BUTTON_TIPS[ident])
+        with Collapsible(title="View and session", id="group-view"):
+            with WrappingRow(id="opt-view"):
+                yield OptionToggle(
+                    "P", "Preview", value=True, tooltip=TOGGLE_TIPS["preview"], id="opt-preview"
+                )
+                yield Button(
+                    "Ctrl+0 Reset preview / zoom",
+                    id="act-reset-view",
+                    compact=True,
+                    tooltip="Reset preview and zoom. Keep filters, naming rules and staged work.",
+                )
+                yield Button(
+                    "r Refresh folder",
+                    id="act-refresh",
+                    compact=True,
+                    tooltip=BUTTON_TIPS["act-refresh"],
+                )
 
 
 SOURCE_STYLE = {
@@ -685,17 +766,26 @@ FLAG_STYLE = {
     "G": "yellow",
     "!": "bold red",
 }
-STATUS_SHORT = {
-    "UNCHANGED": "---",
-    "MODIFIED": "MOD",
-    "SELECTED": "SEL",
-    "MANUAL": "MAN",
-    "LOCKED": "LCK",
-    "JSON ERR": "ERR",
-    "NO DATE": "NOD",
-    "UPDATE": "UPD",
-    "ERR": "ERR",
+STATUS_LABEL = {
+    "UNCHANGED": "Unchanged",
+    "MODIFIED": "Preview",
+    "SELECTED": "Selected",
+    "MANUAL": "Manual name",
+    "LOCKED": "Locked name",
+    "JSON ERR": "Sidecar err",
+    "NO DATE": "No date",
+    "UPDATE": "Update",
+    "ERR": "Error",
 }
+BATCH_LABEL = {
+    "rename": "rename",
+    "apply": "names and metadata",
+    "mtime": "file times",
+    "dates": "filename dates",
+    "timezone": "timezone write",
+    "geodata": "GPS write",
+}
+
 SOURCE_NAME = {
     "E": "EXIF",
     "J": "JSON sidecar",
@@ -727,6 +817,9 @@ class RenamerApp(App[None]):
     CSS = """
     Screen { layout: vertical; }
     #body { height: 1fr; }
+    .-compact #options { max-height: 25%; }
+    .-compact #detail { display: none; }
+    .-zoom-detail #detail, .-zoom-preview #detail { display: block; }
     #files { width: 1fr; height: 100%; }
     #detail { width: 1fr; height: 100%; }
     #view-open {
@@ -734,14 +827,21 @@ class RenamerApp(App[None]):
         content-align: left middle;
     }
     #earliest-hint { height: auto; padding: 0 1; }
-    #options { height: auto; padding: 0 1; }
-    #opt-toggles, #opt-modes, #opt-actions {
+    #options { height: auto; max-height: 40%; overflow-y: auto; padding: 0 1; }
+    #options Collapsible { padding: 0; border: none; }
+    #options Collapsible > Contents { padding: 0 0 0 1; }
+    .option-note { height: auto; color: $text-muted; }
+    #batch-bar { height: auto; padding: 0 1; }
+    #pending-summary { height: auto; max-height: 3; }
+    .option-heading { height: 1; color: $text; text-style: bold; }
+    .edit-actions { height: auto; }
+    #opt-toggles, #opt-modes, #opt-actions, #opt-view, .option-row {
         layout: grid;
         height: auto;
         width: 100%;
         grid-gutter: 0 1;
     }
-    #options OptionToggle, #options Button {
+    #options OptionToggle, #options Button, #batch-bar Button {
         height: 1;
         min-height: 1;
         max-height: 1;
@@ -760,7 +860,7 @@ class RenamerApp(App[None]):
         color: $text;
         text-style: bold;
     }
-    #options OptionToggle:hover, #options Button:hover {
+    #options OptionToggle:hover, #options Button:hover, #batch-bar Button:hover {
         background: $primary;
         color: $text;
         height: 1;
@@ -771,7 +871,7 @@ class RenamerApp(App[None]):
         color: $text;
         text-style: bold;
     }
-    #options OptionToggle:focus, #options Button:focus {
+    #options OptionToggle:focus, #options Button:focus, #batch-bar Button:focus {
         background: $primary-darken-1;
         color: $text;
         text-style: bold;
@@ -793,14 +893,14 @@ class RenamerApp(App[None]):
     .-zoom-files #detail { display: none; }
     .-zoom-detail #files { display: none; }
     .-zoom-options #body { display: none; }
-    .-zoom-options #options { height: 1fr; }
+    .-zoom-options #options { height: 1fr; max-height: 100%; }
     .-zoom-preview #files { display: none; }
     .-zoom-preview #options { display: none; }
     .-zoom-preview #detail-scroll { display: none; }
     .-zoom-preview #preview-slot { height: 1fr; max-height: 100%; }
     .-zoom-preview #preview-image { height: 1fr; }
     ConfirmScreen, CommandScreen, TimezoneScreen, InsertScreen,
-        ReviewScreen { align: center middle; }
+        ReviewScreen, ResultScreen { align: center middle; }
     ReviewScreen #scan-dialog {
         width: 96;
         max-width: 98%;
@@ -834,7 +934,13 @@ class RenamerApp(App[None]):
         text-style: bold underline;
     }
     ReviewScreen OptionList:focus { border: tall $accent; }
-    ReviewScreen #scan-actions { height: auto; dock: bottom; }
+    ReviewScreen #scan-actions { layout: grid; grid-size: 2; height: auto; dock: bottom; }
+    ReviewScreen #scan-actions Button {
+        width: 1fr; min-width: 0; height: 1; min-height: 1; border: none;
+    }
+    ReviewScreen .scan-heading { height: 1; text-style: bold; }
+    ReviewScreen #scan-name-preview, ReviewScreen #scan-save-hint { height: auto; }
+    ReviewScreen #scan-left { width: 2fr; }
     ReviewScreen #scan-model-pick { height: auto; max-height: 8; }
     ReviewScreen #scan-related-list { height: 1fr; min-height: 6; }
     ReviewScreen #scan-help { height: auto; max-height: 10; }
@@ -853,6 +959,8 @@ class RenamerApp(App[None]):
     CommandScreen #dialog { width: 84; height: 24; }
     #cmd-list { height: 1fr; }
     #zones { height: 12; }
+    ResultScreen #dialog { height: 80%; }
+    #result-scroll { height: 1fr; }
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
@@ -936,6 +1044,7 @@ class RenamerApp(App[None]):
         self.mtime_mode = False
         self._leader = False
         self._message = ""
+        self._last_result = ""
         self._rebuilding = False
         self._rebuild_depth = 0
         self._scroll_restore_gen = 0
@@ -977,6 +1086,19 @@ class RenamerApp(App[None]):
         yield Button("Filter and sort", id="view-open", compact=True)
         yield Static("", id="earliest-hint", markup=False)
         yield OptionsPane(id="options")
+        with Vertical(id="batch-bar"):
+            yield Static("", id="pending-summary", markup=False)
+            with WrappingRow(id="opt-actions"):
+                yield Button(
+                    "Enter Apply", id="act-apply", compact=True, tooltip=BUTTON_TIPS["act-apply"]
+                )
+                yield Button("u Undo", id="act-undo", compact=True, tooltip="Session undo only")
+                yield Button(
+                    "Last result",
+                    id="act-result",
+                    compact=True,
+                    tooltip="Inspect successes, failures and undo coverage",
+                )
         yield Input(placeholder="find", id="find", select_on_focus=True)
         yield Static("", id="status")
         yield Footer()
@@ -998,6 +1120,7 @@ class RenamerApp(App[None]):
             )
         self.refresh_view()
         self._apply_layout(self.size.width)
+        self.call_after_refresh(self._fit_table_columns)
         self.set_interval(0.5, self._tick)
         self.query_one(FileTable).focus()
 
@@ -1009,26 +1132,29 @@ class RenamerApp(App[None]):
     def on_resize(self, event: object) -> None:
         size = getattr(event, "size", self.size)
         if self.is_mounted:
-            self._apply_layout(size.width)
+            self._apply_layout(size.width, size.height)
             if not self._rebuilding:
                 self.refresh_view()
             self.call_after_refresh(self._fit_table_columns)
 
-    def _apply_layout(self, width: int) -> None:
+    def _apply_layout(self, width: int, height: int | None = None) -> None:
         body = self.query_one("#body")
         files = self.query_one("#files")
         detail = self.query_one("#detail")
         narrow = width < 100
+        compact = narrow and (self.size.height if height is None else height) < 32
+        self.screen.set_class(compact, "-compact")
+        files.border_subtitle = "2 Detail · 4 Preview" if compact else ""
         body.set_class(narrow, "-narrow")
         if narrow:
             body.styles.layout = "vertical"
             files.styles.width = "100%"
             detail.styles.width = "100%"
-            files.styles.height = "1fr"
+            files.styles.height = "2fr"
             detail.styles.height = "1fr"
         else:
             body.styles.layout = "horizontal"
-            files.styles.width = "1fr"
+            files.styles.width = "2fr"
             detail.styles.width = "1fr"
             files.styles.height = "100%"
             detail.styles.height = "100%"
@@ -1251,7 +1377,7 @@ class RenamerApp(App[None]):
         return source, flag_text, missing
 
     def _short_status(self, status: str) -> str:
-        return STATUS_SHORT.get(status, status[:3])
+        return STATUS_LABEL.get(status, status)
 
     def _status_code(self, index: int) -> str:
         path = self.files[index]
@@ -1292,7 +1418,7 @@ class RenamerApp(App[None]):
         else:
             missing = "none"
         stat = self._short_status(self._status_code(self._cursor))
-        return f"Src {source}. Flag {flag_name}. Miss {missing}. Stat {stat}."
+        return f"Date source: {source}. Warning: {flag_name}. Missing: {missing}. State: {stat}."
 
     def _update_timeline(self) -> None:
         widget = self.query_one("#timeline", Static)
@@ -1325,7 +1451,7 @@ class RenamerApp(App[None]):
 
     def _name_new_widths(self) -> tuple[int, int]:
         """Split leftover width across Name and New. Show full names when they fit."""
-        remaining = max(16, self._flex_budget(18, 7))
+        remaining = max(16, self._flex_budget(25, 7))
         name_need = max((len(path.name) for path in self.files), default=8)
         new_need = max(
             (len(self.preview_for(index)) for index in range(len(self.files))),
@@ -1355,9 +1481,9 @@ class RenamerApp(App[None]):
 
     def _desired_flex(self) -> tuple[int, int]:
         if self.date_mode:
-            return self._flex_width(56, 8, 1), 19
+            return self._flex_width(63, 8, 1), 19
         if self.mtime_mode:
-            return self._flex_width(37, 7, 1), 19
+            return self._flex_width(44, 7, 1), 19
         return self._name_new_widths()
 
     def _fit_table_columns(self) -> None:
@@ -1520,12 +1646,12 @@ class RenamerApp(App[None]):
         table.add_column("Miss", key="miss", width=4)
         table.add_column("Name", key="name", width=name_w)
         table.add_column("New", key="new", width=new_w)
-        table.add_column("Stat", key="status", width=4)
+        table.add_column("State", key="status", width=11)
         self._name_width = name_w
         self._new_width = new_w
 
     def _add_date_columns(self, table: FileTable) -> None:
-        width = self._flex_width(fixed_content=56, column_count=8, flex_count=1)
+        width = self._flex_width(fixed_content=63, column_count=8, flex_count=1)
         table.add_column("Sel", key="mark", width=3)
         table.add_column("Src", key="src", width=3)
         table.add_column("Flag", key="flag", width=4)
@@ -1533,19 +1659,19 @@ class RenamerApp(App[None]):
         table.add_column("File", key="file", width=width)
         table.add_column("Current", key="cur", width=19)
         table.add_column("New", key="new", width=19)
-        table.add_column("Stat", key="status", width=4)
+        table.add_column("State", key="status", width=11)
         self._name_width = width
         self._new_width = 19
 
     def _add_mtime_columns(self, table: FileTable) -> None:
-        width = self._flex_width(fixed_content=37, column_count=7, flex_count=1)
+        width = self._flex_width(fixed_content=44, column_count=7, flex_count=1)
         table.add_column("Sel", key="mark", width=3)
         table.add_column("Src", key="src", width=3)
         table.add_column("Flag", key="flag", width=4)
         table.add_column("Miss", key="miss", width=4)
         table.add_column("Name", key="name", width=width)
         table.add_column("New mtime", key="mtime", width=19)
-        table.add_column("Stat", key="status", width=4)
+        table.add_column("State", key="status", width=11)
         self._name_width = width
         self._new_width = 19
 
@@ -1716,7 +1842,8 @@ class RenamerApp(App[None]):
         facts = self.facts_for(path)
         new_name = self.preview_for(self._cursor)
         text.append(path.name + "\n", style="bold")
-        text.append(self._mark_sentence() + "\n")
+        text.append(f"Before: {path.name}\n")
+        text.append(f"After:  {new_name}\n", style="bold")
         if self._cursor in self.locked:
             text.append("locked\n", style="green")
         elif self._cursor in self.manual:
@@ -1725,11 +1852,12 @@ class RenamerApp(App[None]):
             style = {"equal": "", "delete": "red strike", "insert": "green"}[tag]
             text.append(piece, style=style)
         text.append("\n\n")
+        text.append(self._mark_sentence() + "\n")
         if facts.json_error:
             text.append("JSON sidecar could not be read.\n", style="red")
         if facts.sidecar is not None:
             text.append(f"sidecar  {facts.sidecar.name}\n")
-        text.append("Dates\n", style="bold")
+        text.append("Date sources · file times are not confirmed capture dates\n", style="bold")
         if facts.candidates:
             for candidate in facts.candidates:
                 text.append(f"  {candidate.label}\n    {candidate.text}\n")
@@ -1772,6 +1900,10 @@ class RenamerApp(App[None]):
             text.append("Geodata  none\n", style="dim")
         if show_not_oldest_warning(facts, self.rules):
             text.append("\n! Chosen time is not the oldest\n", style="bold yellow")
+        text.append(
+            "\nTable codes: Src = date source; Flag = warning; Miss = missing metadata.\n",
+            style="dim",
+        )
         return text
 
     def _append_deltas(self, text: Text, facts: FileFacts, path: Path) -> None:
@@ -1828,15 +1960,109 @@ class RenamerApp(App[None]):
             text.append(piece, style=style)
         widget.update(text)
 
+    def _update_batch_bar(self) -> None:
+        visible = {self.files[index] for index in self._visible}
+        hint = "Previews alone do not queue renames."
+        if self.date_mode:
+            paths = (
+                [self.files[index] for index in sorted(self.selected) if index < len(self.files)]
+                if self.selected
+                else list(self.files)
+            )
+            plan = plan_filename_dates(paths, self.plan_zone())
+            targets = {item.path for item in plan.todo}
+            summary = f"Apply filename dates: {len(targets)} files"
+            if self.scan_pending or self.scan_suffix or self.manual or self.locked:
+                hint = "Name/photo-review work waits for rename mode."
+        elif self.mtime_mode:
+            targets = {
+                self.files[index]
+                for index in self.selected
+                if index < len(self.files)
+                and mtime_source(self.facts_for(self.files[index]), self.rules, _local_zone())[1]
+                is not None
+            }
+            summary = f"Apply file times: {len(targets)} files"
+            if self.scan_pending or self.scan_suffix or self.manual or self.locked:
+                hint = "Name/photo-review work waits for rename mode."
+        else:
+            pairs = [(src, name) for src, name in self._rename_pairs() if src.name != name]
+            pending = list(self.scan_pending.values())
+            targets = {src for src, _name in pairs} | {item.path for item in pending}
+            metadata = sum(
+                1
+                for item in pending
+                if (
+                    item.moment is not None
+                    and (item.overwrite or not self.facts_for(item.path).has_exif)
+                )
+                or (item.description and item.path.suffix.lower() in IMAGE_EXTENSIONS)
+            )
+            notes = sum(1 for path in targets if str(path) in self.scan_sessions)
+            summary = f"Apply: {len(pairs)} renames · {metadata} metadata · {notes} notes"
+        hidden = len(targets - visible)
+        selected_hidden = len(self.selected.difference(self._visible))
+        summary += (
+            f"\nHidden targets: {hidden} · Selection: {len(self.selected)} "
+            f"({selected_hidden} hidden)"
+            f"\n{hint}"
+        )
+        self.query_one("#pending-summary", Static).update(summary)
+        label = (
+            "Apply filename dates"
+            if self.date_mode
+            else "Apply file times"
+            if self.mtime_mode
+            else "Apply names / notes"
+        )
+        self.query_one("#act-apply", Button).label = f"Enter {label}"
+        undo = self.query_one("#act-undo", Button)
+        last = self.journal.batches[-1] if self.journal.batches else None
+        undo.label = f"u Undo {BATCH_LABEL.get(last.kind, last.kind)}" if last else "u Undo"
+        undo.disabled = last is None
+        undo.tooltip = self._undo_coverage(last)
+        self.query_one("#act-result", Button).disabled = not self._last_result
+
+    def _undo_coverage(self, batch: Batch | None) -> str:
+        if batch is None or not batch.ops:
+            return "No undo entry was created for this action."
+        lines = [f"Session undo: {BATCH_LABEL.get(batch.kind, batch.kind)}. Available until quit."]
+        lines.extend(batch.notes)
+        for op in batch.ops:
+            if isinstance(op, MetaOp) and op.copy_failed:
+                lines.append(
+                    f"{op.path.name}: metadata backup failed; only file times can be restored."
+                )
+        lines.append(
+            "Undo restores recorded rename steps, file times and available metadata backups."
+        )
+        return "\n".join(lines)
+
+    def _record_result(self, message: str, details: list[str], batch: Batch | None = None) -> None:
+        self._last_result = message + "\n\n" + "\n".join(details)
+        self._last_result += "\n\n" + self._undo_coverage(batch)
+        if batch is not None and not batch.ops:
+            self._last_result += "\n" + "\n".join(batch.notes)
+        self.set_status(message + " Open Last result for details and undo coverage.")
+
+    def action_last_result(self) -> None:
+        if self._last_result:
+            self.push_screen(ResultScreen(self._last_result))
+        else:
+            self.set_status("No batch result in this session yet.")
+            self._update_status()
+
     def _update_subtitle(self) -> None:
         if self.visual:
-            mode = "VISUAL"
+            mode = "RANGE SELECT"
         elif self.date_mode:
             mode = "FILENAME DATE"
         elif self.mtime_mode:
             mode = "SET MTIME"
         else:
-            mode = "NORMAL"
+            mode = "RENAME"
+        if self._find_open:
+            mode = "FIND · Enter keeps match · Esc returns"
         total = len(self.files)
         pos = self._visible.index(self._cursor) + 1 if self._visible else 0
         place = "Prefix" if self.rules.use_prefix else "Suffix"
@@ -1853,7 +2079,7 @@ class RenamerApp(App[None]):
             extra.append(f"Hidden selected:{hidden_selected}")
         tail = ("  " + " ".join(extra)) if extra else ""
         changing = len(self._changing)
-        count = f"{changing} of {total} will change"
+        count = f"{changing} of {total} previews differ"
         warnings = sum(
             1
             for index, file_path in enumerate(self.files)
@@ -1884,6 +2110,7 @@ class RenamerApp(App[None]):
         button = self.query_one("#view-open", Button)
         button.label = f"Filter and sort: {summary}"
         button.tooltip = summary
+        self._update_batch_bar()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if self._rebuilding or not self.is_mounted or not event.data_table.is_attached:
@@ -1926,6 +2153,7 @@ class RenamerApp(App[None]):
     def _refresh_side_panels(self) -> None:
         if not self.is_mounted:
             return
+        self._sync_options()
         self._update_detail()
         self._update_timeline()
         self._update_status()
@@ -2168,7 +2396,7 @@ class RenamerApp(App[None]):
         self._set_zoom(None, persist=False)
         self._preview_gen += 1
         self._schedule_preview()
-        self.set_status("View reset")
+        self.set_status("Preview and zoom reset. Filters and staged work kept.")
         self._sync_options()
         self._update_status()
         self.query_one(FileTable).focus()
@@ -2447,7 +2675,7 @@ class RenamerApp(App[None]):
         self.selected.clear()
         self.visual = False
         self.anchor = None
-        self.set_status("Deselected all files")
+        self.set_status("Selection cleared, including hidden files. Staged edits kept.")
         self._paint_rows(previous)
 
     def action_toggle(self, field: str) -> None:
@@ -2484,6 +2712,30 @@ class RenamerApp(App[None]):
             )
             zone = self.rules.source_tz or "Local"
             self.query_one("#act-zone", Button).label = f"T {zone}"
+            cleanup = [
+                label for _key, field, label in OPTION_FIELDS[6:] if getattr(self.rules, field)
+            ]
+            self.query_one("#group-cleanup", Collapsible).title = "Filename cleanup · " + (
+                ", ".join(cleanup) if cleanup else "off"
+            )
+            mode = (
+                "dates from filenames ON"
+                if self.date_mode
+                else "file times ON"
+                if self.mtime_mode
+                else "no write mode"
+            )
+            self.query_one(
+                "#group-metadata", Collapsible
+            ).title = f"Metadata and file times · {mode}"
+            self.query_one(
+                "#group-staging", Collapsible
+            ).title = (
+                f"Staged edits and selection · {len(self.manual)} manual, {len(self.locked)} locked"
+            )
+            self.query_one(
+                "#group-view", Collapsible
+            ).title = f"View and session · preview {'ON' if self.preview_on else 'off'}"
         except NoMatches:
             return
         finally:
@@ -2533,6 +2785,15 @@ class RenamerApp(App[None]):
             "act-refresh": "reload_files",
             "act-reset": "reset_rules",
             "act-scan": "scan_review",
+            "act-edit": "insert",
+            "act-lock": "lock",
+            "act-lock-selected": "lock_selected",
+            "act-unlock": "unlock_all",
+            "act-select-all": "select_all",
+            "act-clear-selection": "select_none",
+            "act-discard-name": "discard_manual_name",
+            "act-reset-view": "reset_view",
+            "act-result": "last_result",
         }.get(event.button.id or "")
         if run:
             getattr(self, f"action_{run}")()
@@ -2590,11 +2851,33 @@ class RenamerApp(App[None]):
             self.set_status(result.message)
             self.refresh_view()
 
+    def action_discard_manual_name(self) -> None:
+        self._begin()
+        if not self._visible or self._cursor not in self.manual:
+            self.set_status("This file has no staged manual name to discard.")
+            self._update_status()
+            return
+        index = self._cursor
+        path = self.files[index]
+
+        def discard() -> None:
+            self.manual.pop(index, None)
+            self.set_status(
+                "Manual name discarded. Naming rules, locks and photo-review tags kept."
+            )
+            self.refresh_view()
+
+        self._ask(
+            f"Discard the staged manual name for {path.name}? "
+            "Keeps naming rules, locks, selection and photo-review tags. No disk writes. y or n",
+            discard,
+        )
+
     def action_reset_rules(self) -> None:
         self._begin()
         reset_name_rules(self.rules)
         self._facts.clear()
-        self.set_status("Name options reset.")
+        self.set_status("Naming rules reset. Manual names, locks and photo-review staging kept.")
         self.refresh_view()
 
     def action_lock(self) -> None:
@@ -2689,9 +2972,20 @@ class RenamerApp(App[None]):
 
     def action_reload_files(self) -> None:
         self._begin()
-        self.reload_files()
-        self.set_status("File list refreshed")
-        self.refresh_view()
+
+        def refresh() -> None:
+            self.reload_files()
+            self.set_status("File list refreshed")
+            self.refresh_view()
+
+        if self.selected or self.locked or self.manual:
+            self._ask(
+                "Refresh clears selections, locks and staged manual names. "
+                "Photo-review staging is kept for files still present. Continue? y or n",
+                refresh,
+            )
+        else:
+            refresh()
 
     def action_insert(self) -> None:
         self._begin()
@@ -2706,12 +3000,9 @@ class RenamerApp(App[None]):
         def done(result: tuple[str, str] | None) -> None:
             if not result:
                 return
-            kind, name = result
+            _kind, name = result
             self._save_manual(name)
-            if kind == "rename":
-                self.action_apply()
-            else:
-                self.refresh_view()
+            self.refresh_view()
 
         self.push_screen(InsertScreen(stem, extension), done)
 
@@ -2719,7 +3010,7 @@ class RenamerApp(App[None]):
         cleaned = name.strip()
         if cleaned:
             self.manual[self._cursor] = cleaned
-            self.set_status("Manual edit applied.")
+            self.set_status("Name staged. Use Apply to write changes.")
         elif self._cursor in self.manual:
             del self.manual[self._cursor]
             self.set_status("Manual edit cleared.")
@@ -2906,36 +3197,55 @@ class RenamerApp(App[None]):
             key = str(path)
             if key in self.scan_suffix:
                 self.scan_accepted[key] = self._formatted_scan_parts(path)
-        errors.extend(self._write_scan_notes(note_targets))
+        note_paths = [path for path in sorted(note_targets) if str(path) in self.scan_sessions]
+        notes_changed = bool(note_paths)
+        note_errors = self._write_scan_notes(note_targets)
+        errors.extend(note_errors)
+        details = [f"Notes write requested: {path.name}" for path in note_paths]
         if pairs:
             outcome = rename_paths(pairs)
             ops.extend(RenameOp(src, dst) for src, dst in outcome.done)
             extra = notes_renames(outcome.done)
             if extra:
+                notes_changed = True
                 sidecar_out = rename_paths(extra)
+                errors.extend(sidecar_out.errors)
+                details.extend(
+                    f"Notes renamed: {src.name} → {dst.name}" for src, dst in sidecar_out.done
+                )
                 ops.extend(RenameOp(src, dst) for src, dst in sidecar_out.done)
                 name_map = {src.name: dst.name for src, dst in outcome.done}
                 for _src, dst in sidecar_out.done:
-                    rewrite_pairing_names(dst, name_map)
+                    try:
+                        rewrite_pairing_names(dst, name_map)
+                    except OSError as exc:
+                        errors.append(f"{dst.name}: updating notes references failed: {exc}")
             path_map = {src: dst for src, dst in outcome.done}
             self.scan_suffix = self._remap_scan_map(self.scan_suffix, path_map)
             self.scan_accepted = self._remap_scan_map(self.scan_accepted, path_map)
             self.scan_sessions = self._remap_sessions(path_map)
             renamed = len(outcome.done)
             conflicts = outcome.conflicts
-            errors = list(outcome.errors)
+            errors.extend(outcome.errors)
+            details.extend(f"Renamed: {src.name} → {dst.name}" for src, dst in outcome.done)
+            if conflicts:
+                details.append(f"{conflicts} destination collisions used numbered suffixes.")
         skipped = 0
         dates = 0
         descs = 0
         for item in pending:
             path = path_map.get(item.path, item.path)
             if not path.exists():
+                errors.append(f"{path.name}: missing; metadata was not written")
                 continue
             facts = self.facts_for(path)
             write_date = item.moment is not None
             if write_date and not item.overwrite and facts.has_exif:
                 write_date = False
                 skipped += 1
+                details.append(
+                    f"Skipped capture date: {path.name} already has embedded capture metadata"
+                )
             write_desc = bool(item.description) and path.suffix.lower() in IMAGE_EXTENSIONS
             if not write_date and not write_desc:
                 continue
@@ -2945,14 +3255,28 @@ class RenamerApp(App[None]):
                 errors.append(f"{path.name}: {exc}")
                 continue
             if write_date and item.moment is not None:
-                set_filesystem_times(path, item.moment, setfile=self.setfile)
+                if not set_filesystem_times(path, item.moment, setfile=self.setfile):
+                    errors.append(f"{path.name}: some filesystem times could not be written")
                 if write_file_metadata_and_offset(path, item.moment, exiftool=self.exiftool):
                     dates += 1
-            if write_desc and write_image_description(path, item.description):
-                descs += 1
+                    details.append(f"Capture date written: {path.name}")
+                else:
+                    errors.append(f"{path.name}: capture metadata write failed")
+            if write_desc:
+                if write_image_description(path, item.description):
+                    descs += 1
+                    details.append(f"Description written: {path.name}")
+                else:
+                    errors.append(f"{path.name}: description write failed")
             ops.append(op)
         kind = "apply" if pending else "rename"
-        self.journal.push(Batch(kind, ops))
+        batch = Batch(kind, ops)
+        if notes_changed:
+            batch.notes.append(
+                "Photo-review notes contents are not restored by undo; "
+                "newly created notes may remain."
+            )
+        self.journal.push(batch)
         self.scan_pending.clear()
         self.reload_files()
         parts: list[str] = []
@@ -2969,7 +3293,8 @@ class RenamerApp(App[None]):
         if errors:
             parts.append(f"{len(errors)} errors.")
             self.debug("; ".join(errors))
-        self.set_status(" ".join(parts) if parts else "Applied.")
+        details.extend(f"Failed: {error}" for error in errors)
+        self._record_result(" ".join(parts) if parts else "Applied notes.", details, batch)
         self.refresh_view()
 
     def _ask_mtime(self) -> None:
@@ -2989,29 +3314,38 @@ class RenamerApp(App[None]):
         batch = Batch("mtime")
         updated = 0
         errors = 0
+        details: list[str] = []
         for index in indexes:
             path = self.files[index]
             _label, moment = mtime_source(self.facts_for(path), self.rules, local)
             if moment is None:
                 errors += 1
+                details.append(f"Skipped: {path.name}; no eligible date source")
                 continue
-            op = self.journal.snapshot(path, mode="times")
+            try:
+                op = self.journal.snapshot(path, mode="times")
+            except OSError as exc:
+                errors += 1
+                details.append(f"Failed: {path.name}; snapshot: {exc}")
+                continue
             try:
                 stamp = moment.timestamp()
                 os.utime(path, (stamp, stamp))
             except OSError as exc:
                 errors += 1
                 self.debug(f"Error setting mtime: {exc}")
+                details.append(f"Failed: {path.name}; {exc}")
                 continue
             batch.ops.append(op)
             updated += 1
+            details.append(f"File times updated: {path.name}")
         self.journal.push(batch)
         self._facts.clear()
         self.mtime_mode = False
         message = f"Updated mtime for {updated} files."
         if errors:
             message += f" {errors} failed."
-        self.set_status(message)
+        self._record_result(message, details, batch)
         self.refresh_view()
 
     def _ask_dates(self) -> None:
@@ -3066,24 +3400,38 @@ class RenamerApp(App[None]):
         errors = 0
         meta_ok = 0
         notes: list[str] = []
+        details: list[str] = []
         for item in todo:
             try:
                 moment = datetime.fromtimestamp(item.target, tz=zone)
             except (OSError, OverflowError, ValueError) as exc:
                 errors += 1
                 self.debug(f"Error setting date for {item.path.name}: {exc}")
+                details.append(f"Failed: {item.path.name}; {exc}")
                 continue
             try:
                 op = self.journal.snapshot(item.path)
             except OSError as exc:
                 errors += 1
                 self.debug(f"Snapshot failed for {item.path.name}: {exc}")
+                details.append(f"Failed: {item.path.name}; snapshot: {exc}")
                 continue
             if not set_filesystem_times(item.path, moment, setfile=self.setfile):
                 errors += 1
+                batch.ops.append(op)
+                details.append(
+                    f"Partial write: {item.path.name}; some filesystem times failed; "
+                    "recorded for undo"
+                )
                 continue
             if write_file_metadata_and_offset(item.path, moment, exiftool=self.exiftool):
                 meta_ok += 1
+                details.append(f"Dates and capture metadata written: {item.path.name}")
+            else:
+                details.append(
+                    f"Partial write: {item.path.name}; file times updated, "
+                    "capture metadata not written"
+                )
             ok += 1
             if op is not None:
                 batch.ops.append(op)
@@ -3098,7 +3446,7 @@ class RenamerApp(App[None]):
             message += f" {errors} failed."
         if notes:
             message += " " + " ".join(notes)
-        self.set_status(message)
+        self._record_result(message, details, batch)
         self.refresh_view()
 
     def action_write_timezone(self) -> None:
@@ -3125,17 +3473,20 @@ class RenamerApp(App[None]):
         batch = Batch("timezone")
         counts = WriteCounts()
         notes: list[str] = []
+        details: list[str] = []
         for index in indexes:
             path = self.files[index]
             moment = datetime_for_write(path, self.facts_for(path), zone)
             if moment is None:
                 counts.skipped += 1
+                details.append(f"Skipped: {path.name}; no date available")
                 continue
             try:
                 op = self.journal.snapshot(path)
             except OSError as exc:
                 counts.skipped += 1
                 self.debug(f"Snapshot failed for {path.name}: {exc}")
+                details.append(f"Failed: {path.name}; snapshot: {exc}")
                 continue
             if op.copy_failed:
                 notes.append(f"{path.name}: metadata cannot be undone")
@@ -3147,8 +3498,14 @@ class RenamerApp(App[None]):
             else:
                 metadata_ok = None
             tally_write(counts, filesystem_ok=filesystem_ok, metadata_ok=metadata_ok)
-            if filesystem_ok or metadata_ok:
-                batch.ops.append(op)
+            batch.ops.append(op)
+            meta_state = (
+                "not supported" if metadata_ok is None else "written" if metadata_ok else "failed"
+            )
+            details.append(
+                f"{path.name}: file times {'written' if filesystem_ok else 'failed'}; "
+                f"metadata {meta_state}"
+            )
             if metadata_ok is False:
                 self.debug(f"Metadata write failed for {path.name}")
         self.journal.push(batch)
@@ -3156,7 +3513,7 @@ class RenamerApp(App[None]):
         message = timezone_write_message(counts)
         if notes:
             message += " " + " ".join(notes)
-        self.set_status(message)
+        self._record_result(message, details, batch)
         self.refresh_view()
 
     def action_write_geodata(self) -> None:
@@ -3184,31 +3541,35 @@ class RenamerApp(App[None]):
         batch = Batch("geodata")
         updated = 0
         errors = 0
+        details: list[str] = []
         for index in indexes:
             path = self.files[index]
             raw = self.facts_for(path).geodata_raw
             if not raw:
                 errors += 1
+                details.append(f"Skipped: {path.name}; no JSON GPS coordinates")
                 continue
             try:
                 op = self.journal.snapshot(path)
             except OSError as exc:
                 errors += 1
                 self.debug(f"Snapshot failed for {path.name}: {exc}")
+                details.append(f"Failed: {path.name}; snapshot: {exc}")
                 continue
             if write_geodata(path, raw["latitude"], raw["longitude"]):
                 updated += 1
-                if op is not None:
-                    batch.ops.append(op)
+                details.append(f"GPS written: {path.name}")
             else:
                 errors += 1
                 self.debug(f"Failed to write geodata to {path.name}")
+                details.append(f"Failed: {path.name}; GPS write failed")
+            batch.ops.append(op)
         self.journal.push(batch)
         self._facts.clear()
         message = f"Wrote geodata to {updated} files."
         if errors:
             message += f" {errors} failed."
-        self.set_status(message)
+        self._record_result(message, details, batch)
         self.refresh_view()
 
     def action_undo(self) -> None:
@@ -3242,10 +3603,20 @@ class RenamerApp(App[None]):
             self.scan_accepted = self._remap_scan_map(self.scan_accepted, reverse)
             self.scan_sessions = self._remap_sessions(reverse)
         self.reload_files()
-        message = f"Undid {result.kind} ({result.restored} restored)."
+        message = (
+            f"Undid {BATCH_LABEL.get(result.kind, result.kind)} ({result.restored} steps restored)."
+        )
         if result.notes:
             message += " " + " ".join(result.notes)
-        self.set_status(message)
+        details = list(result.notes)
+        if last is not None:
+            details.extend(
+                f"Restore attempted: {op.dst.name} → {op.src.name}"
+                if isinstance(op, RenameOp)
+                else f"Restore attempted: {op.path.name} (metadata / file times)"
+                for op in reversed(last.ops)
+            )
+        self._record_result(message, details)
         self.refresh_view()
 
 
