@@ -26,6 +26,7 @@ None.
 ## Known gotchas
 
 - Resize handlers must use both dimensions from the Resize event and update layout classes even during a table rebuild. The app size can still reflect the previous terminal height. Reproduce compact layouts without optional metadata tools, whose startup message consumes extra rows.
+- Column fitting waits for queued cursor highlights instead of rebuilding from an outdated app cursor. Completing a rebuild reconciles movement that arrived while highlights were suppressed. Ignore stale highlights whose row or key no longer matches the live table, and highlights from detached tables during shutdown.
 - Explicit table navigation invalidates deferred scroll restoration. A late restore from before filtering or sorting can otherwise move the highlight offscreen, even when the selected file and row are correct. Each rebuild also invalidates older restores, including rebuilds at scroll zero. Changing filters or sort order resets the previous viewport before rebuilding and reveals the selected file afterward.
 - Toggle existing photo-review chip buttons in place. Replacing them on every press loses focus and can drop queued presses while old widgets are being removed.
 

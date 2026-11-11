@@ -1491,8 +1491,11 @@ class RenamerApp(App[None]):
         if not self.is_mounted or self._rebuilding or self._syncing:
             return
         try:
-            self.query_one(FileTable)
+            table = self.query_one(FileTable)
         except NoMatches:
+            return
+        if table.row_count and self._visible[table.cursor_row] != self._cursor:
+            # Let the queued highlight update selection before rebuilding columns.
             return
         name_w, new_w = self._desired_flex()
         if name_w == self._name_width and new_w == self._new_width:
@@ -1558,6 +1561,15 @@ class RenamerApp(App[None]):
         if self._rebuild_depth <= 0:
             self._rebuild_depth = 0
             self._rebuilding = False
+            try:
+                table = self.query_one(FileTable)
+            except NoMatches:
+                return
+            if table.row_count and self._visible[table.cursor_row] != self._cursor:
+                key = table.ordered_rows[table.cursor_row].key
+                self.on_data_table_row_highlighted(
+                    DataTable.RowHighlighted(table, table.cursor_row, key)
+                )
 
     def _restore_table_scroll(self, x: float, y: float, gen: int) -> None:
         if gen != self._scroll_restore_gen:
@@ -2105,6 +2117,11 @@ class RenamerApp(App[None]):
             return
         if event.cursor_row >= len(self._visible):
             return
+        table = event.data_table
+        if event.cursor_row != table.cursor_row:
+            return
+        if event.row_key != table.ordered_rows[table.cursor_row].key:
+            return
         row = self._visible[event.cursor_row]
         if self._search_nav:
             if row != self._cursor:
@@ -2141,6 +2158,7 @@ class RenamerApp(App[None]):
         self._update_timeline()
         self._update_status()
         self._update_subtitle()
+        self.call_after_refresh(self._fit_table_columns)
 
     def _move_to(self, row: int) -> None:
         if row not in self._visible:

@@ -293,3 +293,47 @@ async def test_sort_keeps_highlight_scrolled_into_view(tmp_path: Path, monkeypat
             callback(*args, **kwargs)
         await pilot.pause()
         assert table.scroll_y <= 4
+
+
+async def test_detached_table_highlight_does_not_change_current_file(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("fixture")
+    (tmp_path / "b.txt").write_text("fixture")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app._move_to(1)
+        await pilot.pause()
+        table = app.query_one(DataTable)
+        old_key = table.ordered_rows[0].key
+        await table.remove()
+        assert not table.is_attached
+        app.on_data_table_row_highlighted(DataTable.RowHighlighted(table, 0, old_key))
+        assert app._cursor == 1
+
+
+async def test_column_fit_keeps_queued_cursor_movement(tmp_path: Path, monkeypatch) -> None:
+    for index in range(140):
+        (tmp_path / f"{index:03}.txt").write_text("fixture")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one(DataTable)
+        with monkeypatch.context() as patch:
+            sizes = (app._name_width + 1, app._new_width)
+            patch.setattr(app, "_desired_flex", lambda: sizes)
+            table.move_cursor(row=120)
+            app._fit_table_columns()
+            assert table.cursor_row == 120
+        await pilot.pause()
+        assert app._cursor == 120
+        assert table.cursor_row == 120
+        assert table.scroll_y > 0
+        app._begin_rebuild()
+        table.move_cursor(row=121)
+        await pilot.pause()
+        app._end_rebuild()
+        await pilot.pause()
+        assert app._cursor == 121
+        old_key = table.ordered_rows[0].key
+        app.on_data_table_row_highlighted(DataTable.RowHighlighted(table, 0, old_key))
+        assert app._cursor == 121
