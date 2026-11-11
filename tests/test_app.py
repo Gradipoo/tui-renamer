@@ -401,10 +401,10 @@ async def test_change_overview(tmp_path: Path) -> None:
         assert "1 of 2 previews differ" in app.sub_title
         table = app.query_one(DataTable)
         labels = [column.label.plain for column in table.columns.values()]
-        assert labels[:4] == ["Sel", "Src", "Flag", "Miss"]
+        assert labels[:4] == ["Sel", "Fit", "Flag", "Miss"]
         assert labels[-1] == "State"
         widths = {column.label.plain: column.width for column in table.columns.values()}
-        assert widths["Src"] == 3
+        assert widths["Fit"] == 3
         assert widths["Flag"] == 4
         assert widths["Miss"] == 4
         assert widths["State"] == 11
@@ -445,7 +445,7 @@ async def test_warning_jump_timeline_and_detail(tmp_path: Path) -> None:
         await pilot.pause()
         assert "W:1" in app.sub_title
         table = app.query_one(DataTable)
-        assert table.get_cell_at(Coordinate(0, 1)).plain == "E"
+        assert table.get_cell_at(Coordinate(0, 1)).plain == "rn"
         assert table.get_cell_at(Coordinate(0, 2)).plain == "H"
         await pilot.press("j")
         assert table.cursor_row == 1
@@ -656,7 +656,7 @@ async def test_video_source_letter_is_quicktime(tmp_path: Path) -> None:
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         table = app.query_one(DataTable)
-        assert table.get_cell_at(Coordinate(0, 1)).plain == "Q"
+        assert table.get_cell_at(Coordinate(0, 1)).plain == "ok"
         assert "e" not in table.get_cell_at(Coordinate(0, 3)).plain
         detail = str(app.query_one("#detail-body").render())
         assert "Date source: QuickTime" in detail

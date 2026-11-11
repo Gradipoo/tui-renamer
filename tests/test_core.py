@@ -14,6 +14,8 @@ from tui_renamer.core import (
     FileFacts,
     RenameRules,
     active_steps,
+    assign_unique_names,
+    collision_stem,
     conflict_destination,
     date_source,
     datetime_for_write,
@@ -304,6 +306,61 @@ def test_missing_file_is_skipped(tmp_path: Path) -> None:
     plan = plan_filename_dates([missing], UTC)
     assert plan.skipped == ["20240101-gone.txt"]
     assert plan.todo == []
+
+
+def test_collision_stem_keeps_a_lone_suffix() -> None:
+    assert collision_stem("holiday-01", []) == "holiday-01"
+    assert collision_stem("holiday-1", ["holiday"]) == "holiday-1"
+    assert collision_stem("holiday-001", ["holiday"]) == "holiday-001"
+    assert collision_stem("photo", ["photo-01"]) == "photo"
+
+
+def test_collision_stem_strips_one_suffix_when_a_sibling_shares_it() -> None:
+    assert collision_stem("photo-01", ["photo"]) == "photo"
+    assert collision_stem("photo-01", ["photo-02"]) == "photo"
+    assert collision_stem("photo-01", ["photo-01"]) == "photo"
+    assert collision_stem("photo-01-02", ["photo-01"]) == "photo-01"
+    assert collision_stem("photo-01", ["photo-01-02"]) == "photo-01"
+    assert collision_stem("holiday-01", ["other"]) == "holiday-01"
+
+
+def test_preview_base_receives_the_sibling_set() -> None:
+    facts = FileFacts()
+    rules = RenameRules()
+    stem, ext = preview_base("holiday-01.jpg", facts, rules, sibling_stems=[])
+    assert (stem, ext) == ("holiday-01", ".jpg")
+    stem, ext = preview_base("photo-01.jpg", facts, rules, sibling_stems=["photo"])
+    assert (stem, ext) == ("photo", ".jpg")
+    rules.remove_caps = True
+    stem, ext = preview_base("Photo-01.JPG", facts, rules, sibling_stems=["Photo"])
+    assert (stem, ext) == ("photo", ".JPG")
+
+
+def test_assign_unique_names_reserves_earlier_files(tmp_path: Path) -> None:
+    first = tmp_path / "a.jpg"
+    second = tmp_path / "b.jpg"
+    first.write_text("a", encoding="utf-8")
+    second.write_text("b", encoding="utf-8")
+    assert assign_unique_names([first, second], ["photo.jpg", "photo.jpg"]) == [
+        "photo.jpg",
+        "photo-01.jpg",
+    ]
+    assert [path.name for path in (first, second)] == ["a.jpg", "b.jpg"]
+
+
+def test_assign_unique_names_does_not_swap_or_reuse_a_held_suffix(tmp_path: Path) -> None:
+    first = tmp_path / "a.txt"
+    second = tmp_path / "b.txt"
+    photo = tmp_path / "photo.txt"
+    numbered = tmp_path / "photo-01.txt"
+    for path in (first, second, photo, numbered):
+        path.write_text(path.name, encoding="utf-8")
+    assert assign_unique_names([first, second], ["b.txt", "a.txt"]) == ["b-01.txt", "a.txt"]
+    assert assign_unique_names([first, second], ["b.txt", "c.txt"]) == ["b-01.txt", "c.txt"]
+    assert assign_unique_names(
+        [first, photo, numbered],
+        ["photo.txt", "photo.txt", "photo-01.txt"],
+    ) == ["photo-02.txt", "photo.txt", "photo-01.txt"]
 
 
 def test_conflict_suffix_and_batch_order(tmp_path: Path) -> None:

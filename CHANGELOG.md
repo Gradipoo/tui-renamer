@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Sort the file table by the resolved new name, ascending or descending. Folder order, neighbor warnings, and collision suffixes stay put.
+- Show collision suffixes in the New column. A trailing `-NN` is the same base when another file shares that stem. A lone `holiday-01` keeps its suffix.
+- Replace the Src column with Fit: `ok`, `rn`, or `dup` for names, and the date or file-time equivalents. The date source stays in the detail pane.
+- Preview the first GIF frame, one ffmpeg frame for MOV, MP4, and M4V, JPEG XL with the optional `jxl` extra, and the embedded JPEG in Canon CR3. CR3 and JPEG XL metadata are not written.
+
 ## 0.1.9
 
 - Local System filename stamps use the system zone's daylight offset for the capture date. An October UTC time no longer shifts by today's standard offset.

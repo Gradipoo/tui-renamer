@@ -49,7 +49,8 @@ from tui_renamer.core import (
     DatePlanItem,
     FileFacts,
     RenameRules,
-    date_source,
+    assign_unique_names,
+    collision_stem,
     datetime_for_write,
     delta_text,
     earliest_date,
@@ -324,7 +325,7 @@ class FilterSortScreen(ModalScreen[TableView | None]):
             )
             yield Select(SORTS, value=self.view.sort, allow_blank=False, id="view-sort")
             yield Checkbox(
-                "Descending (warnings last)",
+                "Descending",
                 self.view.descending,
                 id="view-descending",
                 compact=True,
@@ -752,14 +753,6 @@ class OptionsPane(Vertical):
                 )
 
 
-SOURCE_STYLE = {
-    "E": "green",
-    "J": "magenta",
-    "B": "blue",
-    "M": "yellow",
-    "F": "cyan",
-    "Q": "cyan",
-}
 FLAG_STYLE = {
     "H": "bold yellow",
     "Y": "red",
@@ -1076,6 +1069,7 @@ class RenamerApp(App[None]):
         self.scan_sessions: dict[str, ScanSession] = {}
         self._date_plan: DatePlan | None = None
         self._date_plan_key: tuple[tuple[Path, ...], tzinfo | None] | None = None
+        self._name_plan_cache: tuple[object, list[str], list[str]] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1228,23 +1222,95 @@ class RenamerApp(App[None]):
         return cached
 
     def preview_for(self, index: int) -> str:
+        _proposed, resolved = self._name_plan()
+        return resolved[index]
+
+    def _sibling_stems(self, index: int) -> list[str]:
+        return [
+            os.path.splitext(self.files[other].name)[0]
+            for other in range(len(self.files))
+            if other != index
+        ]
+
+    def _with_collision_base(self, filename: str, index: int) -> str:
+        stem, ext = os.path.splitext(filename)
+        base = collision_stem(stem, self._sibling_stems(index))
+        if base == stem:
+            return filename
+        return f"{base}{ext}" if base else filename
+
+    def _names_key(self) -> tuple[object, ...]:
+        rules = self.rules
+        fact_tokens = []
+        for path in self.files:
+            facts = self.facts_for(path)
+            candidate = earliest_date(facts)
+            instant = candidate.instant.isoformat() if candidate and candidate.instant else ""
+            fact_tokens.append((facts.modtime_text, facts.origtime_text, facts.geodata, instant))
+        return (
+            tuple(self.files),
+            tuple(self.locked.items()),
+            tuple(self.manual.items()),
+            tuple((key, tuple(value)) for key, value in self.scan_suffix.items()),
+            tuple((key, tuple(value)) for key, value in self.scan_accepted.items()),
+            id(self.facts_for),
+            tuple(fact_tokens),
+            rules.use_earliest,
+            rules.add_datetime,
+            rules.add_modtime,
+            rules.add_origtime,
+            rules.use_json_data,
+            rules.add_geodata,
+            rules.use_prefix,
+            rules.strip_original_name,
+            rules.strip_to_text,
+            rules.remove_caps,
+            rules.remove_special,
+            rules.replace_spaces,
+            rules.replace_dots,
+            rules.source_tz,
+            rules.datetime_stamp,
+        )
+
+    def _proposed_name(self, index: int) -> str:
         path = self.files[index]
         if index in self.locked:
-            return self.locked[index]
+            return self._with_collision_base(self.locked[index], index)
         key = str(path)
         accepted = self.scan_accepted.get(key, [])
         parts = self._formatted_scan_parts(path)
+        siblings = self._sibling_stems(index)
         if index in self.manual:
-            return apply_scan_suffix(self.manual[index], parts, accepted=accepted)
+            return apply_scan_suffix(
+                self._with_collision_base(self.manual[index], index),
+                parts,
+                accepted=accepted,
+            )
         file_stem, _ext = os.path.splitext(path.name)
         bare = strip_accepted_suffix(file_stem, accepted)
-        stem, ext = preview_base(path.name, self.facts_for(path), self.rules, stem=bare)
+        stem, _ext = preview_base(
+            path.name,
+            self.facts_for(path),
+            self.rules,
+            stem=bare,
+            sibling_stems=siblings,
+        )
         return apply_scan_suffix(
             path.name,
             parts,
             accepted=[],
             stem=stem if stem else "",
         )
+
+    def _name_plan(self) -> tuple[list[str], list[str]]:
+        key = self._names_key()
+        cached = self._name_plan_cache
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2]
+        proposed = [self._proposed_name(index) for index in range(len(self.files))]
+        resolved = assign_unique_names(self.files, proposed)
+        self._name_plan_cache = (key, proposed, resolved)
+        return proposed, resolved
 
     def refresh_view(self) -> None:
         self._recompute_changing()
@@ -1299,10 +1365,20 @@ class RenamerApp(App[None]):
             captures[index] = embedded_capture(facts)
             warnings[index] = warning
         # Stable name ties in either direction, with absent capture dates always last.
-        visible.sort(
-            key=lambda index: self.files[index].name.lower(),
-            reverse=view.descending,
-        )
+        # New-name ties use the current filename. self.files stays in folder order.
+        if view.sort == "new":
+            visible.sort(
+                key=lambda index: (
+                    self.preview_for(index).lower(),
+                    self.files[index].name.lower(),
+                ),
+                reverse=view.descending,
+            )
+        else:
+            visible.sort(
+                key=lambda index: self.files[index].name.lower(),
+                reverse=view.descending,
+            )
         if view.sort == "capture":
             dated = [index for index in visible if captures[index] is not None]
             dated.sort(key=lambda index: captures[index], reverse=view.descending)
@@ -1353,10 +1429,37 @@ class RenamerApp(App[None]):
             return self._neighbors[index]
         return ""
 
+    def _fit_code(self, index: int, path: Path) -> str:
+        if self.date_mode:
+            plan = self.cached_date_plan()
+            todo = {item.path for item in plan.todo}
+            same = {item.path for item in plan.same}
+            if path in todo:
+                return "upd"
+            if path in same:
+                return "ok"
+            return "err"
+        if self.mtime_mode:
+            _label, moment = mtime_source(self.facts_for(path), self.rules, _local_zone())
+            if moment is None:
+                return "ok"
+            try:
+                current = path.stat().st_mtime
+            except OSError:
+                return "upd"
+            if abs(current - moment.timestamp()) < 1:
+                return "ok"
+            return "upd"
+        proposed, resolved = self._name_plan()
+        if resolved[index] != proposed[index]:
+            return "dup"
+        if resolved[index] == path.name:
+            return "ok"
+        return "rn"
+
     def _mark_cells(self, index: int, path: Path) -> tuple[Text, Text, Text]:
         facts = self.facts_for(path)
-        letter = date_source(facts)
-        source = Text(letter, style=SOURCE_STYLE.get(letter, ""))
+        source = Text(self._fit_code(index, path))
         flag = flag_letter(facts, self._neighbor_at(index))
         flag_text = Text(flag, style=FLAG_STYLE.get(flag, ""))
         marks = missing_marks(
@@ -1539,10 +1642,10 @@ class RenamerApp(App[None]):
 
     def _column_keys(self) -> tuple[str, ...]:
         if self.date_mode:
-            return ("mark", "src", "flag", "miss", "file", "cur", "new", "status")
+            return ("mark", "fit", "flag", "miss", "file", "cur", "new", "status")
         if self.mtime_mode:
-            return ("mark", "src", "flag", "miss", "name", "mtime", "status")
-        return ("mark", "src", "flag", "miss", "name", "new", "status")
+            return ("mark", "fit", "flag", "miss", "name", "mtime", "status")
+        return ("mark", "fit", "flag", "miss", "name", "new", "status")
 
     def _current_rows(self) -> list[tuple[object, ...]]:
         if self.date_mode:
@@ -1641,7 +1744,7 @@ class RenamerApp(App[None]):
     def _add_rename_columns(self, table: FileTable) -> None:
         name_w, new_w = self._name_new_widths()
         table.add_column("Sel", key="mark", width=3)
-        table.add_column("Src", key="src", width=3)
+        table.add_column("Fit", key="fit", width=3)
         table.add_column("Flag", key="flag", width=4)
         table.add_column("Miss", key="miss", width=4)
         table.add_column("Name", key="name", width=name_w)
@@ -1653,7 +1756,7 @@ class RenamerApp(App[None]):
     def _add_date_columns(self, table: FileTable) -> None:
         width = self._flex_width(fixed_content=63, column_count=8, flex_count=1)
         table.add_column("Sel", key="mark", width=3)
-        table.add_column("Src", key="src", width=3)
+        table.add_column("Fit", key="fit", width=3)
         table.add_column("Flag", key="flag", width=4)
         table.add_column("Miss", key="miss", width=4)
         table.add_column("File", key="file", width=width)
@@ -1666,7 +1769,7 @@ class RenamerApp(App[None]):
     def _add_mtime_columns(self, table: FileTable) -> None:
         width = self._flex_width(fixed_content=44, column_count=7, flex_count=1)
         table.add_column("Sel", key="mark", width=3)
-        table.add_column("Src", key="src", width=3)
+        table.add_column("Fit", key="fit", width=3)
         table.add_column("Flag", key="flag", width=4)
         table.add_column("Miss", key="miss", width=4)
         table.add_column("Name", key="name", width=width)
@@ -1901,7 +2004,8 @@ class RenamerApp(App[None]):
         if show_not_oldest_warning(facts, self.rules):
             text.append("\n! Chosen time is not the oldest\n", style="bold yellow")
         text.append(
-            "\nTable codes: Src = date source; Flag = warning; Miss = missing metadata.\n",
+            "\nTable codes: Fit = ok, rn, or dup for names; ok, upd, or err for filename dates; "
+            "ok or upd for file times. Flag = warning. Miss = missing metadata.\n",
             style="dim",
         )
         return text
@@ -3104,7 +3208,12 @@ class RenamerApp(App[None]):
             return self.locked[index]
         if index in self.manual:
             return self.manual[index]
-        return preview_name(path.name, self.facts_for(path), self.rules)
+        return preview_name(
+            path.name,
+            self.facts_for(path),
+            self.rules,
+            sibling_stems=self._sibling_stems(index),
+        )
 
     def _ordinary_stem_ext(self, index: int) -> tuple[str, str]:
         path = self.files[index]
@@ -3115,10 +3224,18 @@ class RenamerApp(App[None]):
         accepted = self.scan_accepted.get(str(path), [])
         file_stem, _ext = os.path.splitext(path.name)
         bare = strip_accepted_suffix(file_stem, accepted)
-        return preview_base(path.name, self.facts_for(path), self.rules, stem=bare)
+        return preview_base(
+            path.name,
+            self.facts_for(path),
+            self.rules,
+            stem=bare,
+            sibling_stems=self._sibling_stems(index),
+        )
 
     def _rename_pairs(self) -> list[tuple[Path, str]]:
-        names: dict[int, str] = dict(self.locked)
+        names: dict[int, str] = {
+            index: self.preview_for(index) for index in self.locked if index < len(self.files)
+        }
         for index, path in enumerate(self.files):
             if index in names:
                 continue
