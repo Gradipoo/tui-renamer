@@ -1731,7 +1731,8 @@ async def test_scan_english_date_token_typed_and_notes_preview(tmp_path: Path) -
     async with app2.run_test(size=(120, 42)) as pilot:
         await pilot.pause()
         index = next(i for i, path in enumerate(app2.files) if path.name == notes_photo.name)
-        app2._cursor = index
+        app2._move_to(index)
+        await pilot.pause()
         await pilot.press("S")
         await pilot.pause()
         review = app2.screen
