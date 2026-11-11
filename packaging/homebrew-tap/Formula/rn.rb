@@ -9,8 +9,8 @@ class Rn < Formula
   # have downloaded the tarball.  For the initial commit we leave the
   # placeholder ``<sha1>`` and ``<sha256>`` so the user can update them
   # after verifying the file.
-  url "https://files.pythonhosted.org/packages/0b/d2/efe461a48c77db3df3ca7b6370b04d24cff7033714d29e248ffe195d4a8e/tui_renamer-0.1.7.tar.gz"
-  sha256 "ade10c7c87ed1592929e53d3c9b94bc264159b1ae317a794b681d8f9609dcef6"
+  url "https://files.pythonhosted.org/packages/a7/a7/f9439a67d9601f4c3d73b55b6fbe7474cf88d3654ad7b078fad312c660a0/tui_renamer-0.1.8.tar.gz"
+  sha256 "3c393a83c7bf712bde91d5c8d3f0f01a3ccfe7b157a463fd8f8655f08e8a2658"
   license "GPL-3.0-only"
 
   depends_on "cmake" => :build
@@ -29,13 +29,13 @@ class Rn < Formula
   end
 
   resource "markdown-it-py" do
-    url "https://files.pythonhosted.org/packages/06/ff/7841249c247aa650a76b9ee4bbaeae59370dc8bfd2f6c01f3630c35eb134/markdown_it_py-4.2.0.tar.gz"
-    sha256 "04a21681d6fbb623de53f6f364d352309d4094dd4194040a10fd51833e418d49"
+    url "https://files.pythonhosted.org/packages/16/fc/cee2c45553c9a9bf77d8b0c391560c556d7ed756b1f0bb35eb5d48db09ea/markdown_it_py-4.3.0.tar.gz"
+    sha256 "91a58fa5b72c71a40cf7177250fd767480d7a2bb3ac426ccfb76fb90305fdaaa"
   end
 
   resource "mdit-py-plugins" do
-    url "https://files.pythonhosted.org/packages/59/fc/f8d0863f8862f25602c0404d75568e89fb6b4109804645e5cdfb1be5cf56/mdit_py_plugins-0.6.1.tar.gz"
-    sha256 "a2bca0f039f39dbd35fb74ae1b5f998608c437463371f0ff7f49a19a17a114d0"
+    url "https://files.pythonhosted.org/packages/ad/a4/77a4e1be19fd9b08993c76d5e54979ac836b327754f1f5fecfed1b56cc67/mdit_py_plugins-0.7.0.tar.gz"
+    sha256 "26d2179227aaf4d1dc7acffe7a738cbd15cade6b5a61cff0a2cbf9fed93efede"
   end
 
   resource "mdurl" do
@@ -59,8 +59,8 @@ class Rn < Formula
   end
 
   resource "platformdirs" do
-    url "https://files.pythonhosted.org/packages/6e/4e/2684728d9f2c8c4110738dcadca7e0bed4b60c8dc68c40c2a9e0cf017900/platformdirs-4.14.2.tar.gz"
-    sha256 "6d13b4c1d66b7548dcec9e3db13c1ba9d9adb65041b5d07869313afc07e6e41b"
+    url "https://files.pythonhosted.org/packages/d7/9a/8475be631fb33ca1466915e70fd594c42a4e84b512db650eaa14f90fe75d/platformdirs-4.14.5.tar.gz"
+    sha256 "32e9921db7385aa8169bee4fe9501923e5715ba9fb7ea3b9c69b0d8e0639f7a1"
   end
 
   resource "pygments" do
@@ -79,8 +79,8 @@ class Rn < Formula
   end
 
   resource "textual-image" do
-    url "https://files.pythonhosted.org/packages/66/da/80883aab94e35ff27b3fc6f28eeb1824c19422090344b15d54d24e9dd02f/textual_image-0.14.2-py3-none-any.whl"
-    sha256 "f698d883959637515ab6c7086ffbc17fffc204a90010562b4f3bd1fba963ade4"
+    url "https://files.pythonhosted.org/packages/d8/03/2cbced4c9f12c99e87714157c160fc80914631fa3bdf28f107f7a7605291/textual_image-0.14.3.tar.gz"
+    sha256 "5e8ec5be9a314db7021fbedef663c978b0c59eab346dacf7d49ede6004a8bbbc"
   end
 
   resource "typing-extensions" do
