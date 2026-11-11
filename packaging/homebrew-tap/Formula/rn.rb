@@ -9,8 +9,8 @@ class Rn < Formula
   # have downloaded the tarball.  For the initial commit we leave the
   # placeholder ``<sha1>`` and ``<sha256>`` so the user can update them
   # after verifying the file.
-  url "https://files.pythonhosted.org/packages/a7/a7/f9439a67d9601f4c3d73b55b6fbe7474cf88d3654ad7b078fad312c660a0/tui_renamer-0.1.8.tar.gz"
-  sha256 "3c393a83c7bf712bde91d5c8d3f0f01a3ccfe7b157a463fd8f8655f08e8a2658"
+  url "https://files.pythonhosted.org/packages/9c/2f/de274d85877cd0a78b714fd16338b05966759f068985c797fae12919cfbb/tui_renamer-0.1.9.tar.gz"
+  sha256 "41bd3458720ae7fb138933aece7a358ae7a5502deb275b1998653a8ac26615fc"
   license "GPL-3.0-only"
 
   depends_on "cmake" => :build
