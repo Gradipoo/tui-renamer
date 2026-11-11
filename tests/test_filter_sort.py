@@ -278,6 +278,9 @@ async def test_sort_keeps_highlight_scrolled_into_view(tmp_path: Path, monkeypat
             return after_refresh(callback, *args, **kwargs)
 
         monkeypatch.setattr(table, "call_after_refresh", delay_restore)
+        table.call_after_refresh(
+            app._restore_table_scroll, table.scroll_x, table.scroll_y, app._scroll_restore_gen
+        )
         app.action_filter_sort()
         await pilot.pause()
         app.screen.query_one("#view-descending", Checkbox).value = True

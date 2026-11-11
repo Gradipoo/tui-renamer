@@ -1142,6 +1142,8 @@ class RenamerApp(App[None]):
             self.anchor = None
             self._search_nav = False
             self._preview_gen += 1
+            # The old viewport belongs to a different display order.
+            self.query_one(FileTable).scroll_to(y=0, animate=False)
             self.refresh_view()
             self.call_after_refresh(self._move_to, self._cursor)
 
