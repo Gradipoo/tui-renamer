@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.9
+
+- Local System filename stamps use the system zone's daylight offset for the capture date. An October UTC time no longer shifts by today's standard offset.
+
 ## 0.1.8
 
 - Filter and sort the file table with `f`, the Filter and sort button, or the command palette. Combine filters for missing capture dates, date disagreements, warnings, changed filenames, pending metadata, and extension.
