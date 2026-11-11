@@ -257,7 +257,7 @@ async def test_warning_sort_does_not_recompute_neighbors_in_display_order(tmp_pa
         assert app._neighbors == neighbors
 
 
-async def test_sort_keeps_highlight_scrolled_into_view(tmp_path: Path) -> None:
+async def test_sort_keeps_highlight_scrolled_into_view(tmp_path: Path, monkeypatch) -> None:
     for index in range(100):
         (tmp_path / f"{index:03}.txt").write_text("fixture")
     app = RenamerApp(tmp_path)
@@ -267,6 +267,17 @@ async def test_sort_keeps_highlight_scrolled_into_view(tmp_path: Path) -> None:
         await pilot.pause()
         table = app.query_one(DataTable)
         assert table.scroll_y > 0
+        # Deliver old scroll restorations late, as on a busy CI runner.
+        delayed = []
+        after_refresh = table.call_after_refresh
+
+        def delay_restore(callback, *args, **kwargs):
+            if callback == app._restore_table_scroll:
+                delayed.append((callback, args, kwargs))
+                return True
+            return after_refresh(callback, *args, **kwargs)
+
+        monkeypatch.setattr(table, "call_after_refresh", delay_restore)
         app.action_filter_sort()
         await pilot.pause()
         app.screen.query_one("#view-descending", Checkbox).value = True
@@ -274,4 +285,8 @@ async def test_sort_keeps_highlight_scrolled_into_view(tmp_path: Path) -> None:
         await pilot.pause()
         assert app._cursor == 95
         assert table.cursor_row == 4
+        assert delayed
+        for callback, args, kwargs in delayed:
+            callback(*args, **kwargs)
+        await pilot.pause()
         assert table.scroll_y <= 4
