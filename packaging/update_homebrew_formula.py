@@ -69,19 +69,31 @@ def pypi_json(name: str, version: str | None = None) -> dict | None:
     return payload
 
 
-def sdist(payload: dict) -> tuple[str, str]:
+def pypi_file(payload: dict, packagetype: str) -> tuple[str, str]:
     urls = payload.get("urls")
     if not isinstance(urls, list):
         raise SystemExit("PyPI payload has no urls")
     for item in urls:
-        if isinstance(item, dict) and item.get("packagetype") == "sdist":
+        if isinstance(item, dict) and item.get("packagetype") == packagetype:
             digests = item.get("digests") or {}
             digest = digests.get("sha256")
             url = item.get("url")
             if isinstance(url, str) and isinstance(digest, str):
                 return url, digest
     name = payload.get("info", {}).get("name", "package")
-    raise SystemExit(f"{name} has no sdist on PyPI")
+    raise SystemExit(f"{name} has no {packagetype} on PyPI")
+
+
+def sdist(payload: dict) -> tuple[str, str]:
+    return pypi_file(payload, "sdist")
+
+
+def resource_artifact(name: str, payload: dict) -> tuple[str, str]:
+    # Homebrew installs resources with --no-binary. textual-image's sdist
+    # needs uv_build, which that install cannot compile.
+    if name == "textual-image":
+        return pypi_file(payload, "bdist_wheel")
+    return sdist(payload)
 
 
 def replace_header(text: str, url: str, digest: str) -> str:
@@ -115,7 +127,7 @@ def resource_blocks(root: Path) -> list[str]:
         payload = pypi_json(name, version)
         if payload is None:
             raise SystemExit(f"{name}=={version} was not found on PyPI")
-        url, digest = sdist(payload)
+        url, digest = resource_artifact(name, payload)
         blocks.append(
             "\n".join(
                 [
