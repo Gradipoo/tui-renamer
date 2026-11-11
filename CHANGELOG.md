@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.8
+
+- Filter and sort the file table with `f`, the Filter and sort button, or the command palette. Combine filters for missing capture dates, date disagreements, warnings, changed filenames, pending metadata, and extension.
+- Search, navigation, and range selection follow the visible rows. Apply still includes hidden staged work and lists those targets in the confirmation.
+- Group the main controls by action and show the current Apply and undo scope.
+
 ## 0.1.7
 
 - Add a visible Use earliest date button and `E` shortcut to stage each file's earliest eligible date in its filename.
