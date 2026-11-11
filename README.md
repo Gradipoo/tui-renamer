@@ -134,7 +134,7 @@ uv tool install --force "git+https://github.com/Gradipoo/tui-renamer.git"
 
 ### HEIC
 
-JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. GIF shows the first frame. HEIC and HEIF need `pillow-heif`. With that extra, their capture dates are read the same way as JPEG. Without it, those files keep their file times. JPEG XL needs the optional `jxl` extra (`pillow-jxl-plugin`). With it, the preview and capture date use Pillow. Without it, those files keep their file times. `rn` does not write JPEG XL metadata. The Homebrew formula does not install the `jxl` extra.
+JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. GIF shows the first frame. HEIC and HEIF need `pillow-heif`. With that extra, their capture dates are read the same way as JPEG. Without it, those files keep their file times. JPEG XL needs the optional `jxl` extra (`pillow-jxl-plugin`). With it, the preview and capture date use Pillow. Without it, those files keep their file times. Date and timezone writes use `exiftool`, the same as HEIC. The Homebrew formula does not install the `jxl` extra.
 
 ```bash
 pipx install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
@@ -147,7 +147,7 @@ On Windows:
 py -3.12 -m pipx install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
 ```
 
-MOV, MP4, and M4V show one frame when `ffmpeg` is on `PATH`. Without it, the caption says so. Canon CR3 previews the embedded JPEG and reads that JPEG's capture date, then `exiftool` if the preview has no date. A CR3 preview that is not a JPEG stays caption-only. `rn` does not write CR3 metadata. Other camera RAW (CR2, NEF, ARW, DNG) is not previewed.
+MOV, MP4, and M4V show one frame when `ffmpeg` is on `PATH`. Without it, the caption says so. Canon CR3 previews the embedded JPEG and reads that JPEG's capture date, then `exiftool` if the preview has no date. A CR3 preview that is not a JPEG stays caption-only. Date and timezone writes use `exiftool`, the same as HEIC. Other camera RAW (CR2, NEF, ARW, DNG) is not previewed.
 
 ### From source
 
@@ -189,7 +189,7 @@ Pillow, piexif, and the IANA timezone data are included. `exiftool` and macOS `S
 
 ## exiftool and birth time
 
-JPEG and TIFF date and GPS tags are written with piexif. Video (`.mov`, `.mp4`, `.m4v`), HEIC, and PNG need `exiftool` on `PATH`.
+JPEG and TIFF date and GPS tags are written with piexif. Video (`.mov`, `.mp4`, `.m4v`), HEIC, PNG, CR3, and JPEG XL need `exiftool` on `PATH` for date and timezone writes. GPS and description writes stay on JPEG and TIFF.
 
 | System | Package | Command |
 | --- | --- | --- |
@@ -392,7 +392,7 @@ Esc closes find first, then leaves a zoomed pane, then leaves visual, filename d
 
 `!` on a row means the timestamp you chose is not the oldest of modified and original. The `!` key jumps to the next warning, and `@` jumps to the previous one.
 
-MOV, MP4, and M4V use the QuickTime creation date when the file stores one. That source is Q. A video with no capture date is not marked as missing EXIF. `exiftool` is only a fallback for reading those files, and it is still required to write video, HEIC, and PNG metadata.
+MOV, MP4, and M4V use the QuickTime creation date when the file stores one. That source is Q. A video with no capture date is not marked as missing EXIF. `exiftool` is only a fallback for reading those files, and it is still required to write video, HEIC, PNG, CR3, and JPEG XL dates.
 
 Locked names stay put when you change toggles. A manual edit is used until you lock that file. Refresh asks before clearing selection, locks, and staged manual names. Cancel keeps that work. Photo-review staging is retained for files still present.
 

@@ -2,11 +2,10 @@
 
 JPEG and TIFF dates go through piexif. HEIC dates use the same reader when the
 heif extra is installed. JPEG XL dates use it when the jxl extra is installed.
-Canon CR3 dates come from the embedded preview JPEG, then exiftool. Neither
-format is written. MOV, MP4, and M4V dates are read from the file, with
-exiftool as a fallback when the atoms have no date. Writes for video, HEIC, and
-PNG still go through exiftool. Birth time uses SetFile on macOS and SetFileTime
-on Windows.
+Canon CR3 dates come from the embedded preview JPEG, then exiftool. MOV, MP4,
+and M4V dates are read from the file, with exiftool as a fallback when the atoms
+have no date. Writes for video, HEIC, PNG, CR3, and JPEG XL go through
+exiftool. Birth time uses SetFile on macOS and SetFileTime on Windows.
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ DATETIME = 306
 
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".tif", ".tiff"})
 VIDEO_EXTENSIONS = frozenset({".mov", ".mp4", ".m4v"})
-EXIFTOOL_STILL_EXTENSIONS = frozenset({".heic", ".heif", ".png", ".jpg", ".jpeg"})
+EXIFTOOL_STILL_EXTENSIONS = frozenset({".heic", ".heif", ".png", ".jpg", ".jpeg", ".cr3", ".jxl"})
 
 CommandRunner = Callable[[list[str]], bool]
 
@@ -199,7 +198,7 @@ def _from_quicktime(clock: QuickTimeClock) -> ExifClock:
 
 
 def _cr3_clock(path: Path) -> ExifClock:
-    """Capture date from the embedded JPEG, then exiftool. Never writes."""
+    """Capture date from the embedded JPEG, then exiftool."""
     jpeg = embedded_preview_jpeg(path)
     if jpeg is not None:
         clock = read_exif_bytes(jpeg)
@@ -595,6 +594,6 @@ def snapshot_mode(path: Path) -> str:
     ext = path.suffix.lower()
     if ext in IMAGE_EXTENSIONS:
         return "piexif"
-    if ext in VIDEO_EXTENSIONS or ext in {".heic", ".heif", ".png"}:
+    if ext in VIDEO_EXTENSIONS or ext in EXIFTOOL_STILL_EXTENSIONS - IMAGE_EXTENSIONS:
         return "copy"
     return "times"
