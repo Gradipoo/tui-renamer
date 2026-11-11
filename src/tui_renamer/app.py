@@ -24,11 +24,13 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import (
     Button,
+    Checkbox,
     DataTable,
     Footer,
     Header,
     Input,
     OptionList,
+    Select,
     Static,
 )
 from textual.widgets.option_list import Option
@@ -114,12 +116,12 @@ from tui_renamer.scan_notes import (
 from tui_renamer.scan_ui import ReviewScreen
 from tui_renamer.search import (
     find_label,
-    first_at_or_after,
     highlighted_name,
     kept_span,
     match_span,
     query_hits,
 )
+from tui_renamer.table_view import FILTERS, SORTS, TableView, embedded_capture, matches_view
 from tui_renamer.view_config import ViewState, clear_view, load_view, save_view
 
 TOGGLE_FIELDS = {
@@ -250,7 +252,8 @@ class ConfirmScreen(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Static(self.question, id="confirm-question")
+            with VerticalScroll(id="confirm-details"):
+                yield Static(self.question, id="confirm-question", markup=False)
             yield Button("Yes", id="yes")
             yield Button("No", id="no")
 
@@ -265,6 +268,66 @@ class ConfirmScreen(ModalScreen[bool]):
             self.dismiss(True)
         elif event.button.id == "no":
             self.dismiss(False)
+
+
+class FilterSortScreen(ModalScreen[TableView | None]):
+    BINDINGS = [Binding("escape", "dismiss(None)", show=False)]
+    DEFAULT_CSS = """
+    FilterSortScreen { align: center middle; }
+    FilterSortScreen #view-dialog {
+        width: 64; max-width: 98%; height: auto; max-height: 95%;
+        border: solid $primary; background: $surface; padding: 1 2;
+    }
+    FilterSortScreen Checkbox { height: auto; }
+    FilterSortScreen #view-actions { height: auto; }
+    """
+
+    def __init__(self, view: TableView) -> None:
+        super().__init__()
+        self.view = view
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="view-dialog"):
+            yield Static("Filter and sort", markup=False)
+            yield Static("All checked filters must match. Staged work is preserved.")
+            for key, label in FILTERS:
+                yield Checkbox(label, key in self.view.filters, id=f"filter-{key}", compact=True)
+            yield Input(
+                self.view.extension,
+                placeholder="Extension, e.g. jpg (blank = all)",
+                id="view-extension",
+            )
+            yield Select(SORTS, value=self.view.sort, allow_blank=False, id="view-sort")
+            yield Checkbox(
+                "Descending (warnings last)",
+                self.view.descending,
+                id="view-descending",
+                compact=True,
+            )
+            with Horizontal(id="view-actions"):
+                yield Button("Show", id="view-show", variant="primary")
+                yield Button("Reset", id="view-reset")
+                yield Button("Cancel", id="view-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "view-reset":
+            self.dismiss(TableView())
+        elif event.button.id == "view-cancel":
+            self.dismiss(None)
+        elif event.button.id == "view-show":
+            self.dismiss(
+                TableView(
+                    filters=frozenset(
+                        key
+                        for key, _label in FILTERS
+                        if self.query_one(f"#filter-{key}", Checkbox).value
+                    ),
+                    extension=self.query_one("#view-extension", Input).value.strip(),
+                    sort=str(self.query_one("#view-sort", Select).value),
+                    descending=self.query_one("#view-descending", Checkbox).value,
+                )
+            )
 
 
 class CommandFilter(Input):
@@ -666,6 +729,10 @@ class RenamerApp(App[None]):
     #body { height: 1fr; }
     #files { width: 1fr; height: 100%; }
     #detail { width: 1fr; height: 100%; }
+    #view-open {
+        height: 1; min-height: 1; width: 100%; border: none; margin: 0 1;
+        content-align: left middle;
+    }
     #earliest-hint { height: auto; padding: 0 1; }
     #options { height: auto; padding: 0 1; }
     #opt-toggles, #opt-modes, #opt-actions {
@@ -781,6 +848,8 @@ class RenamerApp(App[None]):
         border: thick $primary;
         padding: 1 2;
     }
+    #confirm-details { height: auto; max-height: 12; }
+    #confirm-question { height: auto; }
     CommandScreen #dialog { width: 84; height: 24; }
     #cmd-list { height: 1fr; }
     #zones { height: 12; }
@@ -792,6 +861,7 @@ class RenamerApp(App[None]):
         Binding("f1", "help", show=False),
         Binding("ctrl+p", "help", show=False),
         Binding(":", "help", "Commands"),
+        Binding("f", "filter_sort", "Filter/sort"),
         Binding("space", "toggle_select", "Select"),
         Binding("enter", "apply", "Apply"),
         Binding("escape", "escape", show=False),
@@ -853,6 +923,8 @@ class RenamerApp(App[None]):
         self.directory = directory
         self.rules = RenameRules()
         self.files: list[Path] = []
+        self.table_view = TableView()
+        self._visible: list[int] = []
         self.selected: set[int] = set()
         self.locked: dict[int, str] = {}
         self.manual: dict[int, str] = {}
@@ -902,6 +974,7 @@ class RenamerApp(App[None]):
         with Horizontal(id="body"):
             yield FileTable(id="files")
             yield DetailPane(id="detail")
+        yield Button("Filter and sort", id="view-open", compact=True)
         yield Static("", id="earliest-hint", markup=False)
         yield OptionsPane(id="options")
         yield Input(placeholder="find", id="find", select_on_focus=True)
@@ -983,6 +1056,7 @@ class RenamerApp(App[None]):
 
     def reload_files(self) -> None:
         self.files = list_files(self.directory)
+        self._visible = list(range(len(self.files)))
         self.selected.clear()
         self.locked.clear()
         self.manual.clear()
@@ -1048,12 +1122,70 @@ class RenamerApp(App[None]):
     def refresh_view(self) -> None:
         self._recompute_changing()
         self._recompute_neighbors()
+        self._recompute_visible()
         self._fill_table()
         self._sync_options()
         self._update_detail()
         self._update_timeline()
         self._update_status()
         self._update_subtitle()
+
+    def action_filter_sort(self) -> None:
+        if self._find_open:
+            return
+
+        def done(view: TableView | None) -> None:
+            if view is None:
+                return
+            self.table_view = view
+            self.visual = False
+            self.anchor = None
+            self._search_nav = False
+            self._preview_gen += 1
+            self.refresh_view()
+            self.call_after_refresh(self._move_to, self._cursor)
+
+        self.push_screen(FilterSortScreen(self.table_view), done)
+
+    def _recompute_visible(self) -> None:
+        view = self.table_view
+        visible = []
+        captures = {}
+        warnings = {}
+        for index, path in enumerate(self.files):
+            facts = self.facts_for(path)
+            warning = is_warning(facts, self._neighbor_at(index))
+            pending = self.scan_pending.get(str(path))
+            if not matches_view(
+                view,
+                path.suffix,
+                facts,
+                warning=warning,
+                changed=self.preview_for(index) != path.name,
+                pending=pending is not None
+                and (pending.moment is not None or bool(pending.description)),
+            ):
+                continue
+            visible.append(index)
+            captures[index] = embedded_capture(facts)
+            warnings[index] = warning
+        # Stable name ties in either direction, with absent capture dates always last.
+        visible.sort(
+            key=lambda index: self.files[index].name.lower(),
+            reverse=view.descending,
+        )
+        if view.sort == "capture":
+            dated = [index for index in visible if captures[index] is not None]
+            dated.sort(key=lambda index: captures[index], reverse=view.descending)
+            visible = dated + [index for index in visible if captures[index] is None]
+        elif view.sort == "warning":
+            visible.sort(key=lambda index: not warnings[index], reverse=view.descending)
+        self._visible = visible
+        if self.visual and (self.anchor not in visible or self._cursor not in visible):
+            self.visual = False
+            self.anchor = None
+        if self._cursor not in visible:
+            self._cursor = visible[0] if visible else 0
 
     def _recompute_changing(self) -> None:
         """Indexes whose apply preview differs from the file as it is now."""
@@ -1165,7 +1297,7 @@ class RenamerApp(App[None]):
         if width <= 0:
             width = 80
         instants = [self.facts_for(path).winner_instant for path in self.files]
-        highlight = self._cursor if self.files else None
+        highlight = self._cursor if self._visible else None
         line = timeline_bins(instants, width, highlight)
         if not line:
             widget.update(Text("no dates", style="dim"))
@@ -1270,8 +1402,8 @@ class RenamerApp(App[None]):
 
     def _hit_indexes(self, query: str | None = None) -> list[int]:
         needle = self._search_query if query is None else query
-        names = [(path.name, self.preview_for(index)) for index, path in enumerate(self.files)]
-        return query_hits(names, needle)
+        names = [(self.files[index].name, self.preview_for(index)) for index in self._visible]
+        return [self._visible[row] for row in query_hits(names, needle)]
 
     def _column_keys(self) -> tuple[str, ...]:
         if self.date_mode:
@@ -1319,11 +1451,11 @@ class RenamerApp(App[None]):
             self._add_mtime_columns(table)
         else:
             self._add_rename_columns(table)
-        for index, row in enumerate(self._current_rows()):
-            table.add_row(*row, key=str(index))
+        rows = self._current_rows()
+        for index in self._visible:
+            table.add_row(*rows[index], key=str(index))
         if table.row_count:
-            self._cursor = min(self._cursor, table.row_count - 1)
-            table.move_cursor(row=self._cursor, scroll=False)
+            table.move_cursor(row=self._visible.index(self._cursor), scroll=False)
         else:
             self._cursor = 0
         # Skip a no-op restore of (0, 0). A deferred one can wipe a later scroll.
@@ -1339,15 +1471,25 @@ class RenamerApp(App[None]):
         """Update selection or lock cells without clearing the table."""
         if not self.is_mounted:
             return
+        previous_visible = self._visible[:]
+        self._recompute_changing()
+        self._recompute_visible()
+        if self._visible != previous_visible:
+            self.visual = False
+            self.anchor = None
+            self.refresh_view()
+            return
         wanted = sorted({index for index in indexes if 0 <= index < len(self.files)})
         try:
             table = self.query_one(FileTable)
         except NoMatches:
             return
-        if wanted and table.row_count == len(self.files):
+        if wanted and table.row_count == len(self._visible):
             rows = self._current_rows()
             columns = self._column_keys()
             for index in wanted:
+                if index not in self._visible:
+                    continue
                 for column, value in zip(columns, rows[index], strict=True):
                     table.update_cell(str(index), column, value, update_width=False)
         elif wanted:
@@ -1519,7 +1661,7 @@ class RenamerApp(App[None]):
         self._schedule_preview()
 
     def _earliest_hint(self) -> str:
-        if not self.files:
+        if not self._visible:
             return "No date available"
         facts = self.facts_for(self.files[self._cursor])
         candidate = earliest_date(facts)
@@ -1547,7 +1689,11 @@ class RenamerApp(App[None]):
 
     def _detail_text(self) -> Text:
         text = Text()
-        if not self.files:
+        if not self._visible:
+            if self.files:
+                return Text(
+                    "No files match these filters. Reset Filter and sort to show all files.\n"
+                )
             text.append("No files in this folder.\n")
             text.append("Press r after you add some.\n", style="dim")
             return text
@@ -1647,7 +1793,7 @@ class RenamerApp(App[None]):
         if self._leader:
             widget.update("g then g: first file")
             return
-        if not self.files:
+        if not self._visible:
             widget.update("")
             return
         path = self.files[self._cursor]
@@ -1677,7 +1823,7 @@ class RenamerApp(App[None]):
         else:
             mode = "NORMAL"
         total = len(self.files)
-        pos = min(self._cursor + 1, total) if total else 0
+        pos = self._visible.index(self._cursor) + 1 if self._visible else 0
         place = "Prefix" if self.rules.use_prefix else "Suffix"
         zone = self.rules.source_tz or "Local"
         extra = []
@@ -1687,6 +1833,9 @@ class RenamerApp(App[None]):
             extra.append(f"Lock:{len(self.locked)}")
         if self.manual:
             extra.append(f"Man:{len(self.manual)}")
+        hidden_selected = len(self.selected.difference(self._visible))
+        if hidden_selected:
+            extra.append(f"Hidden selected:{hidden_selected}")
         tail = ("  " + " ".join(extra)) if extra else ""
         changing = len(self._changing)
         count = f"{changing} of {total} will change"
@@ -1699,13 +1848,34 @@ class RenamerApp(App[None]):
         found = ""
         if self._find_open or self._search_active:
             needle = self._draft if self._find_open else self._search_query
-            found = "  " + find_label(self._cursor, self._hit_indexes(needle))
-        self.sub_title = f"{mode}  {pos}/{total}  {place}  {zone}  {count}{warning}{found}{tail}"
+            hits = self._hit_indexes(needle)
+            found = "  " + find_label(
+                self._visible.index(self._cursor) if self._visible else -1,
+                [self._visible.index(index) for index in hits],
+            )
+        self.sub_title = (
+            f"{mode}  {pos}/{len(self._visible)} shown/{total} total  {place}  {zone}  "
+            f"{count}{warning}{found}{tail}"
+        )
+        view = self.table_view
+        filters = [label for key, label in FILTERS if key in view.filters]
+        if view.extension:
+            filters.append(view.extension)
+        label = ", ".join(filters) if filters else "All files"
+        order = next(label for label, key in SORTS if key == view.sort)
+        direction = "descending" if view.descending else "ascending"
+        hidden = f"; {hidden_selected} hidden selected" if hidden_selected else ""
+        summary = f"{len(self._visible)}/{total} shown{hidden} | {label} | {order}, {direction}"
+        button = self.query_one("#view-open", Button)
+        button.label = f"Filter and sort: {summary}"
+        button.tooltip = summary
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if self._rebuilding or not self.is_mounted:
             return
-        row = event.cursor_row
+        if event.cursor_row >= len(self._visible):
+            return
+        row = self._visible[event.cursor_row]
         if self._search_nav:
             if row != self._cursor:
                 try:
@@ -1713,15 +1883,18 @@ class RenamerApp(App[None]):
                 except NoMatches:
                     return
                 if table.row_count:
-                    table.move_cursor(row=self._cursor)
+                    table.move_cursor(row=self._visible.index(self._cursor))
                 return
             self._search_nav = False
             self._refresh_side_panels()
             return
         if self.visual and self.anchor is not None and row != self._cursor:
             old = self._cursor
-            old_block = set(range(min(self.anchor, old), max(self.anchor, old) + 1))
-            new_block = set(range(min(self.anchor, row), max(self.anchor, row) + 1))
+            anchor = self._visible.index(self.anchor)
+            old_pos = self._visible.index(old)
+            new_pos = self._visible.index(row)
+            old_block = set(self._visible[min(anchor, old_pos) : max(anchor, old_pos) + 1])
+            new_block = set(self._visible[min(anchor, new_pos) : max(anchor, new_pos) + 1])
             self.selected.update(new_block - old_block)
             self.selected.difference_update(old_block - new_block)
             self._cursor = row
@@ -1739,19 +1912,26 @@ class RenamerApp(App[None]):
         self._update_subtitle()
 
     def _move_to(self, row: int) -> None:
-        if not self.files:
+        if row not in self._visible:
             return
         table = self.query_one(FileTable)
-        self._cursor = max(0, min(row, len(self.files) - 1))
+        self._cursor = row
         if table.row_count:
-            table.move_cursor(row=self._cursor)
+            table.move_cursor(row=self._visible.index(row))
 
     def _targets(self) -> list[int]:
         if self.selected:
             return sorted(index for index in self.selected if index < len(self.files))
-        if self.files and self._cursor < len(self.files):
+        if self._visible and self._cursor < len(self.files):
             return [self._cursor]
         return []
+
+    def _hidden_scope(self, paths: Iterable[Path]) -> str:
+        visible = {self.files[index] for index in self._visible}
+        hidden = sorted({path.name for path in paths if path not in visible})
+        if not hidden:
+            return ""
+        return "\nIncludes hidden files (" + str(len(hidden)) + "): " + ", ".join(hidden) + "\n"
 
     def _ask(self, question: str, on_yes: Callable[[], None]) -> None:
         def done(yes: bool | None) -> None:
@@ -1875,7 +2055,8 @@ class RenamerApp(App[None]):
     def action_leader_g(self) -> None:
         if self._leader:
             self._leader = False
-            self._move_to(0)
+            if self._visible:
+                self._move_to(self._visible[0])
             self.set_status("")
             self._update_status()
         else:
@@ -1885,12 +2066,13 @@ class RenamerApp(App[None]):
 
     def action_goto_top(self) -> None:
         self._begin()
-        self._move_to(0)
+        if self._visible:
+            self._move_to(self._visible[0])
 
     def action_goto_end(self) -> None:
         self._begin()
-        if self.files:
-            self._move_to(len(self.files) - 1)
+        if self._visible:
+            self._move_to(self._visible[-1])
 
     def action_next_change(self) -> None:
         if self._search_active:
@@ -1994,13 +2176,15 @@ class RenamerApp(App[None]):
 
     def _apply_query(self, query: str) -> None:
         self._draft = query
-        if not self.files:
+        if not self._visible:
             self._update_subtitle()
             self._update_status()
             return
         hits = self._hit_indexes(query)
         if query and hits:
-            target = first_at_or_after(self._find_origin, hits)
+            positions = {index: row for row, index in enumerate(self._visible)}
+            origin = positions.get(self._find_origin, 0)
+            target = next((index for index in hits if positions[index] >= origin), hits[0])
         else:
             target = self._find_origin
         self._search_nav = True
@@ -2035,11 +2219,17 @@ class RenamerApp(App[None]):
         timer = self._preview_timer
         if timer is not None:
             timer.stop()
+        if not self._visible:
+            self._preview_gen += 1
+            self.query("#preview-image").remove()
+            self.query_one("#preview-caption", Static).update("No file selected")
+            self.query_one("#preview-fallback", Static).update("")
+            return
         self._preview_timer = self.set_timer(file_preview.DEBOUNCE_SECONDS, self._kick_preview)
 
     def _kick_preview(self) -> None:
         self._preview_timer = None
-        if not self.is_running or not self.preview_on or not self.files:
+        if not self.is_running or not self.preview_on or not self._visible:
             return
         try:
             detail = self.query_one("#detail")
@@ -2074,7 +2264,7 @@ class RenamerApp(App[None]):
     def _preview_current(self, generation: int, path_str: str) -> bool:
         if generation != self._preview_gen or not self.preview_on:
             return False
-        return bool(self.files) and str(self.files[self._cursor]) == path_str
+        return bool(self._visible) and str(self.files[self._cursor]) == path_str
 
     def _show_preview_caption(self, caption: str, body: str) -> None:
         self.run_worker(
@@ -2170,11 +2360,19 @@ class RenamerApp(App[None]):
             self.set_status(none_msg)
             self._update_status()
             return
+        positions = {index: row for row, index in enumerate(self._visible)}
+        hit_set = set(hits)
+        hits = [index for index in self._visible if index in hit_set]
+        if not hits:
+            self.set_status(none_msg)
+            self._update_status()
+            return
+        current = positions.get(self._cursor, -1)
         if step > 0:
-            later = [index for index in hits if index > self._cursor]
+            later = [index for index in hits if positions[index] > current]
             target = later[0] if later else hits[0]
         else:
-            earlier = [index for index in hits if index < self._cursor]
+            earlier = [index for index in hits if positions[index] < current]
             target = earlier[-1] if earlier else hits[-1]
         if target == self._cursor:
             self.set_status(only_msg)
@@ -2192,7 +2390,7 @@ class RenamerApp(App[None]):
             self.set_status("Visual select off")
             self._paint_rows([self._cursor])
             return
-        if not self.files:
+        if not self._visible:
             return
         if self._cursor in self.selected:
             self.selected.remove(self._cursor)
@@ -2203,7 +2401,7 @@ class RenamerApp(App[None]):
     def action_visual(self) -> None:
         self._begin()
         self.visual = not self.visual
-        if self.visual and self.files:
+        if self.visual and self._visible:
             self.anchor = self._cursor
             self.selected.add(self._cursor)
             self.set_status("Visual select on")
@@ -2216,8 +2414,8 @@ class RenamerApp(App[None]):
 
     def action_select_all(self) -> None:
         self._begin()
-        self.selected = set(range(len(self.files)))
-        self.set_status(f"Selected all {len(self.files)} files")
+        self.selected.update(self._visible)
+        self.set_status(f"Selected all {len(self._visible)} visible files")
         self._paint_rows(self.selected)
 
     def action_select_none(self) -> None:
@@ -2307,6 +2505,7 @@ class RenamerApp(App[None]):
             "act-undo": "undo",
             "act-zone": "timezone",
             "act-write-zone": "write_timezone",
+            "view-open": "filter_sort",
             "act-gps": "write_geodata",
             "act-refresh": "reload_files",
             "act-reset": "reset_rules",
@@ -2317,7 +2516,7 @@ class RenamerApp(App[None]):
 
     def action_scan_review(self) -> None:
         self._begin()
-        if self._find_open or not self.files:
+        if self._find_open or not self._visible:
             return
         start = self.files[self._cursor]
         settings = load_scan_settings()
@@ -2381,7 +2580,7 @@ class RenamerApp(App[None]):
             self.set_status("Date or mtime mode is on.")
             self._update_status()
             return
-        if not self.files:
+        if not self._visible:
             return
         index = self._cursor
         if index in self.locked:
@@ -2477,7 +2676,7 @@ class RenamerApp(App[None]):
             self.set_status("Cannot enter insert mode while in another mode.")
             self._update_status()
             return
-        if not self.files:
+        if not self._visible:
             return
         stem, extension = split_stem(self._ordinary_name(self._cursor))
 
@@ -2662,6 +2861,7 @@ class RenamerApp(App[None]):
         if desc_n:
             parts.append(f"write {desc_n} description(s) on JPEG/TIFF")
         question = "; ".join(parts) + "? Session undo only. y or n"
+        question += self._hidden_scope([src for src, _ in pairs] + [item.path for item in pending])
         self._ask(question, lambda: self._do_apply(pairs, pending))
 
     def _do_rename(self, pairs: list[tuple[Path, str]]) -> None:
@@ -2756,7 +2956,8 @@ class RenamerApp(App[None]):
             return
         indexes = [index for index in sorted(self.selected) if index < len(self.files)]
         self._ask(
-            f"Set mtime for {len(indexes)} files?",
+            f"Set mtime for {len(indexes)} files?"
+            + self._hidden_scope(self.files[index] for index in indexes),
             lambda: self._do_mtime(indexes),
         )
 
@@ -2832,6 +3033,7 @@ class RenamerApp(App[None]):
             question += ", ".join(parts) + "\n"
         question += "y or n"
         todo = list(plan.todo)
+        question += self._hidden_scope(item.path for item in todo)
         self._ask(question, lambda: self._do_dates(todo))
 
     def _do_dates(self, todo: list[DatePlanItem]) -> None:
@@ -2892,6 +3094,7 @@ class RenamerApp(App[None]):
             "Sets DateTimeOriginal, OffsetTimeOriginal, and filesystem dates.\n"
             "y or n"
         )
+        question += self._hidden_scope(self.files[index] for index in indexes)
         self._ask(question, lambda: self._do_timezone(indexes))
 
     def _do_timezone(self, indexes: list[int]) -> None:
@@ -2949,7 +3152,8 @@ class RenamerApp(App[None]):
             self._update_status()
             return
         self._ask(
-            f"Write geodata to {len(indexes)} files?",
+            f"Write geodata to {len(indexes)} files?"
+            + self._hidden_scope(self.files[index] for index in indexes),
             lambda: self._do_geodata(indexes),
         )
 

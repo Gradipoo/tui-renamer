@@ -27,6 +27,7 @@ def _spec(
 
 
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
+    _spec("Move", "f", "Filter and sort", "Filter files and choose table order", "filter_sort"),
     _spec("Move", "k / up", "Up", "Move up", "cursor_up"),
     _spec("Move", "j / down", "Down", "Move down", "cursor_down"),
     _spec("Move", "pageup", "Page up", "Page up", "page_up"),

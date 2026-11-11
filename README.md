@@ -251,6 +251,28 @@ This path is not an accuracy claim. Mock tests check chips, sidecar rules, date 
 
 An empty folder still opens. Press `r` after you add files.
 
+## Filters and sorting
+
+Press `f`, click **Filter and sort**, or use the command palette. Combine filters
+for missing embedded capture dates, date disagreements, warnings, changed
+filenames, and pending metadata. All checked filters must match. An optional
+extension filter accepts values such as `jpg` or `.JPG`.
+
+Sort by filename, embedded capture date, or warnings first. Descending reverses
+the order (warnings last). Capture sorting always puts files without an embedded
+capture date last. Filename dates, JSON dates, and filesystem times do not count
+as embedded capture dates. Date disagreements and warnings use the existing date
+inspection rules. Sorting does not change neighbor warnings or the order in which
+renames and collision suffixes are applied.
+
+Search, next/previous navigation, and range selection follow the visible order.
+`a` selects all visible files and preserves existing hidden selections. `A` clears
+all selections. Filters preserve locks, manual names, and staged photo-review
+work. Apply keeps its existing scope, including hidden staged work; confirmation
+lists hidden targets. The view shows visible/total counts and hidden selections.
+Reset in the panel restores all files and filename order. View filters and sorting
+last for the current session only.
+
 ## Pictures
 
 `P` shows or hides the preview. That choice is remembered, and so is a zoom from `1` through `4`. Preview starts on, and there is no zoom, until you change them. Ctrl+0 resets both. Only the highlighted file is drawn.
@@ -268,6 +290,7 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | --- | --- |
 | `1` / `2` / `3` / `4` | Zoom files, detail, options, or preview. The same key, or Esc, restores the split |
 | Up/Down, `j`/`k` | Move |
+| `f` | Filter files and choose table sorting |
 | `/` | Find in the current name and the new name. Smart case: lowercase ignores case |
 | Enter / Esc | Keep the match, or restore the row you started from |
 | `n` / `N` | Next or previous match after a search. Otherwise the next or previous file that will change |
@@ -277,7 +300,7 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | PageUp / PageDown | Page |
 | Space | Select or clear this file |
 | `v` | Select a range with up and down |
-| `a` / `A` | Select all / select none |
+| `a` / `A` | Select all visible / clear all selections |
 | `d` `m` `o` | Add today's time, modified time, original (EXIF) time |
 | `e` | Read times and location from a `.json` sidecar |
 | `b` | Add the JSON location to the name |
