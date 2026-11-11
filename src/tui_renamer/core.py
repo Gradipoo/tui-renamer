@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
 from difflib import SequenceMatcher
@@ -310,17 +311,37 @@ def clean_filename(basename: str, rules: RenameRules) -> str:
     return name.strip("-_")
 
 
+def collision_stem(stem: str, sibling_stems: Iterable[str]) -> str:
+    """Drop one trailing -NN when another file shares that stem.
+
+    Two digits count as a collision suffix only when a sibling stem is the
+    same text with or without that suffix. A lone holiday-01 stays holiday-01.
+    """
+    match = re.fullmatch(r"(.+)-(\d{2})", stem)
+    if match is None:
+        return stem
+    base = match.group(1)
+    numbered = re.compile(rf"{re.escape(base)}-\d{{2}}\Z")
+    for other in sibling_stems:
+        if other == base or numbered.fullmatch(other):
+            return base
+    return stem
+
+
 def preview_base(
     filename: str,
     facts: FileFacts,
     rules: RenameRules,
     *,
     stem: str | None = None,
+    sibling_stems: Iterable[str] | None = None,
 ) -> tuple[str, str]:
     """Stem and extension for the new name. Stem may be empty."""
     orig_base, ext = os.path.splitext(filename)
     if stem is not None:
         orig_base = stem
+    if sibling_stems is not None:
+        orig_base = collision_stem(orig_base, sibling_stems)
     if rules.strip_original_name:
         core = ""
     elif rules.strip_to_text:
@@ -358,9 +379,15 @@ def preview_base(
     return new_base, ext
 
 
-def preview_name(filename: str, facts: FileFacts, rules: RenameRules) -> str:
+def preview_name(
+    filename: str,
+    facts: FileFacts,
+    rules: RenameRules,
+    *,
+    sibling_stems: Iterable[str] | None = None,
+) -> str:
     """Build the new filename. An empty result keeps the original name."""
-    stem, ext = preview_base(filename, facts, rules)
+    stem, ext = preview_base(filename, facts, rules, sibling_stems=sibling_stems)
     return (stem + ext) if stem else filename
 
 
@@ -429,6 +456,35 @@ def name_diff_ops(old: str, new: str) -> list[tuple[str, str]]:
             if new[j1:j2]:
                 ops.append(("insert", new[j1:j2]))
     return [(tag, text) for tag, text in ops if text]
+
+
+def assign_unique_names(paths: Sequence[Path], desired: Sequence[str]) -> list[str]:
+    """Resolved names in path order, using conflict_destination's exists() rules.
+
+    The first free name wins: the desired name, then -01, -02, and so on.
+    A later file's current name stays taken until that file is assigned, so
+    two files do not swap. Callers walk folder order. conflict_destination
+    still checks the disk at rename time.
+    """
+    if len(paths) != len(desired):
+        raise ValueError("paths and desired names must have the same length")
+    occupied = {path.name for path in paths}
+    resolved: list[str] = []
+    for path, name in zip(paths, desired, strict=True):
+        if name == path.name or name not in occupied:
+            chosen = name
+        else:
+            base, ext = os.path.splitext(name)
+            suffix = 1
+            chosen = f"{base}-{suffix:02d}{ext}"
+            while chosen in occupied:
+                suffix += 1
+                chosen = f"{base}-{suffix:02d}{ext}"
+        if chosen != path.name:
+            occupied.discard(path.name)
+            occupied.add(chosen)
+        resolved.append(chosen)
+    return resolved
 
 
 def conflict_destination(source: Path, new_name: str) -> Path:

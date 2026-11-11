@@ -223,6 +223,109 @@ async def test_sorted_apply_keeps_collision_order_and_undo(tmp_path: Path) -> No
         assert (tmp_path / "b.txt").read_text() == "second"
 
 
+async def test_new_name_sort_uses_resolved_names_without_reordering_files(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("a")
+    (tmp_path / "b.txt").write_text("b")
+    (tmp_path / "c.txt").write_text("c")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.action_filter_sort()
+        await pilot.pause()
+        assert str(app.screen.query_one("#view-descending", Checkbox).label) == "Descending"
+        app.screen.query_one("#view-cancel", Button).press()
+        await pilot.pause()
+        app.manual = {0: "same.txt", 1: "Same.txt", 2: "alpha.txt"}
+        order = [path.name for path in app.files]
+        app.table_view = TableView(sort="new")
+        app.refresh_view()
+        await pilot.pause()
+        assert [path.name for path in app.files] == order
+        assert app._visible == [2, 0, 1]
+        assert app.preview_for(0) == "same.txt"
+        assert app.preview_for(1) == "Same.txt"
+        app.table_view = TableView(sort="new", descending=True)
+        app.refresh_view()
+        await pilot.pause()
+        assert app._visible == [1, 0, 2]
+        assert [path.name for path in app.files] == order
+
+
+async def test_partial_selection_keeps_a_name_reserved_by_an_earlier_file(tmp_path: Path) -> None:
+    (tmp_path / "2020-01-01-000000-photo.jpg").write_bytes(b"a")
+    (tmp_path / "2020-01-02-000000-photo.jpg").write_bytes(b"b")
+    (tmp_path / "c.txt").write_text("c")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert [path.name for path in app.files] == [
+            "2020-01-01-000000-photo.jpg",
+            "2020-01-02-000000-photo.jpg",
+            "c.txt",
+        ]
+        assert app.preview_for(0) == "photo.jpg"
+        assert app.preview_for(1) == "photo-01.jpg"
+        assert app.preview_for(2) == "c.txt"
+        assert app._fit_code(0, app.files[0]) == "rn"
+        assert app._fit_code(1, app.files[1]) == "dup"
+        assert app._fit_code(2, app.files[2]) == "ok"
+        assert "After:  photo.jpg" in app._detail_text().plain
+        app._cursor = 1
+        app._update_detail()
+        assert "After:  photo-01.jpg" in app._detail_text().plain
+        app.table_view = TableView(frozenset({"changed"}))
+        app.refresh_view()
+        await pilot.pause()
+        assert app._visible == [0, 1]
+        app.selected = {1}
+        app.action_apply()
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        assert (tmp_path / "2020-01-01-000000-photo.jpg").read_bytes() == b"a"
+        assert not (tmp_path / "photo.jpg").exists()
+        assert (tmp_path / "photo-01.jpg").read_bytes() == b"b"
+
+
+async def test_locked_name_uses_the_collision_base(tmp_path: Path) -> None:
+    (tmp_path / "photo.jpg").write_bytes(b"p")
+    (tmp_path / "z.jpg").write_bytes(b"z")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.locked = {1: "photo-01.jpg"}
+        app.refresh_view()
+        await pilot.pause()
+        assert app.preview_for(1) == "photo-01.jpg"
+        assert app._fit_code(1, app.files[1]) == "dup"
+        assert app._rename_pairs() == [(app.files[1], "photo-01.jpg")]
+
+
+async def test_fit_codes_for_filename_dates_and_file_times(tmp_path: Path) -> None:
+    (tmp_path / "note.txt").write_text("x")
+    (tmp_path / "2020-01-02-photo.jpg").write_bytes(b"x")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.date_mode = True
+        app.refresh_view()
+        await pilot.pause()
+        codes = {path.name: app._fit_code(index, path) for index, path in enumerate(app.files)}
+        assert codes["note.txt"] == "err"
+        assert codes["2020-01-02-photo.jpg"] in {"ok", "upd"}
+        assert "Fit = ok, rn, or dup" in app._detail_text().plain
+        assert "Date source:" in app._detail_text().plain
+        app.date_mode = False
+        app.mtime_mode = True
+        app.rules.add_datetime = True
+        app.rules.datetime_stamp = "2020-05-01-120000"
+        app.refresh_view()
+        await pilot.pause()
+        assert app._fit_code(0, app.files[0]) == "upd"
+        labels = [column.label.plain for column in app.query_one(DataTable).columns.values()]
+        assert labels[:4] == ["Sel", "Fit", "Flag", "Miss"]
+
+
 async def test_warning_sort_does_not_recompute_neighbors_in_display_order(tmp_path: Path) -> None:
     files(tmp_path)
     app = RenamerApp(tmp_path)

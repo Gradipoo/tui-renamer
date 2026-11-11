@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from PIL import Image as PILImage
 from PIL import UnidentifiedImageError
+
+from tui_renamer.cr3 import embedded_preview_jpeg
 
 THUMB_EDGE = 160
 CACHE_LIMIT = 32
@@ -22,6 +27,10 @@ TEXT_LINES = 8
 
 RASTER_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff"})
 HEIF_SUFFIXES = frozenset({".heic", ".heif"})
+JXL_SUFFIXES = frozenset({".jxl"})
+VIDEO_SUFFIXES = frozenset({".mov", ".mp4", ".m4v"})
+CR3_SUFFIXES = frozenset({".cr3"})
+FFMPEG_TIMEOUT = 8
 TEXT_SUFFIXES = frozenset(
     {
         ".txt",
@@ -43,6 +52,7 @@ TEXT_SUFFIXES = frozenset(
 )
 
 _heif_ready: bool | None = None
+_jxl_ready: bool | None = None
 
 
 @dataclass
@@ -117,6 +127,25 @@ def heif_ready() -> bool:
     return True
 
 
+def jxl_ready() -> bool:
+    """True when pillow-jxl-plugin has registered an opener."""
+    global _jxl_ready
+    if _jxl_ready is not None:
+        return _jxl_ready
+    try:
+        import pillow_jxl  # noqa: F401
+    except Exception:
+        _jxl_ready = False
+        return False
+    _jxl_ready = True
+    return True
+
+
+def find_ffmpeg() -> str | None:
+    """ffmpeg on PATH, used for one video frame. None when it is missing."""
+    return shutil.which("ffmpeg")
+
+
 def peek_text(
     path: Path, *, max_bytes: int = TEXT_BYTES, max_lines: int = TEXT_LINES
 ) -> str | None:
@@ -148,17 +177,31 @@ def build_preview(path: Path, cache: ThumbCache) -> Preview:
         return Preview(caption=f"{path.name}  unreadable")
     if suffix in HEIF_SUFFIXES and not heif_ready():
         return Preview(caption=f"{path.name}  HEIC needs the heif extra")
-    if suffix in RASTER_SUFFIXES or suffix in HEIF_SUFFIXES:
+    if suffix in JXL_SUFFIXES and not jxl_ready():
+        return Preview(caption=f"{path.name}  JPEG XL needs the jxl extra")
+    if suffix in VIDEO_SUFFIXES and find_ffmpeg() is None:
+        return Preview(caption=f"{path.name}  video needs ffmpeg")
+    if suffix in RASTER_SUFFIXES or suffix in HEIF_SUFFIXES or suffix in JXL_SUFFIXES:
         thumb = _cached_thumb(path, cache)
-        if thumb is None:
-            label = suffix if suffix else "file"
-            return Preview(caption=f"{path.name}  {label}  {size_text}")
+    elif suffix in VIDEO_SUFFIXES:
+        thumb = _cached_from_bytes(path, cache, _ffmpeg_frame(path))
+    elif suffix in CR3_SUFFIXES:
+        thumb = _cached_from_bytes(path, cache, embedded_preview_jpeg(path))
+    else:
+        thumb = None
+    if thumb is not None:
         image, width, height = thumb
         return Preview(
             caption=f"{path.name}  {width}x{height}  {size_text}",
             image=image,
             show_image=True,
         )
+    if suffix in RASTER_SUFFIXES or suffix in HEIF_SUFFIXES or suffix in JXL_SUFFIXES:
+        label = suffix if suffix else "file"
+        return Preview(caption=f"{path.name}  {label}  {size_text}")
+    if suffix in VIDEO_SUFFIXES or suffix in CR3_SUFFIXES:
+        label = suffix if suffix else "file"
+        return Preview(caption=f"{path.name}  {label}  {size_text}")
     if suffix in TEXT_SUFFIXES:
         text = peek_text(path)
         if text is not None:
@@ -201,12 +244,75 @@ def _cached_thumb(path: Path, cache: ThumbCache) -> tuple[PILImage.Image, int, i
             return cached
     try:
         with PILImage.open(path) as opened:
-            width, height = opened.size
-            frame = opened.convert("RGBA")
+            packed = _frame_thumb(opened)
     except (OSError, UnidentifiedImageError, ValueError):
         return None
-    frame.thumbnail((THUMB_EDGE, THUMB_EDGE))
-    packed = (frame, width, height)
     if key is not None:
         cache.put(key, packed)
     return packed
+
+
+def _cached_from_bytes(
+    path: Path, cache: ThumbCache, blob: bytes | None
+) -> tuple[PILImage.Image, int, int] | None:
+    if not blob:
+        return None
+    key = cache_key(path)
+    if key is not None:
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+    try:
+        with PILImage.open(BytesIO(blob)) as opened:
+            packed = _frame_thumb(opened)
+    except (OSError, UnidentifiedImageError, ValueError):
+        return None
+    if key is not None:
+        cache.put(key, packed)
+    return packed
+
+
+def _frame_thumb(opened: PILImage.Image) -> tuple[PILImage.Image, int, int]:
+    """First frame, then a thumbnail. GIF and other sequences stay on frame 0."""
+    try:
+        opened.seek(0)
+    except EOFError:
+        pass
+    width, height = opened.size
+    frame = opened.convert("RGBA")
+    frame.thumbnail((THUMB_EDGE, THUMB_EDGE))
+    return frame, width, height
+
+
+def _ffmpeg_frame(path: Path) -> bytes | None:
+    """One PNG frame from ffmpeg. None when the tool is missing or the file fails."""
+    tool = find_ffmpeg()
+    if not tool:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                tool,
+                "-v",
+                "error",
+                "-ss",
+                "0",
+                "-i",
+                str(path),
+                "-frames:v",
+                "1",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "png",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=FFMPEG_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    return result.stdout

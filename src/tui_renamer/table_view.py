@@ -14,7 +14,12 @@ FILTERS = (
     ("changed", "Changed filename"),
     ("pending", "Pending metadata"),
 )
-SORTS = (("Filename", "name"), ("Capture date", "capture"), ("Warnings first", "warning"))
+SORTS = (
+    ("Filename", "name"),
+    ("Capture date", "capture"),
+    ("New name", "new"),
+    ("Warnings first", "warning"),
+)
 
 
 @dataclass(frozen=True)

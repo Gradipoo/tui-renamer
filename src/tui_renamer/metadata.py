@@ -1,7 +1,9 @@
 """Read and write EXIF, QuickTime dates, GPS, and birth time.
 
 JPEG and TIFF dates go through piexif. HEIC dates use the same reader when the
-heif extra is installed. MOV, MP4, and M4V dates are read from the file, with
+heif extra is installed. JPEG XL dates use it when the jxl extra is installed.
+Canon CR3 dates come from the embedded preview JPEG, then exiftool. Neither
+format is written. MOV, MP4, and M4V dates are read from the file, with
 exiftool as a fallback when the atoms have no date. Writes for video, HEIC, and
 PNG still go through exiftool. Birth time uses SetFile on macOS and SetFileTime
 on Windows.
@@ -17,10 +19,12 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
+from io import BytesIO
 from pathlib import Path
 
 from tui_renamer.core import FileFacts, RenameRules, format_offset, load_facts
-from tui_renamer.preview import HEIF_SUFFIXES, heif_ready
+from tui_renamer.cr3 import embedded_preview_jpeg
+from tui_renamer.preview import HEIF_SUFFIXES, JXL_SUFFIXES, heif_ready, jxl_ready
 from tui_renamer.quicktime import QuickTimeClock, parse_creationdate, read_quicktime
 
 try:
@@ -104,16 +108,36 @@ def read_exif(path: Path, *, extra_suffixes: frozenset[str] = frozenset()) -> Ex
     allowed = IMAGE_EXTENSIONS | extra_suffixes
     if path.suffix.lower() not in allowed or not PILLOW_AVAILABLE or Image is None:
         return empty
-    has_gps = False
     try:
         with Image.open(path) as image:
-            exif = image.getexif()
-            ifd = exif.get_ifd(EXIF_IFD)
-            base = dict(exif)
-            try:
-                has_gps = bool(exif.get_ifd(GPS_IFD))
-            except Exception:
-                has_gps = False
+            return _clock_from_image(image)
+    except Exception:
+        return empty
+
+
+def read_exif_bytes(blob: bytes) -> ExifClock:
+    """Date and offset from JPEG bytes, such as a CR3 preview."""
+    empty = ExifClock(None, None, "", "")
+    if not blob or not PILLOW_AVAILABLE or Image is None:
+        return empty
+    try:
+        with Image.open(BytesIO(blob)) as image:
+            return _clock_from_image(image)
+    except Exception:
+        return empty
+
+
+def _clock_from_image(image: Image.Image) -> ExifClock:
+    empty = ExifClock(None, None, "", "")
+    has_gps = False
+    try:
+        exif = image.getexif()
+        ifd = exif.get_ifd(EXIF_IFD)
+        base = dict(exif)
+        try:
+            has_gps = bool(exif.get_ifd(GPS_IFD))
+        except Exception:
+            has_gps = False
     except Exception:
         return empty
     original = _text(ifd.get(DATETIME_ORIGINAL))
@@ -137,6 +161,10 @@ def inspect_file(path: Path, rules: RenameRules, zone: tzinfo) -> FileFacts:
     suffix = path.suffix.lower()
     if suffix in HEIF_SUFFIXES and heif_ready():
         return _load_clock(path, rules, zone, read_exif(path, extra_suffixes=HEIF_SUFFIXES), "E")
+    if suffix in JXL_SUFFIXES and jxl_ready():
+        return _load_clock(path, rules, zone, read_exif(path, extra_suffixes=JXL_SUFFIXES), "E")
+    if suffix == ".cr3":
+        return _load_clock(path, rules, zone, _cr3_clock(path), "E")
     if suffix in VIDEO_EXTENSIONS:
         clock = _from_quicktime(read_quicktime(path))
         if clock.naive is None:
@@ -170,45 +198,86 @@ def _from_quicktime(clock: QuickTimeClock) -> ExifClock:
     return ExifClock(clock.naive, clock.offset, clock.label, clock.offset_text)
 
 
+def _cr3_clock(path: Path) -> ExifClock:
+    """Capture date from the embedded JPEG, then exiftool. Never writes."""
+    jpeg = embedded_preview_jpeg(path)
+    if jpeg is not None:
+        clock = read_exif_bytes(jpeg)
+        if clock.naive is not None:
+            return clock
+    return read_exiftool_cr3(path)
+
+
 def read_exiftool_video(path: Path) -> ExifClock:
     """CreationDate, then CreateDate, when exiftool is on PATH.
 
     Used only after the box walker finds no capture date. A missing tool,
     a timeout, or a bad reply is an empty clock.
     """
+    return _exiftool_clock(
+        path,
+        ("CreationDate", "CreateDate"),
+        (
+            ("CreationDate", "QuickTime creation date"),
+            ("CreateDate", "QuickTime CreateDate"),
+        ),
+    )
+
+
+def read_exiftool_cr3(path: Path) -> ExifClock:
+    """DateTimeOriginal, then CreationDate, then CreateDate. Empty when missing."""
+    return _exiftool_clock(
+        path,
+        ("DateTimeOriginal", "CreationDate", "CreateDate"),
+        (
+            ("DateTimeOriginal", "EXIF DateTimeOriginal"),
+            ("CreationDate", "QuickTime creation date"),
+            ("CreateDate", "QuickTime CreateDate"),
+        ),
+    )
+
+
+def _exiftool_clock(
+    path: Path,
+    tags: tuple[str, ...],
+    labels: tuple[tuple[str, str], ...],
+) -> ExifClock:
     empty = ExifClock(None, None, "", "")
-    tool = find_exiftool()
-    if not tool:
+    row = _exiftool_record(path, tags)
+    if row is None:
         return empty
-    try:
-        result = subprocess.run(
-            [tool, "-j", "-CreationDate", "-CreateDate", "-api", "QuickTimeUTC=1", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return empty
-    if result.returncode != 0 or not result.stdout:
-        return empty
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return empty
-    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
-        return empty
-    row = payload[0]
-    for key, label in (
-        ("CreationDate", "QuickTime creation date"),
-        ("CreateDate", "QuickTime CreateDate"),
-    ):
+    for key, label in labels:
         text = row.get(key)
         if isinstance(text, str):
             clock = _parse_exiftool_date(text, label)
             if clock is not None:
                 return clock
     return empty
+
+
+def _exiftool_record(path: Path, tags: tuple[str, ...]) -> dict | None:
+    tool = find_exiftool()
+    if not tool:
+        return None
+    try:
+        result = subprocess.run(
+            [tool, "-j", *[f"-{tag}" for tag in tags], "-api", "QuickTimeUTC=1", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        return None
+    return payload[0]
 
 
 def _parse_exiftool_date(text: str, label: str) -> ExifClock | None:

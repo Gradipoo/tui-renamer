@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 
 import piexif
@@ -18,6 +21,7 @@ from tui_renamer.metadata import (
     OFFSET_TIME_DIGITIZED,
     OFFSET_TIME_ORIGINAL,
     WriteCounts,
+    can_write_metadata,
     degrees_to_dms_rational,
     generic_exiftool_command,
     inspect_file,
@@ -285,3 +289,59 @@ def test_write_image_description_jpeg_only(tmp_path: Path) -> None:
     png = tmp_path / "photo.png"
     Image.new("RGB", (8, 8), (1, 2, 3)).save(png, format="PNG")
     assert write_image_description(png, "picnic") is False
+
+
+def test_cr3_date_comes_from_the_preview_jpeg(tmp_path: Path, monkeypatch) -> None:
+    jpeg = tmp_path / "preview.jpg"
+    _jpeg(jpeg)
+    _stamp_tags(jpeg, {}, when="2020:06:01 15:00:00")
+
+    def explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("exiftool should not run when the preview has a date")
+
+    monkeypatch.setattr("tui_renamer.metadata.subprocess.run", explode)
+    path = tmp_path / "photo.cr3"
+    path.write_bytes(_prvw_tag(jpeg.read_bytes()))
+    facts = inspect_file(path, RenameRules(), UTC)
+    assert facts.winner_source == "E"
+    assert facts.has_exif is True
+    assert facts.origtime_text == "2020-06-01-150000"
+    assert can_write_metadata(path) is False
+
+
+def test_cr3_without_a_preview_date_uses_exiftool(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("tui_renamer.metadata.find_exiftool", lambda: "exiftool")
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        payload = [{"DateTimeOriginal": "2019:04:05 06:07:08"}]
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=json.dumps(payload))
+
+    monkeypatch.setattr("tui_renamer.metadata.subprocess.run", fake_run)
+    jpeg = BytesIO()
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(jpeg, format="JPEG")
+    path = tmp_path / "photo.cr3"
+    path.write_bytes(_prvw_tag(jpeg.getvalue()))
+    facts = inspect_file(path, RenameRules(), UTC)
+    assert facts.winner_source == "E"
+    assert facts.has_exif is True
+    assert facts.origtime_text == "2019-04-05-060708"
+
+
+def test_jxl_without_the_extra_keeps_the_file_time(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("tui_renamer.metadata.jxl_ready", lambda: False)
+    path = tmp_path / "photo.jxl"
+    path.write_bytes(b"not a jxl")
+    facts = inspect_file(path, RenameRules(), UTC)
+    assert facts.has_exif is False
+    assert facts.winner_source != "E"
+    assert can_write_metadata(path) is False
+
+
+def _prvw_tag(payload: bytes) -> bytes:
+    return (
+        (24 + len(payload)).to_bytes(4, "big")
+        + b"PRVW"
+        + (b"\x00" * 12)
+        + len(payload).to_bytes(4, "big")
+        + payload
+    )

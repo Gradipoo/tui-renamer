@@ -134,7 +134,7 @@ uv tool install --force "git+https://github.com/Gradipoo/tui-renamer.git"
 
 ### HEIC
 
-JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. HEIC and HEIF need `pillow-heif`. With that extra, their capture dates are read the same way as JPEG. Without it, those files keep their file times.
+JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. GIF shows the first frame. HEIC and HEIF need `pillow-heif`. With that extra, their capture dates are read the same way as JPEG. Without it, those files keep their file times. JPEG XL needs the optional `jxl` extra (`pillow-jxl-plugin`). With it, the preview and capture date use Pillow. Without it, those files keep their file times. `rn` does not write JPEG XL metadata. The Homebrew formula does not install the `jxl` extra.
 
 ```bash
 pipx install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
@@ -147,7 +147,7 @@ On Windows:
 py -3.12 -m pipx install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
 ```
 
-Camera RAW (CR2, NEF, ARW, DNG) is not previewed.
+MOV, MP4, and M4V show one frame when `ffmpeg` is on `PATH`. Without it, the caption says so. Canon CR3 previews the embedded JPEG and reads that JPEG's capture date, then `exiftool` if the preview has no date. A CR3 preview that is not a JPEG stays caption-only. `rn` does not write CR3 metadata. Other camera RAW (CR2, NEF, ARW, DNG) is not previewed.
 
 ### From source
 
@@ -258,12 +258,21 @@ for missing embedded capture dates, date disagreements, warnings, changed
 filenames, and pending metadata. All checked filters must match. An optional
 extension filter accepts values such as `jpg` or `.JPG`.
 
-Sort by filename, embedded capture date, or warnings first. Descending reverses
-the order (warnings last). Capture sorting always puts files without an embedded
-capture date last. Filename dates, JSON dates, and filesystem times do not count
-as embedded capture dates. Date disagreements and warnings use the existing date
-inspection rules. Sorting does not change neighbor warnings or the order in which
-renames and collision suffixes are applied.
+Sort by filename, new name, embedded capture date, or warnings first. Descending
+reverses the order. For warnings first, descending puts warnings last. New name
+is the resolved name, including a collision suffix. Capture sorting always puts
+files without an embedded capture date last. Filename dates, JSON dates, and
+filesystem times do not count as embedded capture dates. Date disagreements and
+warnings use the existing date inspection rules. Sorting does not change folder
+order, neighbor warnings, or which file receives a collision suffix.
+
+When two files would share a name, the New column shows the name Apply will use:
+the first free name, then `-01`, `-02`, in folder order. A file already named
+with a trailing `-NN` is the same base when another file in the folder has that
+stem with or without the suffix. A lone `holiday-01.jpg` keeps `holiday-01`.
+Selecting only the later file can still write `photo-01.jpg` while `photo.jpg`
+stays unused, because the earlier file reserved the plain name. Apply checks the
+disk again before renaming.
 
 Search, next/previous navigation, and range selection follow the visible order.
 `a` selects all visible files and preserves existing hidden selections. `A` clears
@@ -275,7 +284,7 @@ last for the current session only.
 
 ## Pictures
 
-`P` shows or hides the preview. That choice is remembered, and so is a zoom from `1` through `4`. Preview starts on, and there is no zoom, until you change them. Ctrl+0 resets both. Only the highlighted file is drawn.
+`P` shows or hides the preview. That choice is remembered, and so is a zoom from `1` through `4`. Preview starts on, and there is no zoom, until you change them. Ctrl+0 resets both. Only the highlighted file is drawn. GIF, video, JPEG XL, and Canon CR3 follow the format rules in the install section. Video needs `ffmpeg` for a single frame.
 
 | Terminal | What you see |
 | --- | --- |
@@ -377,7 +386,7 @@ content. Reading setup can collapse once a model is saved; Models opens it witho
 reading an image. Model selection, reading, and remote-host confirmation keep their
 existing behavior.
 
-The table uses readable states such as Preview, Selected, Manual name, Locked name, and Unchanged. Preview means the proposed name differs, not that Apply will rename it. The detail pane spells out the compact date-source, warning, and missing-metadata codes. It shows before/after names, date candidates, the winning source, timezone, geodata, and a character diff. Insertions are green. Deletions are red.
+The table uses readable states such as Preview, Selected, Manual name, Locked name, and Unchanged. Preview means the proposed name differs, not that Apply will rename it. Fit replaces the old date-source column. In rename mode, `ok` means the current name matches the resolved name, `rn` means it differs, and `dup` means a collision suffix was added. Filename dates use `ok`, `upd`, or `err`. File times use `ok` or `upd`. The detail pane still names the date source, and it spells out Fit, the warning, and the missing-metadata codes. It shows before/after names, date candidates, the winning source, timezone, geodata, and a character diff. Insertions are green. Deletions are red.
 
 Esc closes find first, then leaves a zoomed pane, then leaves visual, filename date, or mtime mode.
 
