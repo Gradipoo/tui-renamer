@@ -1803,7 +1803,8 @@ async def test_scan_name_toggle_off_does_not_add_meta(tmp_path: Path) -> None:
         await pilot.pause()
         assert review.bits[0].use_name is True
         assert review.bits[0].use_meta is False
-        list(review.query(".scan-chip"))[0].press()
+        assert list(review.query(".scan-chip"))[0] is chip
+        chip.press()
         await pilot.pause()
         assert review.bits[0].use_name is False
         assert review.bits[0].use_meta is False
@@ -2136,13 +2137,17 @@ async def test_layout_prioritizes_files_and_review_actions_fit(tmp_path: Path) -
     photo = tmp_path / "solo.jpg"
     _jpeg_photo(photo)
     app = RenamerApp(tmp_path)
+    app.exiftool = None
+    app.setfile = None
     app.scan_backend = MockBackend()
     async with app.run_test(size=(140, 42)) as pilot:
         await pilot.pause()
         assert app.query_one("#files").size.width > app.query_one("#detail").size.width
         await pilot.resize_terminal(60, 24)
         await pilot.pause()
-        assert app.query_one("#files").size.height > app.query_one("#detail").size.height
+        assert app.screen.has_class("-compact")
+        assert app.query_one("#files").size.height >= 2
+        assert app.query_one("#detail").display is False
         await pilot.press("S")
         await pilot.pause()
         review = app.screen

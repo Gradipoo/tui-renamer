@@ -1130,18 +1130,19 @@ class RenamerApp(App[None]):
         self.journal.cleanup()
 
     def on_resize(self, event: object) -> None:
-        width = getattr(getattr(event, "size", None), "width", self.size.width)
-        if self.is_mounted and not self._rebuilding:
-            self._apply_layout(width)
-            self.refresh_view()
+        size = getattr(event, "size", self.size)
+        if self.is_mounted:
+            self._apply_layout(size.width, size.height)
+            if not self._rebuilding:
+                self.refresh_view()
             self.call_after_refresh(self._fit_table_columns)
 
-    def _apply_layout(self, width: int) -> None:
+    def _apply_layout(self, width: int, height: int | None = None) -> None:
         body = self.query_one("#body")
         files = self.query_one("#files")
         detail = self.query_one("#detail")
         narrow = width < 100
-        compact = narrow and self.size.height < 32
+        compact = narrow and (self.size.height if height is None else height) < 32
         self.screen.set_class(compact, "-compact")
         files.border_subtitle = "2 Detail · 4 Preview" if compact else ""
         body.set_class(narrow, "-narrow")
@@ -1569,6 +1570,8 @@ class RenamerApp(App[None]):
         table = self.query_one(FileTable)
         scroll_x = table.scroll_x
         scroll_y = table.scroll_y
+        self._scroll_restore_gen += 1
+        gen = self._scroll_restore_gen
         self._begin_rebuild()
         table.clear(columns=True)
         if self.date_mode:
@@ -1586,8 +1589,6 @@ class RenamerApp(App[None]):
             self._cursor = 0
         # Skip a no-op restore of (0, 0). A deferred one can wipe a later scroll.
         if scroll_x or scroll_y:
-            self._scroll_restore_gen += 1
-            gen = self._scroll_restore_gen
             table.scroll_to(scroll_x, scroll_y, animate=False)
             # After the cursor watcher scrolls the row into view.
             table.call_after_refresh(self._restore_table_scroll, scroll_x, scroll_y, gen)
@@ -2144,6 +2145,8 @@ class RenamerApp(App[None]):
             return
         table = self.query_one(FileTable)
         self._cursor = row
+        # An explicit navigation supersedes deferred scrolls from a table rebuild.
+        self._scroll_restore_gen += 1
         if table.row_count:
             table.move_cursor(row=self._visible.index(row))
 

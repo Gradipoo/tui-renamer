@@ -485,13 +485,13 @@ class ReviewScreen(ModalScreen[StageResult | None]):
         if item.use_name and not was:
             self._name_seq += 1
             item.name_order = self._name_seq
-        self._paint_chips()
+        self._sync_chip_buttons()
         self._paint_name_preview()
         self._sync_host()
 
     def _toggle_meta(self, item: Bit) -> None:
         item.toggle_meta()
-        self._paint_chips()
+        self._sync_chip_buttons()
 
     def _restore_notes(self) -> None:
         if self.session is not None:
@@ -585,6 +585,20 @@ class ReviewScreen(ModalScreen[StageResult | None]):
                     meta.add_class("-on")
                 pieces.append(meta)
             row.mount(Horizontal(*pieces, classes="scan-chip-row"))
+
+    def _sync_chip_buttons(self) -> None:
+        """Keep focus and pending presses on the same controls when toggling."""
+        buttons = list(self.query(".scan-chip"))
+        if len(buttons) != len(self.bits):
+            self._paint_chips()
+            return
+        for button, item in zip(buttons, self.bits, strict=True):
+            button.label = f"Name {'ON' if item.use_name else 'off'} · {item.caption()}"
+            button.set_class(item.use_name, "-on")
+            if item.can_meta():
+                meta = button.parent.query_one(".scan-meta", Button)
+                meta.label = "Metadata ON" if item.use_meta else "Metadata off"
+                meta.set_class(item.use_meta, "-on")
 
     def _session_record(self) -> ScanSession:
         return ScanSession(

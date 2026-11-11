@@ -298,3 +298,26 @@ async def test_existing_notes_follow_rename_with_explicit_undo_limit(tmp_path: P
         assert source.exists()
         assert notes.exists()
         assert "notes contents are not restored" in app._last_result
+
+
+async def test_resize_during_table_rebuild_updates_compact_layout(tmp_path: Path) -> None:
+    source = tmp_path / "photo.jpg"
+    photo(source)
+    app = RenamerApp(tmp_path)
+    app.exiftool = None
+    app.setfile = None
+    async with app.run_test(size=(140, 42)) as pilot:
+        await pilot.pause()
+        app._begin_rebuild()
+        try:
+            await pilot.resize_terminal(60, 24)
+            assert app.screen.has_class("-compact")
+        finally:
+            app._end_rebuild()
+        await pilot.pause()
+        assert app.query_one("#files").size.height >= 2
+        assert not app.query_one("#detail").display
+        await pilot.resize_terminal(140, 42)
+        await pilot.pause()
+        assert not app.screen.has_class("-compact")
+        assert app.query_one("#detail").display
