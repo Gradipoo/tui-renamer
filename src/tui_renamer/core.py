@@ -579,12 +579,49 @@ def plan_filename_dates(paths: list[Path], source_tz: tzinfo | None) -> DatePlan
     return DatePlan(todo=todo, same=same, skipped=skipped)
 
 
+def _today_offset() -> timedelta:
+    offset = datetime.now().astimezone().utcoffset()
+    return offset if offset is not None else timedelta(0)
+
+
+class _SystemZone(tzinfo):
+    """System zone. The offset is the one in effect on the given date."""
+
+    def tzname(self, dt: datetime | None) -> str:
+        return "Local"
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        return timedelta(0)
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        if dt is None:
+            return _today_offset()
+        wall = dt.replace(tzinfo=None)
+        try:
+            stamp = wall.timestamp()
+            utc = datetime.fromtimestamp(stamp, tz=timezone.utc).replace(tzinfo=None)
+        except (OSError, OverflowError, ValueError):
+            return _today_offset()
+        return wall - utc
+
+    def fromutc(self, dt: datetime) -> datetime:
+        if dt.tzinfo is not self:
+            raise ValueError("fromutc: dt.tzinfo is not self")
+        try:
+            stamp = dt.replace(tzinfo=timezone.utc).timestamp()
+            local = datetime.fromtimestamp(stamp)
+        except (OSError, OverflowError, ValueError):
+            local = dt.replace(tzinfo=None) + _today_offset()
+        return local.replace(tzinfo=self)
+
+
+_SYSTEM_ZONE = _SystemZone()
+
+
 def resolve_tz(name: str | None) -> tzinfo:
-    """ZoneInfo for an IANA name. None and 'Local System' mean the local zone."""
+    """ZoneInfo for an IANA name. None and 'Local System' use the system zone for that date."""
     if not name or name == "Local System":
-        local = datetime.now().astimezone().tzinfo
-        assert local is not None
-        return local
+        return _SYSTEM_ZONE
     if name == "UTC":
         return timezone.utc
     if not ZONEINFO_AVAILABLE or ZoneInfo is None:

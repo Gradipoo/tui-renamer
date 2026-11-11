@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from tui_renamer.core import (
     FileFacts,
@@ -474,6 +477,26 @@ def test_datetime_for_write_falls_back(tmp_path: Path) -> None:
     assert datetime_for_write(plain, FileFacts(), UTC) is not None
 
 
+def test_local_system_offset_follows_the_capture_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    if not hasattr(time, "tzset"):
+        pytest.skip("tzset is not available")
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    try:
+        summer = datetime(2015, 10, 4, 21, 54, 18, tzinfo=UTC)
+        shown = summer.astimezone(resolve_tz(None))
+        assert (shown.hour, shown.minute, shown.second) == (14, 54, 18)
+        assert shown.utcoffset() == timedelta(hours=-7)
+
+        winter = datetime(2015, 12, 4, 21, 54, 18, tzinfo=UTC)
+        shown = winter.astimezone(resolve_tz("Local System"))
+        assert (shown.hour, shown.minute, shown.second) == (13, 54, 18)
+        assert shown.utcoffset() == timedelta(hours=-8)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
 def test_timezone_list_and_filter() -> None:
     names = list_timezones()
     assert names[0] == "Local System"
@@ -490,6 +513,7 @@ def test_timezone_list_and_filter() -> None:
 
 def test_resolve_and_format_offset() -> None:
     assert resolve_tz("UTC") is UTC
+    assert resolve_tz(None) is resolve_tz("Local System")
     assert resolve_tz(None).utcoffset(datetime.now()) is not None
     moment = datetime(2024, 1, 15, 12, tzinfo=timezone(timedelta(hours=5, minutes=30)))
     assert format_offset(moment) == "+05:30"
