@@ -36,7 +36,7 @@ None.
 - `datetime.fromtimestamp` on Windows raises `OSError: [Errno 22]` for some pre-1970 `st_birthtime` values after a written-day capture write. `utc_from_timestamp` returns None instead of crashing inspect/preview.
 - Windows `Path.rename` refuses to replace an existing destination. Journal undo uses `os.replace`, then copy plus unlink if replace is blocked (file in use). Undo also drops the preview widget and cache first so the image file is not held open.
 - `piexif.load` on a JPEG Pillow just saved still returns a tiny EXIF blob, so "no exif" is not the same as `had_exif is False`.
-- Filename date planning uses `source_tz is None` for the system zone. Passing the local tzinfo is not the same call.
+- Filename date planning uses `source_tz is None` for the system zone. Passing the local tzinfo is not the same call. Rename stamps through `resolve_tz(None)` use the system zone's offset on the capture date, not today's fixed offset.
 - The dashed timestamp strip (`YYYY-MM-DD-HHMMSS` at either end) always runs, even when every toggle is off.
 - `Widget.remove()` only schedules a prune. The id stays until that finishes. Await the removal before mounting another widget with the same id, or Textual raises `DuplicateIds`.
 - A Textual `Checkbox` or `Button` is 3 lines tall because of its border. Forcing `height: 1` paints only the top border. Use `compact=True`, or a one-line label, and give the strip enough height for its border plus those lines.
