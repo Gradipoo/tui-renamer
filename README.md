@@ -412,6 +412,18 @@ successful changes from the result or the session journal. Failed work is not
 automatically retried. Check the result and re-stage the work you want to retry.
 Results and undo history last only for the current session.
 
+## Release
+
+Bump the version in `pyproject.toml` and add a matching `## <version>` heading to `CHANGELOG.md`. Commit that, then from the repository root:
+
+```bash
+python packaging/release.py
+```
+
+The command pushes the `v<version>` tag. GitHub Actions builds the binaries, publishes the GitHub release, and uploads that version to PyPI. The command waits until that exact version is on PyPI, then updates `Formula/rn.rb` on `main` in the Homebrew tap and pushes it. Binary builds finish on their own.
+
+Before the first run, `brew tap gradipoo/tap` must already exist on this machine, and that checkout must be able to push to `Gradipoo/homebrew-tap`.
+
 ## License
 
 Copyright (C) 2026 Gradipoo.

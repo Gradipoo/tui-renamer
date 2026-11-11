@@ -25,7 +25,7 @@ None.
 
 ## Known gotchas
 
-- The Homebrew tap checkout at `$(brew --repo gradipoo/tap)` must stay on `main`. A leftover checkout of `codex/fix-rn-016-checksum` made `brew upgrade rn` keep installing 0.1.6 after main had 0.1.8. `brew info rn` reads that checkout, not GitHub, until the branch is switched back.
+- The Homebrew tap checkout at `$(brew --repo gradipoo/tap)` must stay on `main`. A leftover checkout of `codex/fix-rn-016-checksum` made `brew upgrade rn` keep installing 0.1.6 after main had 0.1.8. `brew info rn` reads that checkout, not GitHub, until the branch is switched back. `python packaging/release.py` checks out tap `main` and fast-forwards it before writing `Formula/rn.rb`.
 - The `textual-image` Homebrew resource must be a wheel. Its sdist needs `uv_build`, and `brew upgrade rn` installs resources with `--no-binary`, so the source tarball fails.
 
 - Resize handlers must use both dimensions from the Resize event and update layout classes even during a table rebuild. The app size can still reflect the previous terminal height. Reproduce compact layouts without optional metadata tools, whose startup message consumes extra rows.
