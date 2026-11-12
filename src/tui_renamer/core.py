@@ -311,21 +311,58 @@ def clean_filename(basename: str, rules: RenameRules) -> str:
     return name.strip("-_")
 
 
+_COLLISION_SUFFIX = re.compile(r"\A(.+)-(\d{2})\Z")
+
+
+class CollisionIndex:
+    """Stem counts from one pass, used to answer collision_stem."""
+
+    def __init__(self, stems: Iterable[str]) -> None:
+        counts: dict[str, int] = {}
+        suffixes: dict[str, int] = {}
+        for stem in stems:
+            counts[stem] = counts.get(stem, 0) + 1
+            match = _COLLISION_SUFFIX.fullmatch(stem)
+            if match is not None:
+                base = match.group(1)
+                suffixes[base] = suffixes.get(base, 0) + 1
+        self.counts = counts
+        self.suffixes = suffixes
+
+    def base(self, stem: str, *, skip: str | None = None) -> str:
+        """Drop one trailing -NN when another counted stem shares that base.
+
+        `skip` ignores one stored stem, so a file is not treated as its own sibling.
+        """
+        match = _COLLISION_SUFFIX.fullmatch(stem)
+        if match is None:
+            return stem
+        base = match.group(1)
+        exact = self.counts.get(base, 0)
+        numbered = self.suffixes.get(base, 0)
+        if skip is not None:
+            if skip == base:
+                exact -= 1
+            skipped = _COLLISION_SUFFIX.fullmatch(skip)
+            if skipped is not None and skipped.group(1) == base:
+                numbered -= 1
+        if exact > 0 or numbered > 0:
+            return base
+        return stem
+
+
+def collision_index(stems: Iterable[str]) -> CollisionIndex:
+    """Index every stem once for later collision checks."""
+    return CollisionIndex(stems)
+
+
 def collision_stem(stem: str, sibling_stems: Iterable[str]) -> str:
     """Drop one trailing -NN when another file shares that stem.
 
     Two digits count as a collision suffix only when a sibling stem is the
     same text with or without that suffix. A lone holiday-01 stays holiday-01.
     """
-    match = re.fullmatch(r"(.+)-(\d{2})", stem)
-    if match is None:
-        return stem
-    base = match.group(1)
-    numbered = re.compile(rf"{re.escape(base)}-\d{{2}}\Z")
-    for other in sibling_stems:
-        if other == base or numbered.fullmatch(other):
-            return base
-    return stem
+    return collision_index(sibling_stems).base(stem)
 
 
 def preview_base(

@@ -45,12 +45,13 @@ from tui_renamer.commands import (
 )
 from tui_renamer.core import (
     ZONEINFO_AVAILABLE,
+    CollisionIndex,
     DatePlan,
     DatePlanItem,
     FileFacts,
     RenameRules,
     assign_unique_names,
-    collision_stem,
+    collision_index,
     datetime_for_write,
     delta_text,
     earliest_date,
@@ -1070,6 +1071,7 @@ class RenamerApp(App[None]):
         self._date_plan: DatePlan | None = None
         self._date_plan_key: tuple[tuple[Path, ...], tzinfo | None] | None = None
         self._name_plan_cache: tuple[object, list[str], list[str]] | None = None
+        self._fitted_columns: tuple[object, ...] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1225,16 +1227,12 @@ class RenamerApp(App[None]):
         _proposed, resolved = self._name_plan()
         return resolved[index]
 
-    def _sibling_stems(self, index: int) -> list[str]:
-        return [
-            os.path.splitext(self.files[other].name)[0]
-            for other in range(len(self.files))
-            if other != index
-        ]
+    def _collision_index(self) -> CollisionIndex:
+        return collision_index(os.path.splitext(path.name)[0] for path in self.files)
 
-    def _with_collision_base(self, filename: str, index: int) -> str:
+    def _with_collision_base(self, filename: str, own: str, stems: CollisionIndex) -> str:
         stem, ext = os.path.splitext(filename)
-        base = collision_stem(stem, self._sibling_stems(index))
+        base = stems.base(stem, skip=own)
         if base == stem:
             return filename
         return f"{base}{ext}" if base else filename
@@ -1272,28 +1270,26 @@ class RenamerApp(App[None]):
             rules.datetime_stamp,
         )
 
-    def _proposed_name(self, index: int) -> str:
+    def _proposed_name(self, index: int, stems: CollisionIndex) -> str:
         path = self.files[index]
+        own = os.path.splitext(path.name)[0]
         if index in self.locked:
-            return self._with_collision_base(self.locked[index], index)
+            return self._with_collision_base(self.locked[index], own, stems)
         key = str(path)
         accepted = self.scan_accepted.get(key, [])
         parts = self._formatted_scan_parts(path)
-        siblings = self._sibling_stems(index)
         if index in self.manual:
             return apply_scan_suffix(
-                self._with_collision_base(self.manual[index], index),
+                self._with_collision_base(self.manual[index], own, stems),
                 parts,
                 accepted=accepted,
             )
-        file_stem, _ext = os.path.splitext(path.name)
-        bare = strip_accepted_suffix(file_stem, accepted)
+        bare = strip_accepted_suffix(own, accepted)
         stem, _ext = preview_base(
             path.name,
             self.facts_for(path),
             self.rules,
-            stem=bare,
-            sibling_stems=siblings,
+            stem=stems.base(bare, skip=own),
         )
         return apply_scan_suffix(
             path.name,
@@ -1307,7 +1303,8 @@ class RenamerApp(App[None]):
         cached = self._name_plan_cache
         if cached is not None and cached[0] == key:
             return cached[1], cached[2]
-        proposed = [self._proposed_name(index) for index in range(len(self.files))]
+        stems = self._collision_index()
+        proposed = [self._proposed_name(index, stems) for index in range(len(self.files))]
         resolved = assign_unique_names(self.files, proposed)
         self._name_plan_cache = (key, proposed, resolved)
         return proposed, resolved
@@ -1344,6 +1341,7 @@ class RenamerApp(App[None]):
 
     def _recompute_visible(self) -> None:
         view = self.table_view
+        _proposed, resolved = self._name_plan()
         visible = []
         captures = {}
         warnings = {}
@@ -1356,7 +1354,7 @@ class RenamerApp(App[None]):
                 path.suffix,
                 facts,
                 warning=warning,
-                changed=self.preview_for(index) != path.name,
+                changed=resolved[index] != path.name,
                 pending=pending is not None
                 and (pending.moment is not None or bool(pending.description)),
             ):
@@ -1369,7 +1367,7 @@ class RenamerApp(App[None]):
         if view.sort == "new":
             visible.sort(
                 key=lambda index: (
-                    self.preview_for(index).lower(),
+                    resolved[index].lower(),
                     self.files[index].name.lower(),
                 ),
                 reverse=view.descending,
@@ -1416,8 +1414,9 @@ class RenamerApp(App[None]):
                 if moment is not None:
                     self._changing.add(index)
             return
+        _proposed, resolved = self._name_plan()
         for index, path in enumerate(self.files):
-            if self.preview_for(index) != path.name:
+            if resolved[index] != path.name:
                 self._changing.add(index)
 
     def _recompute_neighbors(self) -> None:
@@ -1429,7 +1428,12 @@ class RenamerApp(App[None]):
             return self._neighbors[index]
         return ""
 
-    def _fit_code(self, index: int, path: Path) -> str:
+    def _fit_code(
+        self,
+        index: int,
+        path: Path,
+        names: tuple[list[str], list[str]] | None = None,
+    ) -> str:
         if self.date_mode:
             plan = self.cached_date_plan()
             todo = {item.path for item in plan.todo}
@@ -1450,16 +1454,23 @@ class RenamerApp(App[None]):
             if abs(current - moment.timestamp()) < 1:
                 return "ok"
             return "upd"
-        proposed, resolved = self._name_plan()
+        if names is None:
+            names = self._name_plan()
+        proposed, resolved = names
         if resolved[index] != proposed[index]:
             return "dup"
         if resolved[index] == path.name:
             return "ok"
         return "rn"
 
-    def _mark_cells(self, index: int, path: Path) -> tuple[Text, Text, Text]:
+    def _mark_cells(
+        self,
+        index: int,
+        path: Path,
+        names: tuple[list[str], list[str]] | None = None,
+    ) -> tuple[Text, Text, Text]:
         facts = self.facts_for(path)
-        source = Text(self._fit_code(index, path))
+        source = Text(self._fit_code(index, path, names))
         flag = flag_letter(facts, self._neighbor_at(index))
         flag_text = Text(flag, style=FLAG_STYLE.get(flag, ""))
         marks = missing_marks(
@@ -1536,14 +1547,31 @@ class RenamerApp(App[None]):
         else:
             widget.update(line)
 
+    def _table_viewport(self, table: FileTable | None = None) -> int:
+        if table is None:
+            table = self.query_one(FileTable)
+        viewport = table.scrollable_content_region.width
+        if viewport <= 0:
+            return max(table.size.width - 2, 64)
+        return viewport
+
+    def _column_fit_key(self, table: FileTable) -> tuple[object, ...]:
+        plan = self._name_plan_cache
+        plan_key = None if plan is None else plan[0]
+        return (self._table_viewport(table), self.date_mode, self.mtime_mode, plan_key)
+
+    def _remember_column_fit(self) -> None:
+        try:
+            table = self.query_one(FileTable)
+        except NoMatches:
+            return
+        self._fitted_columns = self._column_fit_key(table)
+
     def _flex_budget(self, fixed_content: int, column_count: int) -> int:
         """Cells left for flexible columns after the short ones and padding."""
         table = self.query_one(FileTable)
-        viewport = table.scrollable_content_region.width
-        if viewport <= 0:
-            viewport = max(table.size.width - 2, 64)
         pad = 2 * table.cell_padding * column_count
-        return viewport - fixed_content - pad
+        return self._table_viewport(table) - fixed_content - pad
 
     def _flex_width(self, fixed_content: int, column_count: int, flex_count: int) -> int:
         """Content width for each flexible column so the row fits the pane."""
@@ -1556,10 +1584,8 @@ class RenamerApp(App[None]):
         """Split leftover width across Name and New. Show full names when they fit."""
         remaining = max(16, self._flex_budget(25, 7))
         name_need = max((len(path.name) for path in self.files), default=8)
-        new_need = max(
-            (len(self.preview_for(index)) for index in range(len(self.files))),
-            default=8,
-        )
+        _proposed, resolved = self._name_plan()
+        new_need = max((len(name) for name in resolved), default=8)
         name_need = max(8, name_need)
         new_need = max(8, new_need)
         name_w = min(name_need, remaining // 2)
@@ -1600,7 +1626,10 @@ class RenamerApp(App[None]):
         if table.row_count and self._visible[table.cursor_row] != self._cursor:
             # Let the queued highlight update selection before rebuilding columns.
             return
+        if self._column_fit_key(table) == self._fitted_columns:
+            return
         name_w, new_w = self._desired_flex()
+        self._fitted_columns = self._column_fit_key(table)
         if name_w == self._name_width and new_w == self._new_width:
             return
         self._fill_table()
@@ -1752,6 +1781,7 @@ class RenamerApp(App[None]):
         table.add_column("State", key="status", width=11)
         self._name_width = name_w
         self._new_width = new_w
+        self._remember_column_fit()
 
     def _add_date_columns(self, table: FileTable) -> None:
         width = self._flex_width(fixed_content=63, column_count=8, flex_count=1)
@@ -1765,6 +1795,7 @@ class RenamerApp(App[None]):
         table.add_column("State", key="status", width=11)
         self._name_width = width
         self._new_width = 19
+        self._remember_column_fit()
 
     def _add_mtime_columns(self, table: FileTable) -> None:
         width = self._flex_width(fixed_content=44, column_count=7, flex_count=1)
@@ -1777,6 +1808,7 @@ class RenamerApp(App[None]):
         table.add_column("State", key="status", width=11)
         self._name_width = width
         self._new_width = 19
+        self._remember_column_fit()
 
     def _mark(self, index: int) -> str:
         return "*" if index in self.selected else ""
@@ -1785,8 +1817,10 @@ class RenamerApp(App[None]):
         rows: list[tuple[str, Text, Text, Text, Text, Text, str]] = []
         name_w = self._name_width
         new_w = self._new_width
+        names = self._name_plan()
+        resolved = names[1]
         for index, path in enumerate(self.files):
-            new_name = self.preview_for(index)
+            new_name = resolved[index]
             name_span, new_span = self._name_spans(path.name, new_name)
             changing = index in self._changing
             if index in self.locked:
@@ -1798,7 +1832,7 @@ class RenamerApp(App[None]):
             else:
                 new_style = "dim"
             name_style = "" if changing else "dim"
-            source, flag, missing = self._mark_cells(index, path)
+            source, flag, missing = self._mark_cells(index, path, names)
             rows.append(
                 (
                     self._mark(index),
@@ -3208,12 +3242,14 @@ class RenamerApp(App[None]):
             return self.locked[index]
         if index in self.manual:
             return self.manual[index]
-        return preview_name(
+        own = os.path.splitext(path.name)[0]
+        stem, ext = preview_base(
             path.name,
             self.facts_for(path),
             self.rules,
-            sibling_stems=self._sibling_stems(index),
+            stem=self._collision_index().base(own, skip=own),
         )
+        return (stem + ext) if stem else path.name
 
     def _ordinary_stem_ext(self, index: int) -> tuple[str, str]:
         path = self.files[index]
@@ -3222,14 +3258,13 @@ class RenamerApp(App[None]):
         if index in self.manual:
             return os.path.splitext(self.manual[index])
         accepted = self.scan_accepted.get(str(path), [])
-        file_stem, _ext = os.path.splitext(path.name)
-        bare = strip_accepted_suffix(file_stem, accepted)
+        own = os.path.splitext(path.name)[0]
+        bare = strip_accepted_suffix(own, accepted)
         return preview_base(
             path.name,
             self.facts_for(path),
             self.rules,
-            stem=bare,
-            sibling_stems=self._sibling_stems(index),
+            stem=self._collision_index().base(bare, skip=own),
         )
 
     def _rename_pairs(self) -> list[tuple[Path, str]]:

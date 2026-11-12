@@ -443,6 +443,31 @@ async def test_column_fit_keeps_queued_cursor_movement(tmp_path: Path, monkeypat
         assert app._cursor == 121
 
 
+async def test_refresh_and_column_fit_build_the_name_key_a_few_times(
+    tmp_path: Path, monkeypatch
+) -> None:
+    for index in range(40):
+        (tmp_path / f"photo-{index:02}.txt").write_text("fixture", encoding="utf-8")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        calls = 0
+        original = app._names_key
+
+        def counted() -> tuple[object, ...]:
+            nonlocal calls
+            calls += 1
+            return original()
+
+        monkeypatch.setattr(app, "_names_key", counted)
+        app.refresh_view()
+        refreshed = calls
+        app._fit_table_columns()
+        app._fit_table_columns()
+        assert 1 <= refreshed <= 12
+        assert calls == refreshed
+
+
 async def test_resize_events_apply_during_table_rebuild(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
