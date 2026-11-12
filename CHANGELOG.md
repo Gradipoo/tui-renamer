@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.12
+
+- Offer HEIC and JPEG XL through the distro package manager instead of shipping them with rn.
+- Show the preview on a short terminal. A 31-row window leaves the detail pane about 10 rows.
+
 ## 0.1.11
 
 - Reuse one rename plan per refresh so moving through the file list stays responsive.
