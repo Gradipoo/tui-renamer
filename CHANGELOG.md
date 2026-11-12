@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.13
+
+- Read JPEG XL capture dates from the Exif box, then exiftool, without the optional plugin.
+- Preview JPEG XL with djxl. Reconstruct a JPEG when a jbrd box is present, otherwise decode at one-eighth scale. Use the plugin only when djxl cannot produce a preview.
+
 ## 0.1.12
 
 - Offer HEIC and JPEG XL through the distro package manager instead of shipping them with rn.
