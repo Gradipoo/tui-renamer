@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.11
+
+- Reuse one rename plan per refresh so moving through the file list stays responsive.
+
 ## 0.1.10
 
 - Sort the file table by the resolved new name, ascending or descending. Folder order, neighbor warnings, and collision suffixes stay put.
