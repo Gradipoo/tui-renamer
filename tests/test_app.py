@@ -57,6 +57,21 @@ async def test_empty_folder_opens(tmp_path: Path) -> None:
         assert "No files" in detail
 
 
+async def test_optional_install_buttons_follow_the_distro(tmp_path: Path) -> None:
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        heif = app.query_one("#act-install-heif")
+        jxl = app.query_one("#act-install-jxl")
+        note = str(app.query_one("#optional-note").render())
+        # This machine is macOS. Homebrew does not package either plugin.
+        if sys.platform == "darwin":
+            assert heif.display is False
+            assert jxl.display is False
+            assert "HEIC" in note
+            assert "JPEG XL" in note
+
+
 def _within(app: RenamerApp, widget_id: str) -> bool:
     node = app.focused
     while node is not None:

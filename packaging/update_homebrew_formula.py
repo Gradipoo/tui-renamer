@@ -1,9 +1,9 @@
 """Fill Formula/rn.rb from PyPI.
 
 The tui-renamer sdist url and sha256 stay as placeholders until that project
-is published. Resource blocks come from `uv pip compile` of this repo with the
-heif extra (or a pip dry-run when uv is missing), then each package's sdist
-on PyPI.
+is published. Resource blocks come from `uv pip compile` of this repo
+(or a pip dry-run when uv is missing), then each package's sdist
+on PyPI. HEIC and JPEG XL stay out of the formula.
 
 Pass a formula path to update that file. `--version` loads that PyPI release
 instead of the newest one. If `tui-renamer` is on PyPI and `brew` is on PATH,
@@ -176,8 +176,6 @@ def uv_packages(root: Path) -> list[tuple[str, str]]:
             "pip",
             "compile",
             "pyproject.toml",
-            "--extra",
-            "heif",
             "--python-version",
             "3.12",
             "--no-header",
@@ -219,7 +217,7 @@ def pip_report_packages(root: Path) -> list[tuple[str, str]]:
                 "--disable-pip-version-check",
                 "--report",
                 str(report_path),
-                ".[heif]",
+                ".",
             ],
             cwd=root,
             check=True,
