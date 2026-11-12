@@ -12,7 +12,7 @@ Run it inside the folder you want to rename, or pass a path. `rn` works on macOS
 
 ## Install
 
-`rn` needs Python 3.12 or newer. Pictures use [textual-image](https://pypi.org/project/textual-image/), which is installed with the app. HEIC and HEIF need the optional `heif` extra.
+`rn` needs Python 3.12 or newer. Pictures use [textual-image](https://pypi.org/project/textual-image/), which is installed with the app. HEIC and JPEG XL are not part of the app. When your system packages them, View and session offers an install button.
 
 Check the version you already have:
 
@@ -29,11 +29,11 @@ py -3.12 --version
 ### PyPI and Homebrew
 
 ```bash
-pipx install "tui-renamer[heif]"
+pipx install tui-renamer
 brew install gradipoo/tap/rn
 ```
 
-`pipx install tui-renamer` leaves HEIC off. The Homebrew formula installs the `heif` extra. The command name stays `rn`.
+Neither install includes HEIC or JPEG XL. The command name stays `rn`.
 
 ### Download a release
 
@@ -134,17 +134,12 @@ uv tool install --force "git+https://github.com/Gradipoo/tui-renamer.git"
 
 ### HEIC
 
-JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. GIF shows the first frame. HEIC and HEIF need `pillow-heif`. With that extra, their capture dates are read the same way as JPEG. Without it, those files keep their file times. JPEG XL needs the optional `jxl` extra (`pillow-jxl-plugin`). With it, the preview and capture date use Pillow. Without it, those files keep their file times. Date and timezone writes use `exiftool`, the same as HEIC. The Homebrew formula does not install the `jxl` extra.
+JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. GIF shows the first frame. HEIC and JPEG XL are not installed with `rn`. Arch, Alpine, Fedora, openSUSE, and Void package one or both plugins, and the View and session group shows that package manager's install button. macOS Homebrew, Debian, and Ubuntu do not package them, so those systems have no button. A source checkout can still add them with `pip install -e ".[heif]"` or `pip install -e ".[jxl]"`. With the plugin, capture dates are read the same way as JPEG. Without it, those files keep their file times. Date and timezone writes use `exiftool`.
 
 ```bash
-pipx install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
-uv tool install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
-```
-
-On Windows:
-
-```powershell
-py -3.12 -m pipx install --force "tui-renamer[heif] @ git+https://github.com/Gradipoo/tui-renamer.git"
+# Examples the app runs after you confirm. Your distro picks the command.
+sudo pacman -S --needed python-pillow-heif
+sudo dnf install python-pillow-jxl-plugin
 ```
 
 MOV, MP4, and M4V show one frame when `ffmpeg` is on `PATH`. Without it, the caption says so. Canon CR3 previews the embedded JPEG and reads that JPEG's capture date, then `exiftool` if the preview has no date. A CR3 preview that is not a JPEG stays caption-only. Date and timezone writes use `exiftool`, the same as HEIC. Other camera RAW (CR2, NEF, ARW, DNG) is not previewed.
@@ -160,7 +155,7 @@ pip install -e .
 rn
 ```
 
-On Windows, activate with `.venv\Scripts\activate`. Use Python 3.12 or newer for that venv. Add the HEIC extra with `pip install -e ".[heif]"`.
+On Windows, activate with `.venv\Scripts\activate`. Use Python 3.12 or newer for that venv. Optional plugins stay out of that install unless you add `.[heif]` or `.[jxl]` yourself.
 
 ### Download a release
 

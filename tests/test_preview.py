@@ -24,8 +24,9 @@ def test_format_size_and_pane_limit() -> None:
     assert format_size(1536) == "1.5 KB"
     assert format_size(1024 * 1024) == "1.0 MB"
     assert pane_too_small(23, 20) is True
-    assert pane_too_small(24, 11) is True
-    assert pane_too_small(24, 12) is False
+    assert pane_too_small(24, 7) is True
+    assert pane_too_small(24, 8) is False
+    assert pane_too_small(24, 10) is False
     assert pane_too_small(0, 0) is False
 
 

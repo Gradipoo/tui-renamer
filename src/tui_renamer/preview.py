@@ -16,12 +16,13 @@ from PIL import Image as PILImage
 from PIL import UnidentifiedImageError
 
 from tui_renamer.cr3 import embedded_preview_jpeg
+from tui_renamer.extras import offer_for
 
 THUMB_EDGE = 160
 CACHE_LIMIT = 32
 DEBOUNCE_SECONDS = 0.08
 PANE_MIN_WIDTH = 24
-PANE_MIN_HEIGHT = 12
+PANE_MIN_HEIGHT = 8
 TEXT_BYTES = 2048
 TEXT_LINES = 8
 
@@ -102,7 +103,11 @@ def format_size(size: int) -> str:
 
 
 def pane_too_small(width: int, height: int) -> bool:
-    """Hide the picture when the detail pane has not enough room."""
+    """Hide the picture when the detail pane cannot hold an 8-row thumbnail.
+
+    A 31-row terminal leaves this pane about 10 rows, so the minimum is the
+    thumbnail height rather than the preview slot's 12-row cap.
+    """
     if width <= 0 or height <= 0:
         return False
     return width < PANE_MIN_WIDTH or height < PANE_MIN_HEIGHT
@@ -125,6 +130,13 @@ def heif_ready() -> bool:
         return False
     _heif_ready = True
     return True
+
+
+def forget_optional_readers() -> None:
+    """Check HEIC and JPEG XL again after a package install."""
+    global _heif_ready, _jxl_ready
+    _heif_ready = None
+    _jxl_ready = None
 
 
 def jxl_ready() -> bool:
@@ -176,9 +188,9 @@ def build_preview(path: Path, cache: ThumbCache) -> Preview:
     except OSError:
         return Preview(caption=f"{path.name}  unreadable")
     if suffix in HEIF_SUFFIXES and not heif_ready():
-        return Preview(caption=f"{path.name}  HEIC needs the heif extra")
+        return Preview(caption=_optional_caption(path.name, "HEIC", "heif"))
     if suffix in JXL_SUFFIXES and not jxl_ready():
-        return Preview(caption=f"{path.name}  JPEG XL needs the jxl extra")
+        return Preview(caption=_optional_caption(path.name, "JPEG XL", "jxl"))
     if suffix in VIDEO_SUFFIXES and find_ffmpeg() is None:
         return Preview(caption=f"{path.name}  video needs ffmpeg")
     if suffix in RASTER_SUFFIXES or suffix in HEIF_SUFFIXES or suffix in JXL_SUFFIXES:
@@ -208,6 +220,14 @@ def build_preview(path: Path, cache: ThumbCache) -> Preview:
             return Preview(caption=f"{path.name}  {size_text}", body=text)
     label = suffix if suffix else "file"
     return Preview(caption=f"{path.name}  {label}  {size_text}")
+
+
+def _optional_caption(filename: str, label: str, extra: str) -> str:
+    """Say which package manager can install a missing plugin."""
+    offer = offer_for(extra)
+    if offer is None:
+        return f"{filename}  {label} needs the {extra} package, which this system does not ship"
+    return f"{filename}  {label} needs the {extra} package. Install with {offer.manager}."
 
 
 def plain_preview(path: Path) -> Preview:

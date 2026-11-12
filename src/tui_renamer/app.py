@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterable
@@ -81,6 +82,7 @@ from tui_renamer.core import (
     timeline_bins,
     utc_from_timestamp,
 )
+from tui_renamer.extras import InstallOffer, distro_family, install_offers
 from tui_renamer.journal import Batch, Journal, MetaOp, RenameOp
 from tui_renamer.metadata import (
     IMAGE_EXTENSIONS,
@@ -752,6 +754,19 @@ class OptionsPane(Vertical):
                     compact=True,
                     tooltip=BUTTON_TIPS["act-refresh"],
                 )
+                yield Button(
+                    "Install HEIC",
+                    id="act-install-heif",
+                    compact=True,
+                    tooltip="Install HEIC support with this system's package manager",
+                )
+                yield Button(
+                    "Install JPEG XL",
+                    id="act-install-jxl",
+                    compact=True,
+                    tooltip="Install JPEG XL support with this system's package manager",
+                )
+            yield Static("", id="optional-note", classes="option-note", markup=False)
 
 
 FLAG_STYLE = {
@@ -2694,13 +2709,15 @@ class RenamerApp(App[None]):
                 fallback.display = True
                 return
             try:
-                await self.query_one("#preview-slot").mount(
-                    widget_cls(
-                        result.image,
-                        id="preview-image",
-                        on_error=self._preview_error,
-                    )
+                image = widget_cls(
+                    result.image,
+                    id="preview-image",
+                    on_error=self._preview_error,
                 )
+                # A 10-row detail pane cannot also fit a fixed 8-row image,
+                # its caption, and the slot border.
+                image.styles.height = min(8, max(4, self.query_one("#detail").size.height - 4))
+                await self.query_one("#preview-slot").mount(image)
             except Exception:
                 await self.query("#preview-image").remove()
                 if self._preview_current(generation, path_str):
@@ -2874,6 +2891,7 @@ class RenamerApp(App[None]):
             self.query_one(
                 "#group-view", Collapsible
             ).title = f"View and session · preview {'ON' if self.preview_on else 'off'}"
+            self._sync_optional_installs()
         except NoMatches:
             return
         finally:
@@ -2913,6 +2931,9 @@ class RenamerApp(App[None]):
         if event.button.id == "opt-use_earliest":
             self.action_toggle("use_earliest")
             return
+        if event.button.id in {"act-install-heif", "act-install-jxl"}:
+            self.action_install_optional(event.button.id.removeprefix("act-install-"))
+            return
         run = {
             "act-apply": "apply",
             "act-undo": "undo",
@@ -2935,6 +2956,56 @@ class RenamerApp(App[None]):
         }.get(event.button.id or "")
         if run:
             getattr(self, f"action_{run}")()
+
+    def _sync_optional_installs(self) -> None:
+        """Show a package-manager button only when this distro ships the plugin."""
+        offers = {item.extra: item for item in install_offers(distro_family())}
+        notes: list[str] = []
+        for extra, label, ready in (
+            ("heif", "HEIC", file_preview.heif_ready()),
+            ("jxl", "JPEG XL", file_preview.jxl_ready()),
+        ):
+            button = self.query_one(f"#act-install-{extra}", Button)
+            offer = offers.get(extra)
+            button.display = offer is not None and not ready
+            if offer is not None:
+                button.label = f"Install {label} with {offer.manager}"
+            elif not ready:
+                notes.append(f"{label} is not in this system's package manager.")
+        note = self.query_one("#optional-note", Static)
+        note.update(" ".join(notes))
+        note.display = bool(notes)
+
+    def action_install_optional(self, extra: str) -> None:
+        self._begin()
+        offer = next(
+            (item for item in install_offers(distro_family()) if item.extra == extra),
+            None,
+        )
+        if offer is None:
+            return
+        self._ask(
+            f"Install {offer.title} with {offer.manager}?\n\n{offer.display}\n\n"
+            "rn does not include this package. Restart if the preview does not update.",
+            lambda: self._run_optional_install(offer),
+        )
+
+    def _run_optional_install(self, offer: InstallOffer) -> None:
+        try:
+            with self.suspend():
+                completed = subprocess.run(offer.argv)
+        except Exception as exc:
+            self.set_status(f"Could not run {offer.manager}: {exc}")
+            self._update_status()
+            return
+        file_preview.forget_optional_readers()
+        self._facts.clear()
+        self.refresh_view()
+        if completed.returncode == 0:
+            self.set_status(f"{offer.title} install finished.")
+        else:
+            self.set_status(f"{offer.manager} exited {completed.returncode}.")
+        self._update_status()
 
     def action_scan_review(self) -> None:
         self._begin()

@@ -16,7 +16,6 @@ class Rn < Formula
   depends_on "cmake" => :build
   depends_on "pkgconf" => :build
   depends_on "jpeg-turbo"
-  depends_on "libheif"
   depends_on "libtiff"
   depends_on "little-cms2"
   depends_on "python@3.12"
@@ -51,11 +50,6 @@ class Rn < Formula
   resource "pillow" do
     url "https://files.pythonhosted.org/packages/ce/a4/9cc30690a394a8305e8be4c9036aa16d0dfddadd09079860b582f562496d/pillow-13.0.0.tar.gz"
     sha256 "cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510"
-  end
-
-  resource "pillow-heif" do
-    url "https://files.pythonhosted.org/packages/44/c1/82145984920ca055675af2c2795bd30da6f7461215c41f3c1eacb3d66353/pillow_heif-1.8.1.tar.gz"
-    sha256 "521ebffb8a181d56c3904e5a61f20903edee0d9d3275967b8fb345f866215c06"
   end
 
   resource "platformdirs" do
@@ -98,7 +92,7 @@ class Rn < Formula
   def install
     venv = virtualenv_create(libexec, "python3.12", system_site_packages: true, without_pip: true)
     venv.pip_install resources
-    venv.pip_install_and_link "#{buildpath}[heif]"
+    venv.pip_install_and_link "#{buildpath}"
   end
 
   test do
