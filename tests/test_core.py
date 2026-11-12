@@ -15,6 +15,7 @@ from tui_renamer.core import (
     RenameRules,
     active_steps,
     assign_unique_names,
+    collision_index,
     collision_stem,
     conflict_destination,
     date_source,
@@ -313,6 +314,17 @@ def test_collision_stem_keeps_a_lone_suffix() -> None:
     assert collision_stem("holiday-1", ["holiday"]) == "holiday-1"
     assert collision_stem("holiday-001", ["holiday"]) == "holiday-001"
     assert collision_stem("photo", ["photo-01"]) == "photo"
+
+
+def test_collision_index_matches_a_per_file_scan() -> None:
+    stems = ["holiday-01", "photo-01", "photo-02", "photo", "photo-01-02", "holiday-01"]
+    indexed = collision_index(stems)
+    for pos, stem in enumerate(stems):
+        siblings = [other for offset, other in enumerate(stems) if offset != pos]
+        assert indexed.base(stem, skip=stem) == collision_stem(stem, siblings)
+    alone = collision_index(["holiday-01"])
+    assert alone.base("holiday-01", skip="holiday-01") == "holiday-01"
+    assert indexed.base("photo-09", skip=stems[0]) == collision_stem("photo-09", stems[1:])
 
 
 def test_collision_stem_strips_one_suffix_when_a_sibling_shares_it() -> None:
