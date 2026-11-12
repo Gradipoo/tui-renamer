@@ -2,11 +2,14 @@
 
 ## Unreleased
 
+## 0.1.10
+
 - Sort the file table by the resolved new name, ascending or descending. Folder order, neighbor warnings, and collision suffixes stay put.
 - Show collision suffixes in the New column. A trailing `-NN` is the same base when another file shares that stem. A lone `holiday-01` keeps its suffix.
 - Replace the Src column with Fit: `ok`, `rn`, or `dup` for names, and the date or file-time equivalents. The date source stays in the detail pane.
 - Preview the first GIF frame, one ffmpeg frame for MOV, MP4, and M4V, JPEG XL with the optional `jxl` extra, and the embedded JPEG in Canon CR3.
 - Write CR3 and JPEG XL capture dates and timezones with exiftool, the same way as HEIC and PNG.
+- Add `python packaging/release.py` to publish the version tag and update the Homebrew tap after that version is on PyPI.
 
 ## 0.1.9
 
