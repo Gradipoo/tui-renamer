@@ -1,5 +1,6 @@
 """Table view changes preserve file identity and the existing Apply boundary."""
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -319,8 +320,8 @@ async def test_fit_codes_for_filename_dates_and_file_times(tmp_path: Path) -> No
         app.mtime_mode = True
         app.rules.add_datetime = True
         app.rules.datetime_stamp = "2020-05-01-120000"
-        app.refresh_view()
-        await pilot.pause()
+        for path in app.files:
+            os.utime(path, (1_600_000_000, 1_600_000_000))
         assert app._fit_code(0, app.files[0]) == "upd"
         labels = [column.label.plain for column in app.query_one(DataTable).columns.values()]
         assert labels[:4] == ["Sel", "Fit", "Flag", "Miss"]

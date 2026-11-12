@@ -199,6 +199,13 @@ def test_write_dispatch(tmp_path: Path) -> None:
     assert calls[-1][2].startswith("-QuickTime:CreationDate=")
     assert write_file_metadata_and_offset(heic, moment, exiftool="exiftool", runner=runner) is True
     assert calls[-1][2].startswith("-AllDates=")
+    for name in ("photo.cr3", "photo.jxl"):
+        path = tmp_path / name
+        path.write_bytes(b"raw")
+        assert write_file_metadata_and_offset(path, moment, exiftool="exiftool", runner=runner)
+        assert calls[-1][2].startswith("-AllDates=")
+        assert can_write_metadata(path) is True
+        assert snapshot_mode(path) == "copy"
     assert write_file_metadata_and_offset(text, moment, exiftool="exiftool", runner=runner) is False
     assert write_file_metadata_and_offset(video, moment, exiftool=None, runner=runner) is False
 
@@ -306,7 +313,7 @@ def test_cr3_date_comes_from_the_preview_jpeg(tmp_path: Path, monkeypatch) -> No
     assert facts.winner_source == "E"
     assert facts.has_exif is True
     assert facts.origtime_text == "2020-06-01-150000"
-    assert can_write_metadata(path) is False
+    assert can_write_metadata(path) is True
 
 
 def test_cr3_without_a_preview_date_uses_exiftool(tmp_path: Path, monkeypatch) -> None:
@@ -334,7 +341,7 @@ def test_jxl_without_the_extra_keeps_the_file_time(tmp_path: Path, monkeypatch) 
     facts = inspect_file(path, RenameRules(), UTC)
     assert facts.has_exif is False
     assert facts.winner_source != "E"
-    assert can_write_metadata(path) is False
+    assert can_write_metadata(path) is True
 
 
 def _prvw_tag(payload: bytes) -> bytes:

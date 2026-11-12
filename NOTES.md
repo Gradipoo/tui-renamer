@@ -3,7 +3,7 @@
 ## Discovered facts
 
 - Repo was empty. `origin` is `git@github.com:Gradipoo/tui-renamer.git`.
-- Python floor is 3.12. `textual-image[textual]` is a normal dependency. `pillow-heif` is the `heif` extra. `pillow-jxl-plugin` is the optional `jxl` extra and is not in the Homebrew formula. Video previews need `ffmpeg` on PATH. Canon CR3 preview and capture date come from the embedded PRVW JPEG, then exiftool. CR3 and JPEG XL are not written.
+- Python floor is 3.12. `textual-image[textual]` is a normal dependency. `pillow-heif` is the `heif` extra. `pillow-jxl-plugin` is the optional `jxl` extra and is not in the Homebrew formula. Video previews need `ffmpeg` on PATH. Canon CR3 preview and capture date come from the embedded PRVW JPEG, then exiftool. CR3 and JPEG XL date and timezone writes use exiftool, like HEIC. GPS and description stay on JPEG and TIFF.
 - This machine: `.venv` is Python 3.11 and cannot install textual-image. Tests use `.venv314` (Homebrew 3.14). `.venv*/` is gitignored.
 - Do not import `textual_image.widget` at import time. It probes the terminal. `cli.main` calls `warm_image_widget()` after the tty check, and that function skips itself when `PYTEST_CURRENT_TEST` is set.
 - CI tests Python 3.12 and 3.13 on Ubuntu, macOS, and Windows. Lint stays on 3.12.
@@ -25,7 +25,7 @@ None.
 
 ## Known gotchas
 
-- The Homebrew tap checkout at `$(brew --repo gradipoo/tap)` must stay on `main`. A leftover checkout of `codex/fix-rn-016-checksum` made `brew upgrade rn` keep installing 0.1.6 after main had 0.1.8. `brew info rn` reads that checkout, not GitHub, until the branch is switched back.
+- The Homebrew tap checkout at `$(brew --repo gradipoo/tap)` must stay on `main`. A leftover checkout of `codex/fix-rn-016-checksum` made `brew upgrade rn` keep installing 0.1.6 after main had 0.1.8. `brew info rn` reads that checkout, not GitHub, until the branch is switched back. `python packaging/release.py` checks out tap `main` and fast-forwards it before writing `Formula/rn.rb`.
 - The `textual-image` Homebrew resource must be a wheel. Its sdist needs `uv_build`, and `brew upgrade rn` installs resources with `--no-binary`, so the source tarball fails.
 
 - Resize handlers must use both dimensions from the Resize event and update layout classes even during a table rebuild. The app size can still reflect the previous terminal height. Reproduce compact layouts without optional metadata tools, whose startup message consumes extra rows.

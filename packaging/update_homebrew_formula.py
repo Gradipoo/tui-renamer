@@ -5,12 +5,14 @@ is published. Resource blocks come from `uv pip compile` of this repo with the
 heif extra (or a pip dry-run when uv is missing), then each package's sdist
 on PyPI.
 
-After the first release, pass the formula path. If `tui-renamer` is on PyPI
-and `brew` is on PATH, this runs `brew update-python-resources` instead.
+Pass a formula path to update that file. `--version` loads that PyPI release
+instead of the newest one. If `tui-renamer` is on PyPI and `brew` is on PATH,
+this runs `brew update-python-resources` unless `--no-brew` is set.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import shutil
@@ -27,15 +29,31 @@ BEGIN = "# BEGIN resources"
 END = "# END resources"
 
 
-def main() -> None:
-    formula = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_FORMULA
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    update_formula(args.formula, version=args.version, use_brew=not args.no_brew)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Fill Formula/rn.rb from PyPI.")
+    parser.add_argument("formula", nargs="?", type=Path, default=DEFAULT_FORMULA)
+    parser.add_argument("--version", help="PyPI version to load. Default: the newest release.")
+    parser.add_argument(
+        "--no-brew",
+        action="store_true",
+        help="Fill resources from PyPI instead of brew update-python-resources.",
+    )
+    return parser.parse_args(argv)
+
+
+def update_formula(formula: Path, version: str | None = None, *, use_brew: bool = True) -> None:
     text = formula.read_text(encoding="utf-8")
-    published = pypi_json("tui-renamer")
+    published = pypi_json("tui-renamer", version)
     if published is not None:
         url, digest = sdist(published)
         text = replace_header(text, url, digest)
         formula.write_text(text, encoding="utf-8")
-        if shutil.which("brew"):
+        if use_brew and shutil.which("brew"):
             result = subprocess.run(
                 ["brew", "update-python-resources", str(formula)],
                 check=False,
@@ -44,6 +62,8 @@ def main() -> None:
                 print(f"Updated {formula} with brew update-python-resources")
                 return
             print("brew update-python-resources failed. Filling resources from PyPI.")
+    elif version:
+        raise SystemExit(f"tui-renamer=={version} was not found on PyPI")
     else:
         print("tui-renamer is not on PyPI. Leaving the sdist url as a placeholder.")
     blocks = resource_blocks(ROOT)

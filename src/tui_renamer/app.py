@@ -1110,7 +1110,7 @@ class RenamerApp(App[None]):
         self.reload_files()
         if not self.exiftool:
             self.set_status(
-                "exiftool is not on PATH. Video, HEIC, and PNG metadata writes are off."
+                "exiftool is not on PATH. Video, HEIC, PNG, CR3, and JPEG XL writes are off."
             )
         self.refresh_view()
         self._apply_layout(self.size.width)
