@@ -334,14 +334,112 @@ def test_cr3_without_a_preview_date_uses_exiftool(tmp_path: Path, monkeypatch) -
     assert facts.origtime_text == "2019-04-05-060708"
 
 
+def test_jxl_exif_box_date_does_not_need_the_plugin(tmp_path: Path, monkeypatch) -> None:
+    opened = {"n": 0}
+
+    def explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("exiftool should not run when the Exif box has a date")
+
+    def counting_open(*_args: object, **_kwargs: object) -> None:
+        opened["n"] += 1
+        raise OSError("opened")
+
+    def refuse_plugin() -> bool:
+        raise AssertionError("jxl plugin")
+
+    monkeypatch.setattr("tui_renamer.metadata.subprocess.run", explode)
+    monkeypatch.setattr("tui_renamer.metadata.Image.open", counting_open)
+    monkeypatch.setattr("tui_renamer.preview.jxl_ready", refuse_plugin)
+    path = tmp_path / "photo.jxl"
+    path.write_bytes(
+        _jxl_container(
+            _jxl_box(b"brob", b"not brotli"),
+            _jxl_box(b"Exif", _exif_tiff("2020:06:01 15:00:00", offset="-07:00", gps=True)),
+        )
+    )
+    facts = inspect_file(path, RenameRules(), UTC)
+    assert facts.winner_source == "E"
+    assert facts.has_exif is True
+    assert facts.has_gps is True
+    assert facts.has_offset is True
+    assert facts.origtime_text == "2020-06-01-220000"
+    assert opened["n"] == 0
+
+
+def test_jxl_without_an_exif_date_uses_exiftool(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("tui_renamer.metadata.find_exiftool", lambda: "exiftool")
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen["args"] = list(args)
+        payload = [
+            {
+                "DateTimeOriginal": "2019:04:05 06:07:08",
+                "OffsetTimeOriginal": "-07:00",
+                "OffsetTime": "+01:00",
+            }
+        ]
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=json.dumps(payload))
+
+    monkeypatch.setattr("tui_renamer.metadata.subprocess.run", fake_run)
+    path = tmp_path / "photo.jxl"
+    path.write_bytes(_jxl_container(_jxl_box(b"brob", b"not brotli")))
+    facts = inspect_file(path, RenameRules(), UTC)
+    assert facts.winner_source == "E"
+    assert facts.has_exif is True
+    assert facts.origtime_text == "2019-04-05-130708"
+    assert "-DateTimeOriginal" in seen["args"]
+    assert "-DateTime" in seen["args"]
+    assert "-OffsetTimeOriginal" in seen["args"]
+    assert "-OffsetTime" in seen["args"]
+    assert "-OffsetTimeDigitized" not in seen["args"]
+
+
 def test_jxl_without_the_extra_keeps_the_file_time(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("tui_renamer.metadata.jxl_ready", lambda: False)
+    opened = {"n": 0}
+    monkeypatch.setattr("tui_renamer.metadata.find_exiftool", lambda: None)
+
+    def counting_open(*_args: object, **_kwargs: object) -> None:
+        opened["n"] += 1
+        raise OSError("opened")
+
+    monkeypatch.setattr("tui_renamer.metadata.Image.open", counting_open)
     path = tmp_path / "photo.jxl"
     path.write_bytes(b"not a jxl")
     facts = inspect_file(path, RenameRules(), UTC)
     assert facts.has_exif is False
     assert facts.winner_source != "E"
     assert can_write_metadata(path) is True
+    assert opened["n"] == 0
+
+
+_JXL_SIGNATURE = bytes.fromhex("0000000c4a584c200d0a870a")
+
+
+def _jxl_box(kind: bytes, payload: bytes = b"") -> bytes:
+    return (8 + len(payload)).to_bytes(4, "big") + kind + payload
+
+
+def _jxl_container(*boxes: bytes) -> bytes:
+    return _JXL_SIGNATURE + b"".join(boxes)
+
+
+def _exif_tiff(when: str, *, offset: str | None = None, gps: bool = False) -> bytes:
+    exif_ifd: dict[int, bytes] = {piexif.ExifIFD.DateTimeOriginal: when.encode()}
+    if offset is not None:
+        exif_ifd[OFFSET_TIME_ORIGINAL] = offset.encode()
+    gps_ifd: dict[int, object] = {}
+    if gps:
+        gps_ifd = {
+            piexif.GPSIFD.GPSLatitudeRef: b"N",
+            piexif.GPSIFD.GPSLatitude: ((37, 1), (48, 1), (0, 1)),
+            piexif.GPSIFD.GPSLongitudeRef: b"W",
+            piexif.GPSIFD.GPSLongitude: ((122, 1), (24, 1), (0, 1)),
+        }
+    blob = piexif.dump({"0th": {}, "Exif": exif_ifd, "GPS": gps_ifd, "1st": {}})
+    if blob.startswith(b"Exif\x00\x00"):
+        blob = blob[6:]
+    return b"\x00\x00\x00\x00" + blob
 
 
 def _prvw_tag(payload: bytes) -> bytes:
