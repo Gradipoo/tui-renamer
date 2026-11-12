@@ -134,7 +134,7 @@ uv tool install --force "git+https://github.com/Gradipoo/tui-renamer.git"
 
 ### HEIC
 
-JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. GIF shows the first frame. HEIC and JPEG XL are not installed with `rn`. Arch, Alpine, Fedora, openSUSE, and Void package one or both plugins, and the View and session group shows that package manager's install button. macOS Homebrew, Debian, and Ubuntu do not package them, so those systems have no button. A source checkout can still add them with `pip install -e ".[heif]"` or `pip install -e ".[jxl]"`. With the plugin, capture dates are read the same way as JPEG. Without it, those files keep their file times. Date and timezone writes use `exiftool`.
+JPEG, PNG, GIF, WebP, BMP, and TIFF preview without an extra. GIF shows the first frame. HEIC and JPEG XL plugins are not installed with `rn`. Arch, Alpine, Fedora, openSUSE, and Void package one or both plugins, and the View and session group shows that package manager's install button. macOS Homebrew, Debian, and Ubuntu do not package them, so those systems have no button. A source checkout can still add them with `pip install -e ".[heif]"` or `pip install -e ".[jxl]"`. With the HEIC plugin, capture dates are read the same way as JPEG. Without it, those files keep their file times. JPEG XL capture dates come from the Exif box, then exiftool, and do not require the plugin. JPEG XL preview uses `djxl` when it is on `PATH`, and the optional plugin when `djxl` cannot produce a preview. Date and timezone writes use `exiftool`.
 
 ```bash
 # Examples the app runs after you confirm. Your distro picks the command.
@@ -279,7 +279,7 @@ last for the current session only.
 
 ## Pictures
 
-`P` shows or hides the preview. That choice is remembered, and so is a zoom from `1` through `4`. Preview starts on, and there is no zoom, until you change them. Ctrl+0 resets both. Only the highlighted file is drawn. GIF, video, JPEG XL, and Canon CR3 follow the format rules in the install section. Video needs `ffmpeg` for a single frame.
+`P` shows or hides the preview. That choice is remembered, and so is a zoom from `1` through `4`. Preview starts on, and there is no zoom, until you change them. Ctrl+0 resets both. Only the highlighted file is drawn. GIF, video, JPEG XL, and Canon CR3 follow the format rules in the install section. Video needs `ffmpeg` for a single frame. JPEG XL preview uses `djxl` when it is on `PATH`.
 
 | Terminal | What you see |
 | --- | --- |
@@ -387,7 +387,7 @@ Esc closes find first, then leaves a zoomed pane, then leaves visual, filename d
 
 `!` on a row means the timestamp you chose is not the oldest of modified and original. The `!` key jumps to the next warning, and `@` jumps to the previous one.
 
-MOV, MP4, and M4V use the QuickTime creation date when the file stores one. That source is Q. A video with no capture date is not marked as missing EXIF. `exiftool` is only a fallback for reading those files, and it is still required to write video, HEIC, PNG, CR3, and JPEG XL dates.
+MOV, MP4, and M4V use the QuickTime creation date when the file stores one. That source is Q. A video with no capture date is not marked as missing EXIF. `exiftool` is only a fallback for reading those files, and it is still required to write video, HEIC, PNG, CR3, and JPEG XL dates. JPEG XL dates are read from the Exif box, then exiftool, without the plugin. Preview uses `djxl` when it is on `PATH`.
 
 Locked names stay put when you change toggles. A manual edit is used until you lock that file. Refresh asks before clearing selection, locks, and staged manual names. Cancel keeps that work. Photo-review staging is retained for files still present.
 

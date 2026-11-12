@@ -17,6 +17,7 @@ from PIL import UnidentifiedImageError
 
 from tui_renamer.cr3 import embedded_preview_jpeg
 from tui_renamer.extras import offer_for
+from tui_renamer.jxl import read_jxl_layout
 
 THUMB_EDGE = 160
 CACHE_LIMIT = 32
@@ -32,6 +33,7 @@ JXL_SUFFIXES = frozenset({".jxl"})
 VIDEO_SUFFIXES = frozenset({".mov", ".mp4", ".m4v"})
 CR3_SUFFIXES = frozenset({".cr3"})
 FFMPEG_TIMEOUT = 8
+DJXL_TIMEOUT = 8
 TEXT_SUFFIXES = frozenset(
     {
         ".txt",
@@ -158,6 +160,11 @@ def find_ffmpeg() -> str | None:
     return shutil.which("ffmpeg")
 
 
+def find_djxl() -> str | None:
+    """djxl on PATH, used for a small JPEG XL preview. None when it is missing."""
+    return shutil.which("djxl")
+
+
 def peek_text(
     path: Path, *, max_bytes: int = TEXT_BYTES, max_lines: int = TEXT_LINES
 ) -> str | None:
@@ -189,11 +196,12 @@ def build_preview(path: Path, cache: ThumbCache) -> Preview:
         return Preview(caption=f"{path.name}  unreadable")
     if suffix in HEIF_SUFFIXES and not heif_ready():
         return Preview(caption=_optional_caption(path.name, "HEIC", "heif"))
-    if suffix in JXL_SUFFIXES and not jxl_ready():
-        return Preview(caption=_optional_caption(path.name, "JPEG XL", "jxl"))
     if suffix in VIDEO_SUFFIXES and find_ffmpeg() is None:
         return Preview(caption=f"{path.name}  video needs ffmpeg")
-    if suffix in RASTER_SUFFIXES or suffix in HEIF_SUFFIXES or suffix in JXL_SUFFIXES:
+    needs_plugin = False
+    if suffix in JXL_SUFFIXES:
+        thumb, needs_plugin = _jxl_thumb(path, cache)
+    elif suffix in RASTER_SUFFIXES or suffix in HEIF_SUFFIXES:
         thumb = _cached_thumb(path, cache)
     elif suffix in VIDEO_SUFFIXES:
         thumb = _cached_from_bytes(path, cache, _ffmpeg_frame(path))
@@ -208,6 +216,8 @@ def build_preview(path: Path, cache: ThumbCache) -> Preview:
             image=image,
             show_image=True,
         )
+    if needs_plugin:
+        return Preview(caption=_optional_caption(path.name, "JPEG XL", "jxl"))
     if suffix in RASTER_SUFFIXES or suffix in HEIF_SUFFIXES or suffix in JXL_SUFFIXES:
         label = suffix if suffix else "file"
         return Preview(caption=f"{path.name}  {label}  {size_text}")
@@ -262,14 +272,18 @@ def _cached_thumb(path: Path, cache: ThumbCache) -> tuple[PILImage.Image, int, i
         cached = cache.get(key)
         if cached is not None:
             return cached
-    try:
-        with PILImage.open(path) as opened:
-            packed = _frame_thumb(opened)
-    except (OSError, UnidentifiedImageError, ValueError):
-        return None
-    if key is not None:
+    packed = _open_thumb(path)
+    if packed is not None and key is not None:
         cache.put(key, packed)
     return packed
+
+
+def _open_thumb(path: Path) -> tuple[PILImage.Image, int, int] | None:
+    try:
+        with PILImage.open(path) as opened:
+            return _frame_thumb(opened)
+    except (OSError, UnidentifiedImageError, ValueError):
+        return None
 
 
 def _cached_from_bytes(
@@ -299,9 +313,81 @@ def _frame_thumb(opened: PILImage.Image) -> tuple[PILImage.Image, int, int]:
     except EOFError:
         pass
     width, height = opened.size
+    return _fit_thumb(opened), width, height
+
+
+def _fit_thumb(opened: PILImage.Image) -> PILImage.Image:
     frame = opened.convert("RGBA")
     frame.thumbnail((THUMB_EDGE, THUMB_EDGE))
-    return frame, width, height
+    return frame
+
+
+def _jxl_thumb(
+    path: Path, cache: ThumbCache
+) -> tuple[tuple[PILImage.Image, int, int] | None, bool]:
+    """Thumbnail from djxl, then Pillow. The bool asks for the missing-plugin caption.
+
+    djxl success does not fall through to Pillow, including when the bytes are
+    not an image. Pillow runs only when djxl is missing, fails, or times out.
+    """
+    key = cache_key(path)
+    if key is not None:
+        cached = cache.get(key)
+        if cached is not None:
+            return cached, False
+    decoded = _djxl_image(path)
+    if decoded is not None:
+        blob, use_draft = decoded
+        packed = _thumb_bytes(blob, use_draft=use_draft)
+        if packed is not None and key is not None:
+            cache.put(key, packed)
+        return packed, False
+    if not jxl_ready():
+        return None, True
+    packed = _open_thumb(path)
+    if packed is not None and key is not None:
+        cache.put(key, packed)
+    return packed, False
+
+
+def _djxl_image(path: Path) -> tuple[bytes, bool] | None:
+    """JPEG or PNG bytes from djxl. The bool asks for Image.draft on a JPEG.
+
+    None when djxl is missing, exits non-zero, times out, or returns nothing.
+    """
+    tool = find_djxl()
+    if not tool:
+        return None
+    if read_jxl_layout(path).has_jbrd:
+        args = [tool, "--quiet", str(path), "-", "--output_format", "jpg"]
+        use_draft = True
+    else:
+        args = [tool, "--quiet", "-s", "8", str(path), "-", "--output_format", "png"]
+        use_draft = False
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            timeout=DJXL_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    return result.stdout, use_draft
+
+
+def _thumb_bytes(blob: bytes, *, use_draft: bool) -> tuple[PILImage.Image, int, int] | None:
+    try:
+        with PILImage.open(BytesIO(blob)) as opened:
+            if use_draft:
+                width, height = opened.size
+                opened.draft("RGB", (THUMB_EDGE, THUMB_EDGE))
+                return _fit_thumb(opened), width, height
+            return _frame_thumb(opened)
+    except (OSError, UnidentifiedImageError, ValueError):
+        return None
 
 
 def _ffmpeg_frame(path: Path) -> bytes | None:

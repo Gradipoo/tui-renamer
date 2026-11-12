@@ -90,11 +90,113 @@ def test_gif_preview_uses_the_first_frame(tmp_path: Path) -> None:
 
 def test_jxl_without_the_extra(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("tui_renamer.preview.jxl_ready", lambda: False)
+    monkeypatch.setattr("tui_renamer.preview.find_djxl", lambda: None)
     path = tmp_path / "photo.jxl"
     path.write_bytes(b"not a jxl")
     shown = build_preview(path, ThumbCache())
     assert "jxl" in shown.caption
+    assert "package" in shown.caption
     assert shown.show_image is False
+
+
+def test_jxl_jbrd_reconstructs_a_jpeg(tmp_path: Path, monkeypatch) -> None:
+    from PIL import JpegImagePlugin
+
+    frame = BytesIO()
+    Image.new("RGB", (640, 320), (10, 180, 30)).save(frame, format="JPEG")
+    seen: dict[str, object] = {}
+    drafts: list[tuple[int, int]] = []
+    real_draft = JpegImagePlugin.JpegImageFile.draft
+
+    def spy_draft(self: JpegImagePlugin.JpegImageFile, mode: str, size: tuple[int, int]):
+        drafts.append(size)
+        return real_draft(self, mode, size)
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        seen["args"] = list(args)
+        seen["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=frame.getvalue())
+
+    def refuse_plugin() -> bool:
+        raise AssertionError("jxl plugin")
+
+    monkeypatch.setattr("tui_renamer.preview.find_djxl", lambda: "djxl")
+    monkeypatch.setattr("tui_renamer.preview.subprocess.run", fake_run)
+    monkeypatch.setattr("tui_renamer.preview.jxl_ready", refuse_plugin)
+    monkeypatch.setattr(JpegImagePlugin.JpegImageFile, "draft", spy_draft)
+    path = tmp_path / "photo.jxl"
+    path.write_bytes(_jxl_container(_jxl_box(b"jbrd", b"reconstruct")))
+    shown = build_preview(path, ThumbCache())
+    assert shown.show_image is True
+    assert shown.image is not None
+    assert shown.image.size[0] <= 160
+    assert "640x320" in shown.caption
+    assert seen["args"] == [
+        "djxl",
+        "--quiet",
+        str(path),
+        "-",
+        "--output_format",
+        "jpg",
+    ]
+    assert seen["timeout"] == 8
+    assert drafts == [(160, 160)]
+
+
+def test_jxl_without_jbrd_uses_an_eighth_scale(tmp_path: Path, monkeypatch) -> None:
+    frame = BytesIO()
+    Image.new("RGB", (32, 16), (0, 40, 200)).save(frame, format="PNG")
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        seen["args"] = list(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=frame.getvalue())
+
+    def refuse_plugin() -> bool:
+        raise AssertionError("jxl plugin")
+
+    monkeypatch.setattr("tui_renamer.preview.find_djxl", lambda: "djxl")
+    monkeypatch.setattr("tui_renamer.preview.subprocess.run", fake_run)
+    monkeypatch.setattr("tui_renamer.preview.jxl_ready", refuse_plugin)
+    path = tmp_path / "photo.jxl"
+    path.write_bytes(_jxl_container(_jxl_box(b"jxlc", b"\xff\x0a")))
+    shown = build_preview(path, ThumbCache())
+    assert shown.show_image is True
+    assert shown.image is not None
+    assert shown.image.getpixel((0, 0))[:3] == (0, 40, 200)
+    assert "32x16" in shown.caption
+    assert seen["args"] == [
+        "djxl",
+        "--quiet",
+        "-s",
+        "8",
+        str(path),
+        "-",
+        "--output_format",
+        "png",
+    ]
+
+
+def test_jxl_failed_djxl_without_the_plugin_stays_caption_only(tmp_path: Path, monkeypatch) -> None:
+    opened = {"n": 0}
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=args, returncode=1, stdout=b"")
+
+    def counting_open(*_args: object, **_kwargs: object) -> None:
+        opened["n"] += 1
+        raise OSError("opened")
+
+    monkeypatch.setattr("tui_renamer.preview.find_djxl", lambda: "djxl")
+    monkeypatch.setattr("tui_renamer.preview.subprocess.run", fake_run)
+    monkeypatch.setattr("tui_renamer.preview.jxl_ready", lambda: False)
+    monkeypatch.setattr("tui_renamer.preview.PILImage.open", counting_open)
+    path = tmp_path / "photo.jxl"
+    path.write_bytes(_jxl_container(_jxl_box(b"jxlc", b"\xff\x0a")))
+    shown = build_preview(path, ThumbCache())
+    assert shown.show_image is False
+    assert "package" in shown.caption
+    assert opened["n"] == 0
 
 
 def test_video_without_ffmpeg_names_the_tool(tmp_path: Path, monkeypatch) -> None:
@@ -155,6 +257,17 @@ def test_other_raw_is_not_previewed(tmp_path: Path) -> None:
     shown = build_preview(path, ThumbCache())
     assert shown.show_image is False
     assert ".cr2" in shown.caption
+
+
+_JXL_SIGNATURE = bytes.fromhex("0000000c4a584c200d0a870a")
+
+
+def _jxl_box(kind: bytes, payload: bytes = b"") -> bytes:
+    return (8 + len(payload)).to_bytes(4, "big") + kind + payload
+
+
+def _jxl_container(*boxes: bytes) -> bytes:
+    return _JXL_SIGNATURE + b"".join(boxes)
 
 
 def _prvw_tag(payload: bytes) -> bytes:

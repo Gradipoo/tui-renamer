@@ -1,11 +1,12 @@
 """Read and write EXIF, QuickTime dates, GPS, and birth time.
 
 JPEG and TIFF dates go through piexif. HEIC dates use the same reader when the
-heif extra is installed. JPEG XL dates use it when the jxl extra is installed.
-Canon CR3 dates come from the embedded preview JPEG, then exiftool. MOV, MP4,
-and M4V dates are read from the file, with exiftool as a fallback when the atoms
-have no date. Writes for video, HEIC, PNG, CR3, and JPEG XL go through
-exiftool. Birth time uses SetFile on macOS and SetFileTime on Windows.
+heif extra is installed. JPEG XL dates come from the Exif box, then exiftool,
+and do not require the jxl extra. Canon CR3 dates come from the embedded preview
+JPEG, then exiftool. MOV, MP4, and M4V dates are read from the file, with
+exiftool as a fallback when the atoms have no date. Writes for video, HEIC, PNG,
+CR3, and JPEG XL go through exiftool. Birth time uses SetFile on macOS and
+SetFileTime on Windows.
 """
 
 from __future__ import annotations
@@ -23,7 +24,8 @@ from pathlib import Path
 
 from tui_renamer.core import FileFacts, RenameRules, format_offset, load_facts
 from tui_renamer.cr3 import embedded_preview_jpeg
-from tui_renamer.preview import HEIF_SUFFIXES, JXL_SUFFIXES, heif_ready, jxl_ready
+from tui_renamer.jxl import read_jxl_layout
+from tui_renamer.preview import HEIF_SUFFIXES, JXL_SUFFIXES, heif_ready
 from tui_renamer.quicktime import QuickTimeClock, parse_creationdate, read_quicktime
 
 try:
@@ -128,9 +130,17 @@ def read_exif_bytes(blob: bytes) -> ExifClock:
 
 def _clock_from_image(image: Image.Image) -> ExifClock:
     empty = ExifClock(None, None, "", "")
-    has_gps = False
     try:
         exif = image.getexif()
+    except Exception:
+        return empty
+    return _clock_from_exif(exif)
+
+
+def _clock_from_exif(exif: Image.Exif) -> ExifClock:
+    empty = ExifClock(None, None, "", "")
+    has_gps = False
+    try:
         ifd = exif.get_ifd(EXIF_IFD)
         base = dict(exif)
         try:
@@ -156,12 +166,25 @@ def _clock_from_image(image: Image.Image) -> ExifClock:
     return ExifClock(naive, offset, label, offset_text, has_gps)
 
 
+def _clock_from_tiff(blob: bytes) -> ExifClock:
+    """Date, offset, and GPS from a TIFF blob. Does not open the image."""
+    empty = ExifClock(None, None, "", "")
+    if not blob or not PILLOW_AVAILABLE or Image is None:
+        return empty
+    try:
+        exif = Image.Exif()
+        exif.load(blob)
+    except Exception:
+        return empty
+    return _clock_from_exif(exif)
+
+
 def inspect_file(path: Path, rules: RenameRules, zone: tzinfo) -> FileFacts:
     suffix = path.suffix.lower()
     if suffix in HEIF_SUFFIXES and heif_ready():
         return _load_clock(path, rules, zone, read_exif(path, extra_suffixes=HEIF_SUFFIXES), "E")
-    if suffix in JXL_SUFFIXES and jxl_ready():
-        return _load_clock(path, rules, zone, read_exif(path, extra_suffixes=JXL_SUFFIXES), "E")
+    if suffix in JXL_SUFFIXES:
+        return _load_clock(path, rules, zone, _jxl_clock(path), "E")
     if suffix == ".cr3":
         return _load_clock(path, rules, zone, _cr3_clock(path), "E")
     if suffix in VIDEO_EXTENSIONS:
@@ -207,6 +230,24 @@ def _cr3_clock(path: Path) -> ExifClock:
     return read_exiftool_cr3(path)
 
 
+def _jxl_clock(path: Path) -> ExifClock:
+    """Capture date from the Exif box, then exiftool. No pixel decode."""
+    tiff = read_jxl_layout(path).exif
+    clock = _clock_from_tiff(tiff) if tiff else ExifClock(None, None, "", "")
+    if clock.naive is not None:
+        return clock
+    fallback = read_exiftool_jxl(path)
+    if clock.has_gps:
+        return ExifClock(
+            fallback.naive,
+            fallback.offset,
+            fallback.label,
+            fallback.offset_text,
+            True,
+        )
+    return fallback
+
+
 def read_exiftool_video(path: Path) -> ExifClock:
     """CreationDate, then CreateDate, when exiftool is on PATH.
 
@@ -234,6 +275,40 @@ def read_exiftool_cr3(path: Path) -> ExifClock:
             ("CreateDate", "QuickTime CreateDate"),
         ),
     )
+
+
+def read_exiftool_jxl(path: Path) -> ExifClock:
+    """DateTimeOriginal, then DateTime. Empty when the tool is missing."""
+    empty = ExifClock(None, None, "", "")
+    row = _exiftool_record(
+        path,
+        ("DateTimeOriginal", "DateTime", "OffsetTimeOriginal", "OffsetTime"),
+    )
+    if row is None:
+        return empty
+    for key, label in (
+        ("DateTimeOriginal", "EXIF DateTimeOriginal"),
+        ("DateTime", "EXIF DateTime"),
+    ):
+        text = row.get(key)
+        if not isinstance(text, str):
+            continue
+        clock = _parse_exiftool_date(text, label)
+        if clock is None:
+            continue
+        if clock.offset is not None:
+            return clock
+        for offset_key in ("OffsetTimeOriginal", "OffsetTime"):
+            offset_text = row.get(offset_key)
+            if not isinstance(offset_text, str):
+                continue
+            cleaned = offset_text.strip()
+            offset = parse_offset(cleaned)
+            if offset is None:
+                continue
+            return ExifClock(clock.naive, offset, clock.label, cleaned)
+        return clock
+    return empty
 
 
 def _exiftool_clock(

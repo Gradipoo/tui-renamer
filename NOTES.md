@@ -3,7 +3,7 @@
 ## Discovered facts
 
 - Repo was empty. `origin` is `git@github.com:Gradipoo/tui-renamer.git`.
-- Python floor is 3.12. `textual-image[textual]` is a normal dependency. `pillow-heif` is the `heif` extra and `pillow-jxl-plugin` is the `jxl` extra. Neither is installed by the Homebrew formula or the default pipx install. The View group offers a distro package-manager command when that distro ships the plugin. Video previews need `ffmpeg` on PATH. Canon CR3 preview and capture date come from the embedded PRVW JPEG, then exiftool. CR3 and JPEG XL date and timezone writes use exiftool, like HEIC. GPS and description stay on JPEG and TIFF.
+- Python floor is 3.12. `textual-image[textual]` is a normal dependency. `pillow-heif` is the `heif` extra and `pillow-jxl-plugin` is the `jxl` extra. Neither is installed by the Homebrew formula or the default pipx install. The View group offers a distro package-manager command when that distro ships the plugin. Video previews need `ffmpeg` on PATH. Canon CR3 preview and capture date come from the embedded PRVW JPEG, then exiftool. JPEG XL capture dates come from the Exif box, then exiftool, and do not require the plugin. Preview uses `djxl` when it is on PATH. CR3 and JPEG XL date and timezone writes use exiftool, like HEIC. GPS and description stay on JPEG and TIFF.
 - This machine: `.venv` is Python 3.11 and cannot install textual-image. Tests use `.venv314` (Homebrew 3.14). `.venv*/` is gitignored.
 - Do not import `textual_image.widget` at import time. It probes the terminal. `cli.main` calls `warm_image_widget()` after the tty check, and that function skips itself when `PYTEST_CURRENT_TEST` is set.
 - CI tests Python 3.12 and 3.13 on Ubuntu, macOS, and Windows. Lint stays on 3.12.
