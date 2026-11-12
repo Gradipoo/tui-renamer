@@ -37,7 +37,7 @@ Neither install includes HEIC or JPEG XL. The command name stays `rn`.
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.12` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.13` is pushed.
 
 | File | System |
 | --- | --- |
@@ -159,7 +159,7 @@ On Windows, activate with `.venv\Scripts\activate`. Use Python 3.12 or newer for
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.12` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.13` is pushed.
 
 | File | System |
 | --- | --- |
