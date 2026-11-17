@@ -557,8 +557,9 @@ def find_setfile() -> str | None:
 
 
 def setfile_command(setfile: str, path: Path, moment: datetime) -> list[str]:
-    date_str = moment.strftime("%m/%d/%Y %H:%M:%S")
-    return [setfile, "-d", date_str, "-m", date_str, str(path)]
+    # SetFile accepts local wall time. Birth writes must not overwrite mtime.
+    date_str = moment.astimezone().strftime("%m/%d/%Y %H:%M:%S")
+    return [setfile, "-d", date_str, str(path)]
 
 
 def windows_filetime(timestamp: float) -> tuple[int, int]:

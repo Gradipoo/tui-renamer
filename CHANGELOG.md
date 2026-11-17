@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.15
+
+- Preserve the requested modified timestamp by applying filesystem dates after metadata writes.
+- On macOS, set creation time in the system timezone without overwriting modification time.
+- Invalidate filename-date previews after metadata and file-time writes.
+- Reload timezone selections in the background, preserving staged names, locks, selection, and the highlighted file. Keep the previous timezone when loading is cancelled or fails.
+
 ## 0.1.14
 
 - Guard deferred table updates against stale cursor positions during navigation and rebuilds.
