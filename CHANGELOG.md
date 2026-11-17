@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.14
+
+- Guard deferred table updates against stale cursor positions during navigation and rebuilds.
+- Reuse validated rename plans during refreshes and navigation instead of repeatedly scanning the folder.
+- Load folders and metadata in the background with progress, up to four readers, and Esc/Cancel support.
+- Keep the current table and staged work when a refresh is cancelled or fails. Discard stale results and disable file actions until loading finishes.
+
 ## 0.1.13
 
 - Read JPEG XL capture dates from the Exif box, then exiftool, without the optional plugin.

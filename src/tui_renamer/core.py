@@ -247,8 +247,8 @@ def active_steps(rules: RenameRules) -> list[Step]:
     return steps
 
 
-def list_files(directory: Path) -> list[Path]:
-    """Top-level files, skipping dotfiles and JSON sidecars."""
+def list_files(directory: Path, *, strict: bool = False) -> list[Path]:
+    """Top-level files, skipping dotfiles and JSON sidecars. Optionally raise on I/O errors."""
     try:
         found = [
             path
@@ -256,6 +256,8 @@ def list_files(directory: Path) -> list[Path]:
             if path.is_file() and not path.name.startswith(".") and not path.name.endswith(".json")
         ]
     except OSError:
+        if strict:
+            raise
         return []
     return sorted(found, key=lambda path: path.name.lower())
 
