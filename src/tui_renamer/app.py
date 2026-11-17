@@ -1203,6 +1203,8 @@ class RenamerApp(App[None]):
             detail.styles.height = "100%"
 
     def _tick(self) -> None:
+        if not self.is_running:
+            return
         if linux_stdin_deleted():
             self.exit()
             return
@@ -1304,7 +1306,8 @@ class RenamerApp(App[None]):
 
     def _folder_load_current(self, generation: int) -> bool:
         return (
-            self._loading
+            self.is_running
+            and self._loading
             and generation == self._folder_generation
             and bool(self.query("#folder-load-bar"))
         )

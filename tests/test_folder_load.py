@@ -235,3 +235,20 @@ async def test_queued_load_messages_ignore_removed_widgets(tmp_path: Path, monke
             await pilot.pause()
     finally:
         release.set()
+
+
+async def test_clock_tick_ignores_shutdown(tmp_path: Path, monkeypatch):
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_loaded(app, pilot)
+        app.rules.add_datetime = True
+        app.rules.datetime_stamp = "2000-01-01-000000"
+
+        def unexpected_refresh():
+            raise AssertionError("Clock refreshed widgets during shutdown")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(app, "_running", False)
+            patch.setattr(app, "refresh_view", unexpected_refresh)
+            app._tick()
+        app.rules.add_datetime = False
