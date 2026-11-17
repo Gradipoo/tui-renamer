@@ -428,6 +428,13 @@ The command pushes the `v<version>` tag. GitHub Actions builds the binaries, pub
 
 Before the first run, `brew tap gradipoo/tap` must already exist on this machine, and that checkout must be able to push to `Gradipoo/homebrew-tap`.
 
+When tag pushes are unavailable, create a branch named `release/<version>` from
+the reviewed commit, for example `release/0.1.14`. The release workflow verifies
+that the branch matches the package version and changelog, then publishes PyPI
+and creates the matching GitHub tag and binary release. Ordinary branch pushes
+do not publish. This route still requires updating the Homebrew formula after
+PyPI has the source archive and its checksum.
+
 ## License
 
 Copyright (C) 2026 Gradipoo.
