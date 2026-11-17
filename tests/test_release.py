@@ -13,6 +13,8 @@ if str(PACKAGING) not in sys.path:
 
 import release  # noqa: E402
 import update_homebrew_formula  # noqa: E402
+from release_ref import main as release_ref_main  # noqa: E402
+from release_ref import release_metadata  # noqa: E402
 
 
 def test_project_version_reads_pyproject(tmp_path: Path) -> None:
@@ -118,3 +120,37 @@ def _git(repo: Path, *args: str) -> str:
         text=True,
     )
     return result.stdout
+
+
+def test_release_refs_require_matching_version_and_changelog(tmp_path: Path) -> None:
+    import pytest
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.0"\n')
+    (tmp_path / "CHANGELOG.md").write_text("## 0.2.0\n")
+    for ref in ("refs/tags/v0.2.0", "refs/heads/release/0.2.0"):
+        assert release_metadata(tmp_path, ref) == {
+            "version": "0.2.0",
+            "tag": "v0.2.0",
+            "publish": "true",
+        }
+    for ref in ("refs/heads/main", "refs/heads/feature", "refs/pull/1/merge"):
+        assert release_metadata(tmp_path, ref)["publish"] == "false"
+    for ref in ("refs/tags/v0.1.0", "refs/heads/release/other", "refs/heads/release/0.1.0"):
+        with pytest.raises(SystemExit, match="does not match"):
+            release_metadata(tmp_path, ref)
+    (tmp_path / "CHANGELOG.md").write_text("## Unreleased\n")
+    with pytest.raises(SystemExit, match="missing a heading"):
+        release_metadata(tmp_path, "refs/heads/release/0.2.0")
+
+
+def test_release_ref_writes_actions_outputs(tmp_path: Path, monkeypatch) -> None:
+    import release_ref
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.0"\n')
+    (tmp_path / "CHANGELOG.md").write_text("## 0.2.0\n")
+    output = tmp_path / "outputs"
+    monkeypatch.setattr(release_ref, "ROOT", tmp_path)
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/release/0.2.0")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    release_ref_main()
+    assert output.read_text().splitlines() == ["version=0.2.0", "tag=v0.2.0", "publish=true"]
