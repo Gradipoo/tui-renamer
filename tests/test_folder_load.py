@@ -206,3 +206,32 @@ def test_folder_listing_errors_are_not_empty_snapshots(tmp_path: Path) -> None:
     assert snapshot is not None and not snapshot.files
     with pytest.raises(OSError):
         load_folder(missing, RenameRules(), Event(), lambda *_: None)
+
+
+async def test_queued_load_messages_ignore_removed_widgets(tmp_path: Path, monkeypatch):
+    (tmp_path / "photo.txt").write_text("fixture")
+    release = Event()
+    started = Event()
+
+    def reader(*args):
+        started.set()
+        assert release.wait(5)
+        return FileFacts()
+
+    monkeypatch.setattr("tui_renamer.app.inspect_file", reader)
+    app = RenamerApp(tmp_path)
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            assert await asyncio.to_thread(started.wait, 3)
+            generation = app._folder_generation
+            await app.query_one("#folder-load-bar").remove()
+            app.on_folder_load_progress(FolderLoadProgress(generation, 1, 1))
+            app.on_folder_load_finished(
+                FolderLoadFinished(generation, FolderSnapshot([], {}, set()))
+            )
+            assert app._loading  # No late message tried to reinstall a detached view.
+            release.set()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+    finally:
+        release.set()

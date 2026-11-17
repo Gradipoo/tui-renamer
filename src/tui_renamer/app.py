@@ -1302,14 +1302,21 @@ class RenamerApp(App[None]):
         if not cancel.is_set():
             self.post_message(FolderLoadFinished(generation, snapshot))
 
+    def _folder_load_current(self, generation: int) -> bool:
+        return (
+            self._loading
+            and generation == self._folder_generation
+            and bool(self.query("#folder-load-bar"))
+        )
+
     def on_folder_load_progress(self, event: FolderLoadProgress) -> None:
-        if self._loading and event.generation == self._folder_generation:
+        if self._folder_load_current(event.generation):
             self.query_one("#folder-progress", Static).update(
                 f"Loading folder: {event.done}/{event.total} files"
             )
 
     def on_folder_load_finished(self, event: FolderLoadFinished) -> None:
-        if not self._loading or event.generation != self._folder_generation:
+        if not self._folder_load_current(event.generation):
             return
         self._set_folder_loading(False)
         if event.snapshot is None:
