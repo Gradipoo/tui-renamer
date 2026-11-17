@@ -37,7 +37,7 @@ Neither install includes HEIC or JPEG XL. The command name stays `rn`.
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.13` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.14` is pushed.
 
 | File | System |
 | --- | --- |
@@ -159,7 +159,7 @@ On Windows, activate with `.venv\Scripts\activate`. Use Python 3.12 or newer for
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.13` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.14` is pushed.
 
 | File | System |
 | --- | --- |
@@ -330,6 +330,15 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `q` | Quit |
 
 While `g` is waiting, the status line shows `g then g: first file`.
+
+Startup and Refresh folder read metadata in the background and show a completed
+file count. Press Esc or click **Cancel loading** to stop, or `q` to quit. File
+actions, including Apply, are unavailable while loading. A refresh keeps the
+current table and staged work until the new folder is ready. Cancelling or a
+failed read keeps that work; `r` retries. A completed refresh clears selections,
+locks, and manual names after the existing confirmation. Photo-review staging is
+kept for files still present. Reads already in progress may finish after Cancel;
+their results are discarded. Loading does not rename files or write metadata.
 
 Press `E` or click **Use earliest date** in the rename options to stage one date
 per file. The line below the file list shows the highlighted file's earliest

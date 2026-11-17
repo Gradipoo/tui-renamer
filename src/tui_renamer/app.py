@@ -6,9 +6,12 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, tzinfo
 from pathlib import Path
+from threading import Event
 
 from rich.style import Style
 from rich.text import Text
@@ -64,7 +67,6 @@ from tui_renamer.core import (
     format_offset,
     format_tz_display,
     is_warning,
-    list_files,
     list_timezones,
     looks_like_timezone,
     missing_marks,
@@ -83,6 +85,7 @@ from tui_renamer.core import (
     utc_from_timestamp,
 )
 from tui_renamer.extras import InstallOffer, distro_family, install_offers
+from tui_renamer.folder_load import FolderSnapshot, load_folder
 from tui_renamer.journal import Batch, Journal, MetaOp, RenameOp
 from tui_renamer.metadata import (
     IMAGE_EXTENSIONS,
@@ -243,6 +246,22 @@ class DebugLog:
                 handle.write(message + "\n")
         except OSError:
             pass
+
+
+class FolderLoadProgress(Message):
+    def __init__(self, generation: int, done: int, total: int) -> None:
+        super().__init__()
+        self.generation = generation
+        self.done = done
+        self.total = total
+
+
+class FolderLoadFinished(Message):
+    def __init__(self, generation: int, snapshot: FolderSnapshot | None, error: str = "") -> None:
+        super().__init__()
+        self.generation = generation
+        self.snapshot = snapshot
+        self.error = error
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -824,6 +843,9 @@ class RenamerApp(App[None]):
     TITLE = "rn"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
+    #folder-load-bar { height: 3; }
+    #folder-progress { width: 1fr; padding: 1 1; }
+    #folder-cancel { width: auto; }
     Screen { layout: vertical; }
     #body { height: 1fr; }
     .-compact #options { max-height: 25%; }
@@ -1047,6 +1069,9 @@ class RenamerApp(App[None]):
         self.manual: dict[int, str] = {}
         self._facts: dict[tuple[str, str | None, bool], FileFacts] = {}
         self._cursor = 0
+        self._loading = False
+        self._folder_generation = 0
+        self._folder_cancel = Event()
         self.visual = False
         self.anchor: int | None = None
         self.date_mode = False
@@ -1086,10 +1111,14 @@ class RenamerApp(App[None]):
         self._date_plan: DatePlan | None = None
         self._date_plan_key: tuple[tuple[Path, ...], tzinfo | None] | None = None
         self._name_plan_cache: tuple[object, list[str], list[str]] | None = None
+        self._render_names: tuple[list[str], list[str]] | None = None
         self._fitted_columns: tuple[object, ...] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
+        with Horizontal(id="folder-load-bar"):
+            yield Static("", id="folder-progress", markup=False)
+            yield Button("Esc Cancel loading", id="folder-cancel", compact=True)
         yield Static("", id="timeline")
         with Horizontal(id="body"):
             yield FileTable(id="files")
@@ -1124,7 +1153,7 @@ class RenamerApp(App[None]):
         self.query_one("#preview-slot").set_class(not saved.preview, "-off")
         self._set_zoom(saved.zoom, persist=False)
         self.rules.datetime_stamp = filename_clock_text(datetime.now())
-        self.reload_files()
+        self.query_one("#folder-load-bar").display = False
         if not self.exiftool:
             self.set_status(
                 "exiftool is not on PATH. Video, HEIC, PNG, CR3, and JPEG XL writes are off."
@@ -1134,8 +1163,11 @@ class RenamerApp(App[None]):
         self.call_after_refresh(self._fit_table_columns)
         self.set_interval(0.5, self._tick)
         self.query_one(FileTable).focus()
+        self._start_folder_load()
 
     def on_unmount(self) -> None:
+        self._folder_cancel.set()
+        self._folder_generation += 1
         if self._preview_timer is not None:
             self._preview_timer.stop()
         self.journal.cleanup()
@@ -1171,10 +1203,12 @@ class RenamerApp(App[None]):
             detail.styles.height = "100%"
 
     def _tick(self) -> None:
+        if not self.is_running:
+            return
         if linux_stdin_deleted():
             self.exit()
             return
-        if not self.rules.add_datetime or len(self.screen_stack) > 1:
+        if self._loading or not self.rules.add_datetime or len(self.screen_stack) > 1:
             return
         stamp = filename_clock_text(datetime.now())
         if stamp != self.rules.datetime_stamp:
@@ -1193,18 +1227,36 @@ class RenamerApp(App[None]):
         self._search_nav = False
 
     def reload_files(self) -> None:
-        self.files = list_files(self.directory)
+        """Synchronous reload for post-write reconciliation and non-UI callers."""
+        snapshot = load_folder(
+            self.directory,
+            replace(self.rules),
+            Event(),
+            lambda _done, _total: None,
+            reader=inspect_file,
+            strict=False,
+        )
+        if snapshot is not None:
+            self._install_folder(snapshot)
+
+    def _install_folder(self, snapshot: FolderSnapshot) -> None:
+        self.files = snapshot.files
         self._visible = list(range(len(self.files)))
         self.selected.clear()
         self.locked.clear()
         self.manual.clear()
-        self._facts.clear()
+        self._facts = {
+            (str(path), self.rules.source_tz, self.rules.use_json_data): facts
+            for path, facts in snapshot.facts.items()
+        }
+        self._name_plan_cache = None
+        self._fitted_columns = None
         self._date_plan = None
         self._date_plan_key = None
         self._cursor = 0
         self.visual = False
         self.anchor = None
-        alive = {path.resolve() for path in self.files}
+        alive = snapshot.resolved_paths
         self.scan_pending = {
             key: item for key, item in self.scan_pending.items() if item.path.resolve() in alive
         }
@@ -1214,6 +1266,85 @@ class RenamerApp(App[None]):
             key: parts for key, parts in self.scan_accepted.items() if key in names
         }
         self.scan_sessions = {key: item for key, item in self.scan_sessions.items() if key in names}
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if self._loading:
+            return action in {"quit", "escape", "cancel_folder_load"}
+        return super().check_action(action, parameters)
+
+    def _set_folder_loading(self, loading: bool) -> None:
+        self._loading = loading
+        self.query_one("#folder-load-bar").display = loading
+        for selector in ("#body", "#options", "#batch-bar", "#view-open", "#find"):
+            self.query_one(selector).disabled = loading
+        self.refresh_bindings()
+
+    def _start_folder_load(self) -> None:
+        self._folder_cancel.set()
+        self._folder_cancel = Event()
+        self._folder_generation += 1
+        self._preview_gen += 1
+        self._set_folder_loading(True)
+        self.query_one("#folder-progress", Static).update("Loading folder…")
+        self.query_one("#folder-cancel", Button).focus()
+        self._read_folder(self._folder_generation, replace(self.rules), self._folder_cancel)
+
+    @work(thread=True, group="folder-load", exit_on_error=False)
+    def _read_folder(self, generation: int, rules: RenameRules, cancel: Event) -> None:
+        def progress(done: int, total: int) -> None:
+            if not cancel.is_set():
+                self.post_message(FolderLoadProgress(generation, done, total))
+
+        try:
+            snapshot = load_folder(self.directory, rules, cancel, progress, reader=inspect_file)
+        except Exception as error:
+            if not cancel.is_set():
+                self.post_message(FolderLoadFinished(generation, None, str(error)))
+            return
+        if not cancel.is_set():
+            self.post_message(FolderLoadFinished(generation, snapshot))
+
+    def _folder_load_current(self, generation: int) -> bool:
+        return (
+            self.is_running
+            and self._loading
+            and generation == self._folder_generation
+            and bool(self.query("#folder-load-bar"))
+        )
+
+    def on_folder_load_progress(self, event: FolderLoadProgress) -> None:
+        if self._folder_load_current(event.generation):
+            self.query_one("#folder-progress", Static).update(
+                f"Loading folder: {event.done}/{event.total} files"
+            )
+
+    def on_folder_load_finished(self, event: FolderLoadFinished) -> None:
+        if not self._folder_load_current(event.generation):
+            return
+        self._set_folder_loading(False)
+        if event.snapshot is None:
+            self.set_status(f"Folder load failed: {event.error or 'no results'}. Press r to retry.")
+        else:
+            self._install_folder(event.snapshot)
+            if self.exiftool:
+                self.set_status("File list refreshed")
+            else:
+                self.set_status(
+                    "File list refreshed. exiftool is not on PATH. "
+                    "Video, HEIC, PNG, CR3, and JPEG XL writes are off."
+                )
+        self.refresh_view()
+        self.query_one(FileTable).focus()
+
+    def action_cancel_folder_load(self) -> None:
+        if not self._loading:
+            return
+        self._folder_cancel.set()
+        self._folder_generation += 1
+        self._set_folder_loading(False)
+        self.set_status("Folder loading cancelled. Current work kept. Press r to retry.")
+        self._update_status()
+        self.query_one(FileTable).focus()
 
     def target_zone(self) -> tzinfo:
         return resolve_tz(self.rules.source_tz)
@@ -1266,7 +1397,7 @@ class RenamerApp(App[None]):
             tuple(self.manual.items()),
             tuple((key, tuple(value)) for key, value in self.scan_suffix.items()),
             tuple((key, tuple(value)) for key, value in self.scan_accepted.items()),
-            id(self.facts_for),
+            getattr(self.facts_for, "__func__", self.facts_for),
             tuple(fact_tokens),
             rules.use_earliest,
             rules.add_datetime,
@@ -1313,7 +1444,19 @@ class RenamerApp(App[None]):
             stem=stem if stem else "",
         )
 
+    @contextmanager
+    def _name_plan_scope(self) -> Iterator[None]:
+        """Reuse one validated plan within a synchronous UI update."""
+        previous = self._render_names
+        self._render_names = self._name_plan()
+        try:
+            yield
+        finally:
+            self._render_names = previous
+
     def _name_plan(self) -> tuple[list[str], list[str]]:
+        if self._render_names is not None:
+            return self._render_names
         key = self._names_key()
         cached = self._name_plan_cache
         if cached is not None and cached[0] == key:
@@ -1325,15 +1468,16 @@ class RenamerApp(App[None]):
         return proposed, resolved
 
     def refresh_view(self) -> None:
-        self._recompute_changing()
-        self._recompute_neighbors()
-        self._recompute_visible()
-        self._fill_table()
-        self._sync_options()
-        self._update_detail()
-        self._update_timeline()
-        self._update_status()
-        self._update_subtitle()
+        with self._name_plan_scope():
+            self._recompute_changing()
+            self._recompute_neighbors()
+            self._recompute_visible()
+            self._fill_table()
+            self._sync_options()
+            self._update_detail()
+            self._update_timeline()
+            self._update_status()
+            self._update_subtitle()
 
     def action_filter_sort(self) -> None:
         if self._find_open:
@@ -1638,7 +1782,10 @@ class RenamerApp(App[None]):
             table = self.query_one(FileTable)
         except NoMatches:
             return
-        if table.row_count and self._visible[table.cursor_row] != self._cursor:
+        if table.row_count and (
+            not 0 <= table.cursor_row < min(len(self._visible), table.row_count)
+            or self._visible[table.cursor_row] != self._cursor
+        ):
             # Let the queued highlight update selection before rebuilding columns.
             return
         if self._column_fit_key(table) == self._fitted_columns:
@@ -1681,7 +1828,8 @@ class RenamerApp(App[None]):
 
     def _hit_indexes(self, query: str | None = None) -> list[int]:
         needle = self._search_query if query is None else query
-        names = [(self.files[index].name, self.preview_for(index)) for index in self._visible]
+        resolved = self._name_plan()[1]
+        names = [(self.files[index].name, resolved[index]) for index in self._visible]
         return [self._visible[row] for row in query_hits(names, needle)]
 
     def _column_keys(self) -> tuple[str, ...]:
@@ -1712,7 +1860,10 @@ class RenamerApp(App[None]):
                 table = self.query_one(FileTable)
             except NoMatches:
                 return
-            if table.row_count and self._visible[table.cursor_row] != self._cursor:
+            if (
+                0 <= table.cursor_row < min(len(self._visible), table.row_count)
+                and self._visible[table.cursor_row] != self._cursor
+            ):
                 key = table.ordered_rows[table.cursor_row].key
                 self.on_data_table_row_highlighted(
                     DataTable.RowHighlighted(table, table.cursor_row, key)
@@ -1759,31 +1910,32 @@ class RenamerApp(App[None]):
         """Update selection or lock cells without clearing the table."""
         if not self.is_mounted:
             return
-        previous_visible = self._visible[:]
-        self._recompute_changing()
-        self._recompute_visible()
-        if self._visible != previous_visible:
-            self.visual = False
-            self.anchor = None
-            self.refresh_view()
-            return
-        wanted = sorted({index for index in indexes if 0 <= index < len(self.files)})
-        try:
-            table = self.query_one(FileTable)
-        except NoMatches:
-            return
-        if wanted and table.row_count == len(self._visible):
-            rows = self._current_rows()
-            columns = self._column_keys()
-            for index in wanted:
-                if index not in self._visible:
-                    continue
-                for column, value in zip(columns, rows[index], strict=True):
-                    table.update_cell(str(index), column, value, update_width=False)
-        elif wanted:
-            self.refresh_view()
-            return
-        self._refresh_side_panels()
+        with self._name_plan_scope():
+            previous_visible = self._visible[:]
+            self._recompute_changing()
+            self._recompute_visible()
+            if self._visible != previous_visible:
+                self.visual = False
+                self.anchor = None
+                self.refresh_view()
+                return
+            wanted = sorted({index for index in indexes if 0 <= index < len(self.files)})
+            try:
+                table = self.query_one(FileTable)
+            except NoMatches:
+                return
+            if wanted and table.row_count == len(self._visible):
+                rows = self._current_rows()
+                columns = self._column_keys()
+                for index in wanted:
+                    if index not in self._visible:
+                        continue
+                    for column, value in zip(columns, rows[index], strict=True):
+                        table.update_cell(str(index), column, value, update_width=False)
+            elif wanted:
+                self.refresh_view()
+                return
+            self._refresh_side_panels()
 
     def _add_rename_columns(self, table: FileTable) -> None:
         name_w, new_w = self._name_new_widths()
@@ -1880,6 +2032,7 @@ class RenamerApp(App[None]):
         by_path = {item.path: item for item in plan.todo + plan.same}
         zone = self.plan_zone()
         rows: list[tuple[str, Text, Text, Text, Text, str, Text, str]] = []
+        resolved = self._name_plan()[1]
         for index, path in enumerate(self.files):
             item = by_path.get(path)
             current = self._clock(path, zone)
@@ -1898,7 +2051,7 @@ class RenamerApp(App[None]):
             if index in self.selected:
                 status = "SELECTED"
             file_style = "" if index in self._changing else "dim"
-            name_span, _new_span = self._name_spans(path.name, self.preview_for(index))
+            name_span, _new_span = self._name_spans(path.name, resolved[index])
             source, flag, missing = self._mark_cells(index, path)
             rows.append(
                 (
@@ -1917,11 +2070,12 @@ class RenamerApp(App[None]):
     def _mtime_rows(self) -> list[tuple[str, Text, Text, Text, Text, str, str]]:
         local = _local_zone()
         rows: list[tuple[str, Text, Text, Text, Text, str, str]] = []
+        resolved = self._name_plan()[1]
         for index, path in enumerate(self.files):
             label, _moment = mtime_source(self.facts_for(path), self.rules, local)
             status = "SELECTED" if index in self.selected else "UNCHANGED"
             name_style = "" if index in self._changing else "dim"
-            name_span, _new_span = self._name_spans(path.name, self.preview_for(index))
+            name_span, _new_span = self._name_spans(path.name, resolved[index])
             source, flag, missing = self._mark_cells(index, path)
             rows.append(
                 (
@@ -2088,7 +2242,7 @@ class RenamerApp(App[None]):
     def _update_status(self) -> None:
         widget = self.query_one("#status", Static)
         if self._message:
-            widget.update(self._message)
+            widget.update(Text(self._message))
             return
         if self._leader:
             widget.update("g then g: first file")
@@ -2268,7 +2422,7 @@ class RenamerApp(App[None]):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if self._rebuilding or not self.is_mounted or not event.data_table.is_attached:
             return
-        if event.cursor_row >= len(self._visible):
+        if not 0 <= event.cursor_row < min(len(self._visible), event.data_table.row_count):
             return
         table = event.data_table
         if event.cursor_row != table.cursor_row:
@@ -2306,12 +2460,13 @@ class RenamerApp(App[None]):
     def _refresh_side_panels(self) -> None:
         if not self.is_mounted:
             return
-        self._sync_options()
-        self._update_detail()
-        self._update_timeline()
-        self._update_status()
-        self._update_subtitle()
-        self.call_after_refresh(self._fit_table_columns)
+        with self._name_plan_scope():
+            self._sync_options()
+            self._update_detail()
+            self._update_timeline()
+            self._update_status()
+            self._update_subtitle()
+            self.call_after_refresh(self._fit_table_columns)
 
     def _move_to(self, row: int) -> None:
         if row not in self._visible:
@@ -2364,6 +2519,9 @@ class RenamerApp(App[None]):
         return False
 
     def action_escape(self) -> None:
+        if self._loading:
+            self.action_cancel_folder_load()
+            return
         if self._find_open:
             self._close_find(restore=True)
             return
@@ -2618,7 +2776,7 @@ class RenamerApp(App[None]):
         self._close_find(restore=False)
 
     def _schedule_preview(self) -> None:
-        if not self.is_running:
+        if self._loading or not self.is_running:
             return
         timer = self._preview_timer
         if timer is not None:
@@ -2633,7 +2791,7 @@ class RenamerApp(App[None]):
 
     def _kick_preview(self) -> None:
         self._preview_timer = None
-        if not self.is_running or not self.preview_on or not self._visible:
+        if self._loading or not self.is_running or not self.preview_on or not self._visible:
             return
         try:
             detail = self.query_one("#detail")
@@ -2666,7 +2824,7 @@ class RenamerApp(App[None]):
         )
 
     def _preview_current(self, generation: int, path_str: str) -> bool:
-        if generation != self._preview_gen or not self.preview_on:
+        if self._loading or generation != self._preview_gen or not self.preview_on:
             return False
         return bool(self._visible) and str(self.files[self._cursor]) == path_str
 
@@ -2899,7 +3057,7 @@ class RenamerApp(App[None]):
 
     @on(OptionToggle.Changed)
     def _option_toggled(self, event: OptionToggle.Changed) -> None:
-        if self._syncing:
+        if self._loading or self._syncing:
             return
         box_id = event.toggle.id or ""
         if box_id == "opt-date_mode":
@@ -2928,6 +3086,11 @@ class RenamerApp(App[None]):
         self._set_rule(field, event.value)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "folder-cancel":
+            self.action_cancel_folder_load()
+            return
+        if self._loading:
+            return
         if event.button.id == "opt-use_earliest":
             self.action_toggle("use_earliest")
             return
@@ -3180,16 +3343,16 @@ class RenamerApp(App[None]):
         self.refresh_view()
 
     def action_reload_files(self) -> None:
+        if self._loading:
+            return
         self._begin()
 
         def refresh() -> None:
-            self.reload_files()
-            self.set_status("File list refreshed")
-            self.refresh_view()
+            self._start_folder_load()
 
         if self.selected or self.locked or self.manual:
             self._ask(
-                "Refresh clears selections, locks and staged manual names. "
+                "A completed refresh clears selections, locks and staged manual names. "
                 "Photo-review staging is kept for files still present. Continue? y or n",
                 refresh,
             )
@@ -3339,8 +3502,9 @@ class RenamerApp(App[None]):
         )
 
     def _rename_pairs(self) -> list[tuple[Path, str]]:
+        resolved = self._name_plan()[1]
         names: dict[int, str] = {
-            index: self.preview_for(index) for index in self.locked if index < len(self.files)
+            index: resolved[index] for index in self.locked if index < len(self.files)
         }
         for index, path in enumerate(self.files):
             if index in names:
@@ -3351,7 +3515,7 @@ class RenamerApp(App[None]):
                 and str(path) not in self.scan_suffix
             ):
                 continue
-            new_name = self.preview_for(index)
+            new_name = resolved[index]
             if new_name != path.name:
                 names[index] = new_name
         pairs: list[tuple[Path, str]] = []
@@ -3361,6 +3525,8 @@ class RenamerApp(App[None]):
         return pairs
 
     def action_apply(self) -> None:
+        if self._loading:
+            return
         if self._find_open:
             return
         self._begin()
@@ -3673,6 +3839,8 @@ class RenamerApp(App[None]):
         self.refresh_view()
 
     def action_write_timezone(self) -> None:
+        if self._loading:
+            return
         self._begin()
         indexes = self._targets()
         if not indexes:
@@ -3740,6 +3908,8 @@ class RenamerApp(App[None]):
         self.refresh_view()
 
     def action_write_geodata(self) -> None:
+        if self._loading:
+            return
         self._begin()
         if not PIEXIF_AVAILABLE:
             self.set_status("Cannot write EXIF. piexif is not installed.")
@@ -3796,6 +3966,8 @@ class RenamerApp(App[None]):
         self.refresh_view()
 
     def action_undo(self) -> None:
+        if self._loading:
+            return
         self._begin()
         self._preview_gen += 1
         self.workers.cancel_group(self, "preview")
