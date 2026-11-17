@@ -8,6 +8,7 @@ from threading import Event, Lock, Thread
 
 from textual.widgets import Button, Static
 
+from conftest import wait_for_folder_load
 from tui_renamer.app import FolderLoadFinished, FolderLoadProgress, RenamerApp
 from tui_renamer.core import FileFacts, RenameRules
 from tui_renamer.folder_load import FolderSnapshot, load_folder
@@ -252,3 +253,15 @@ async def test_clock_tick_ignores_shutdown(tmp_path: Path, monkeypatch):
             patch.setattr(app, "refresh_view", unexpected_refresh)
             app._tick()
         app.rules.add_datetime = False
+
+
+async def test_folder_ready_waits_for_deferred_table_rebuild(tmp_path: Path):
+    (tmp_path / "photo.txt").write_text("fixture")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_for_folder_load(app, pilot)
+        app._begin_rebuild()
+        app.call_after_refresh(app._end_rebuild)
+        await wait_for_folder_load(app, pilot)
+        assert not app._rebuilding
+        assert app._rebuild_depth == 0

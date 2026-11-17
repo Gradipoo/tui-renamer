@@ -57,5 +57,8 @@ async def wait_for_folder_load(app, pilot) -> None:
     workers = [worker for worker in app.workers if worker.group == "folder-load"]
     if workers:
         await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=15)
-    await pilot.pause()
-    assert not app._loading
+    async with asyncio.timeout(15):
+        await pilot.pause()
+        # The result message can schedule a rebuild after the worker has finished.
+        while app._loading or app._rebuilding:
+            await pilot.pause()
