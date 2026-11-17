@@ -147,6 +147,10 @@ async def test_result_lists_collisions_failures_and_undo_then_retry(tmp_path: Pa
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_for_folder_load(app, pilot)
+        # This direct-write test isolates collision/failure reporting. On Windows,
+        # an in-flight preview read can temporarily hold first.txt open.
+        app.action_preview()
+        await app.workers.wait_for_complete()
         app._do_apply([(first, "target.txt"), (second, "absent/target.txt")], [])
         assert "target-01.txt" in app._last_result
         assert "destination collisions" in app._last_result
