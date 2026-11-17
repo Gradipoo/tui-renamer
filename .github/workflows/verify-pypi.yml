@@ -1,0 +1,50 @@
+name: Verify published PyPI files
+
+on:
+  push:
+    branches: ["verify-pypi/0.1.14"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify published archives
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import io
+          import json
+          import tarfile
+          import urllib.request
+          import zipfile
+
+          version = "0.1.14"
+          with urllib.request.urlopen(f"https://pypi.org/pypi/tui-renamer/{version}/json", timeout=30) as response:
+              package = json.load(response)
+          assert package["info"]["version"] == version
+          for artifact in package["urls"]:
+              with urllib.request.urlopen(artifact["url"], timeout=30) as response:
+                  blob = response.read()
+              assert hashlib.sha256(blob).hexdigest() == artifact["digests"]["sha256"]
+              if artifact["packagetype"] == "sdist":
+                  with tarfile.open(fileobj=io.BytesIO(blob)) as archive:
+                      assert any(name.endswith("/src/tui_renamer/folder_load.py") for name in archive.getnames())
+              elif artifact["packagetype"] == "bdist_wheel":
+                  with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+                      assert "tui_renamer/folder_load.py" in archive.namelist()
+                      assert b'__version__ = "0.1.14"' in archive.read("tui_renamer/__init__.py")
+              print("VERIFIED_ARTIFACT " + json.dumps({
+                  "filename": artifact["filename"],
+                  "packagetype": artifact["packagetype"],
+                  "url": artifact["url"],
+                  "sha256": artifact["digests"]["sha256"],
+              }))
+          print("All published archives verified")
+          PY
