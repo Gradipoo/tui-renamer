@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image
 from textual.widgets import Button, Collapsible, Static
 
+from conftest import wait_for_folder_load
 from tui_renamer.app import ConfirmScreen, RenamerApp, ResultScreen
 from tui_renamer.core import plan_filename_dates
 from tui_renamer.journal import MetaOp
@@ -29,7 +30,7 @@ async def test_pending_scope_distinguishes_preview_selection_and_hidden_staging(
     (tmp_path / "C.txt").write_text("keep", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.rules.remove_caps = True
         app.refresh_view()
         assert len(app._changing) == 3
@@ -60,7 +61,7 @@ async def test_pending_scope_follows_write_modes_and_preserves_hidden_selection(
         (tmp_path / name).write_text("fixture", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.rules.source_tz = "UTC"
         app.manual[0] = "staged.txt"
         app.table_view = TableView(extension="jpg")
@@ -87,7 +88,7 @@ async def test_resets_and_discard_have_separate_scopes(tmp_path: Path) -> None:
     source.write_text("keep", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.rules.remove_caps = True
         app.manual[0] = "manual.txt"
         app.locked[0] = "locked.txt"
@@ -121,7 +122,7 @@ async def test_compact_batch_bar_stays_visible_with_expanded_controls(tmp_path: 
     (tmp_path / "photo.txt").write_text("keep", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(60, 24)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         for group in app.query("#options Collapsible"):
             group.collapsed = False
         await pilot.pause()
@@ -145,7 +146,7 @@ async def test_result_lists_collisions_failures_and_undo_then_retry(tmp_path: Pa
     existing.write_text("existing", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app._do_apply([(first, "target.txt"), (second, "absent/target.txt")], [])
         assert "target-01.txt" in app._last_result
         assert "destination collisions" in app._last_result
@@ -179,7 +180,7 @@ async def test_apply_keeps_notes_errors_and_reports_notes_undo_limit(
     photo(source)
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.scan_sessions[str(source)] = ScanSession()
         monkeypatch.setattr(app, "_write_scan_notes", lambda _paths: ["photo.jpg: notes disk full"])
         app._do_apply([(source, "renamed.jpg")], [])
@@ -196,7 +197,7 @@ async def test_notes_only_result_has_no_undo_claim(tmp_path: Path) -> None:
     photo(source)
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.scan_sessions[str(source)] = ScanSession()
         app._do_apply([], [PendingScan(source)])
         assert "No undo entry was created" in app._last_result
@@ -210,7 +211,7 @@ async def test_copy_failed_coverage_names_the_file(tmp_path: Path, monkeypatch) 
     source.write_bytes(b"fixture")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         stat = source.stat()
         snapshot = MetaOp(source, stat.st_atime, stat.st_mtime, None, "copy", copy_failed=True)
         monkeypatch.setattr(app.journal, "snapshot", lambda _path: snapshot)
@@ -231,7 +232,7 @@ async def test_partial_date_write_keeps_snapshot_for_undo(tmp_path: Path, monkey
     before = source.stat().st_mtime
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
 
         def partial(path, _moment, **_kwargs):
             import os
@@ -260,7 +261,7 @@ async def test_saved_reading_setup_can_expand_without_reading_again(tmp_path: Pa
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         review = app.screen
         await review.workers.wait_for_complete()
@@ -287,7 +288,7 @@ async def test_existing_notes_follow_rename_with_explicit_undo_limit(tmp_path: P
     notes.write_text(json.dumps({"format": "rn-notes", "version": 2, "front": source.name}))
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app._do_apply([(source, "renamed.jpg")], [])
         assert "notes contents are not restored" in app._last_result
         moved = notes_path_for(tmp_path / "renamed.jpg")
@@ -307,7 +308,7 @@ async def test_resize_during_table_rebuild_updates_compact_layout(tmp_path: Path
     app.exiftool = None
     app.setfile = None
     async with app.run_test(size=(140, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app._begin_rebuild()
         try:
             await pilot.resize_terminal(60, 24)

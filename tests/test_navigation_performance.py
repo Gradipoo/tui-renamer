@@ -7,6 +7,7 @@ from PIL import Image
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
+from conftest import wait_for_folder_load
 from tui_renamer.app import RenamerApp
 
 
@@ -15,7 +16,7 @@ async def test_refresh_checks_name_plan_once(tmp_path: Path, monkeypatch) -> Non
         (tmp_path / f"file-{index:03}.txt").write_text("fixture")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.selected.update(range(len(app.files)))
         original = app._names_key
         calls = 0
@@ -37,7 +38,7 @@ async def test_deferred_handlers_ignore_cursor_outside_live_rows(
     (tmp_path / "file.txt").write_text("fixture")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         table = app.query_one(DataTable)
         # A deferred cursor watcher may not yet have clamped the coordinate.
         table.set_reactive(DataTable.cursor_coordinate, Coordinate(10, 0))
@@ -56,7 +57,7 @@ async def test_rapid_navigation_with_refresh_and_resize(tmp_path: Path) -> None:
             path.write_bytes(b"invalid image")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         for _ in range(3):
             for _ in range(15):
                 app.action_cursor_down()

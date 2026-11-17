@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from textual.widgets import Button
 
+from conftest import wait_for_folder_load
 from tui_renamer.app import RenamerApp
 from tui_renamer.core import (
     DateCandidate,
@@ -78,7 +79,7 @@ async def test_button_shortcut_batch_locks_manual_and_narrow(tmp_path):
     app = RenamerApp(tmp_path)
     app.rules.source_tz = "UTC"
     async with app.run_test(size=(60, 32)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         for i, path in enumerate(app.files):
             facts = FileFacts(
                 candidates=[DateCandidate("mtime" if i else "EXIF", "", clock(2018 + i))]
@@ -142,7 +143,7 @@ async def test_hint_without_detail_and_no_date(tmp_path):
     (tmp_path / "a.txt").write_text("fixture")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(60, 32)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         path = app.files[0]
         app._facts[(str(path), None, False)] = FileFacts()
         app.refresh_view()

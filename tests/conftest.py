@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -49,3 +50,12 @@ def _fake_image_widget(monkeypatch: pytest.MonkeyPatch) -> None:
 def _isolated_view_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     folder = tmp_path / "rn-config"
     monkeypatch.setattr("tui_renamer.view_config.config_dir", lambda: folder)
+
+
+async def wait_for_folder_load(app, pilot) -> None:
+    """Wait for the folder snapshot, rather than assuming UI idle means loaded."""
+    workers = [worker for worker in app.workers if worker.group == "folder-load"]
+    if workers:
+        await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=15)
+    await pilot.pause()
+    assert not app._loading

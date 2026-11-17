@@ -13,6 +13,7 @@ from textual.coordinate import Coordinate
 from textual.geometry import Region
 from textual.widgets import Collapsible, DataTable, Input, OptionList, Static
 
+from conftest import wait_for_folder_load
 from tui_renamer.app import (
     CommandScreen,
     OptionToggle,
@@ -52,7 +53,7 @@ def test_other_platforms_ignore_the_linux_check(monkeypatch) -> None:
 async def test_empty_folder_opens(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         detail = str(app.query_one("#detail-body").render())
         assert "No files" in detail
 
@@ -60,7 +61,7 @@ async def test_empty_folder_opens(tmp_path: Path) -> None:
 async def test_optional_install_buttons_follow_the_distro(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         heif = app.query_one("#act-install-heif")
         jxl = app.query_one("#act-install-jxl")
         note = str(app.query_one("#optional-note").render())
@@ -85,7 +86,7 @@ async def test_number_keys_zoom_panes(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("2")
         assert app._zoom == "detail"
         assert _within(app, "detail")
@@ -135,7 +136,7 @@ async def test_select_and_visual_keep_scroll_and_order(tmp_path: Path) -> None:
         (tmp_path / f"file-{index:04d}.txt").write_text("x", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(160, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         table = app.query_one(DataTable)
         scroll = await _scroll_to_row(pilot, table, 120)
         order = _row_keys(table)
@@ -181,7 +182,7 @@ async def test_files_zoom_shows_full_names_then_narrows(tmp_path: Path) -> None:
     (tmp_path / "short.txt").write_text("y", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(160, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         table = app.query_one(DataTable)
         table.move_cursor(row=1)
         app._cursor = 1
@@ -225,7 +226,7 @@ async def test_escape_closes_find_then_zoom_then_mode(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("v")
         await pilot.press("2")
         await pilot.press("/")
@@ -260,7 +261,7 @@ async def test_date_toggle_checks_the_option(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         box = app.query_one("#opt-add_datetime", OptionToggle)
         assert box.value is False
         await pilot.press("d")
@@ -276,7 +277,7 @@ async def test_filename_date_mode_diff_and_cache(tmp_path: Path) -> None:
     first.write_text("x", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("D")
         await pilot.pause()
         assert app.date_mode is True
@@ -298,7 +299,7 @@ async def test_option_groups_collapse_and_keep_active_settings_visible(tmp_path:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         for group in app.query("#options Collapsible"):
             assert group.collapsed
         await pilot.press("d", "c")
@@ -342,7 +343,7 @@ async def test_commands_overlay_filters_and_closes(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("ctrl+p")
         assert isinstance(app.screen, CommandScreen)
         await pilot.press("escape")
@@ -368,7 +369,7 @@ async def test_gg_and_end(tmp_path: Path) -> None:
         (tmp_path / name).write_text(name, encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("G")
         assert app.query_one(DataTable).cursor_row == 2
         await pilot.press("g")
@@ -382,7 +383,7 @@ async def test_enter_without_a_selection_does_not_rename(tmp_path: Path, monkeyp
     (tmp_path / "photo.txt").write_text("x", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("d")
         await pilot.press("enter")
         await pilot.pause()
@@ -412,7 +413,7 @@ async def test_change_overview(tmp_path: Path) -> None:
     (tmp_path / source_name).write_bytes(b"jpeg")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         assert "1 of 2 previews differ" in app.sub_title
         table = app.query_one(DataTable)
         labels = [column.label.plain for column in table.columns.values()]
@@ -453,7 +454,7 @@ async def test_warning_jump_timeline_and_detail(tmp_path: Path) -> None:
     (tmp_path / "plain.txt").write_text("x", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.rules.source_tz = "UTC"
         app._facts.clear()
         app.refresh_view()
@@ -479,7 +480,7 @@ async def test_rename_and_undo(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "photo.txt").write_text("x", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("d")
         await pilot.press("space")
         await pilot.press("enter")
@@ -496,7 +497,7 @@ async def test_rename_and_undo(tmp_path: Path, monkeypatch) -> None:
 async def test_narrow_layout(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.resize_terminal(80, 30)
         await pilot.pause()
         assert app.query_one("#body").has_class("-narrow")
@@ -553,7 +554,7 @@ async def test_find_escapes_without_changing_selection(tmp_path: Path) -> None:
         (tmp_path / name).write_text(name, encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("v")
         selected = set(app.selected)
         await pilot.press("G")
@@ -579,7 +580,7 @@ async def test_enter_arms_search_and_brackets_still_jump_changes(tmp_path: Path)
     (tmp_path / "plain.txt").write_text("plain", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("ctrl+g")
         assert "No search." in str(app.query_one("#status").render())
         await pilot.press("/")
@@ -608,7 +609,7 @@ async def test_ctrl_g_follows_an_accepted_search(tmp_path: Path) -> None:
         (tmp_path / name).write_text(name, encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("/")
         await pilot.press("c", "a", "t")
         await pilot.press("enter")
@@ -621,6 +622,7 @@ async def test_preview_text_and_toggle(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("Hello preview\nsecond\n", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
+        await wait_for_folder_load(app, pilot)
         await _until(pilot, app, "Hello preview")
         assert not app.query_one("#preview-slot").has_class("-off")
         await pilot.press("P")
@@ -637,6 +639,7 @@ async def test_preview_renders_each_picture_in_a_row(tmp_path: Path) -> None:
         Image.new("RGB", (8 + index, 6), color).save(tmp_path / f"pic{index}.png")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
+        await wait_for_folder_load(app, pilot)
         for index in range(4):
             if index:
                 await pilot.press("j")
@@ -657,6 +660,7 @@ async def test_preview_falls_back_when_the_widget_is_missing(tmp_path: Path, mon
     Image.new("RGB", (8, 8), (9, 9, 9)).save(tmp_path / "dot.png")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
+        await wait_for_folder_load(app, pilot)
         await _until(pilot, app, "8x8")
         assert not app.query("#preview-image")
         detail = str(app.query_one("#detail-body").render())
@@ -669,7 +673,7 @@ async def test_video_source_letter_is_quicktime(tmp_path: Path) -> None:
     (tmp_path / "clip.mp4").write_bytes(movie(mvhd(CAPTURE)))
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         table = app.query_one(DataTable)
         assert table.get_cell_at(Coordinate(0, 1)).plain == "ok"
         assert "e" not in table.get_cell_at(Coordinate(0, 3)).plain
@@ -689,7 +693,7 @@ async def test_at_jumps_to_the_previous_warning(tmp_path: Path) -> None:
         write_image_exif_datetime(path, datetime(2020, 6, 1, 17, 0, tzinfo=timezone.utc))
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.rules.source_tz = "UTC"
         app._facts.clear()
         app.refresh_view()
@@ -707,7 +711,7 @@ async def test_preview_and_zoom_are_remembered(tmp_path: Path) -> None:
     (tmp_path / "note.txt").write_text("x", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("P")
         await pilot.press("1")
         await pilot.pause()
@@ -716,7 +720,7 @@ async def test_preview_and_zoom_are_remembered(tmp_path: Path) -> None:
 
     again = RenamerApp(tmp_path)
     async with again.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(again, pilot)
         assert again.preview_on is False
         assert again.query_one("#preview-slot").has_class("-off")
         assert again._zoom == "files"
@@ -730,7 +734,7 @@ async def test_preview_and_zoom_are_remembered(tmp_path: Path) -> None:
 
     reset = RenamerApp(tmp_path)
     async with reset.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(reset, pilot)
         assert reset.preview_on is True
         assert reset._zoom is None
 
@@ -755,7 +759,7 @@ async def test_scan_review_is_off_at_startup_then_accepts(tmp_path: Path) -> Non
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         assert not isinstance(app.screen, ReviewScreen)
         await pilot.press("S")
         await pilot.pause()
@@ -797,7 +801,7 @@ async def test_scan_review_escape_does_not_write(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         assert isinstance(app.screen, ReviewScreen)
@@ -837,7 +841,7 @@ async def test_scan_review_cancels_a_read(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         assert isinstance(app.screen, ReviewScreen)
@@ -872,7 +876,7 @@ async def test_scan_review_compact_status_help_installed_and_manual(
         dates=[ScanDate("year", "1952", 1952)],
     )
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -922,7 +926,7 @@ async def test_scan_review_installed_loaded_and_related_browse(tmp_path: Path) -
         loaded_models=["gemma3:4b"],
     )
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -965,7 +969,7 @@ async def test_scan_review_remote_host_needs_a_second_read(tmp_path: Path) -> No
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1005,7 +1009,7 @@ async def test_scan_review_stage_apply_overwrite_skip_and_undo(tmp_path: Path) -
         tokens=["lake"],
     )
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1061,7 +1065,7 @@ async def test_scan_review_apply_writes_written_day_and_description(
         people_count=1,
     )
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1125,7 +1129,7 @@ async def test_scan_first_use_dropdown_saves_and_reads_once(tmp_path: Path) -> N
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1162,7 +1166,7 @@ async def test_scan_saved_model_auto_reads_current_image_once(tmp_path: Path) ->
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1190,7 +1194,7 @@ async def test_scan_unavailable_model_falls_back_to_chooser(tmp_path: Path) -> N
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1242,7 +1246,7 @@ async def test_scan_stale_read_is_discarded_on_close(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         assert isinstance(app.screen, ReviewScreen)
@@ -1264,7 +1268,7 @@ async def test_scan_narrow_viewport_keeps_actions(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(60, 24)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1310,7 +1314,7 @@ async def test_scan_highlight_does_not_switch_original_read(tmp_path: Path) -> N
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1368,7 +1372,7 @@ async def test_scan_suffix_preview_accept_reopen_refresh_apply(tmp_path: Path) -
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1428,7 +1432,7 @@ async def test_scan_suffix_preview_accept_reopen_refresh_apply(tmp_path: Path) -
         review.action_close()
         await pilot.pause()
         app.action_reload_files()
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         assert app.preview_for(0) == "keep-alpha-edit-beta.jpg"
         await pilot.press("enter")
         await pilot.pause()
@@ -1464,7 +1468,7 @@ async def test_scan_suffix_format_toggles_keep_raw_labels(tmp_path: Path) -> Non
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1571,7 +1575,7 @@ async def test_scan_written_day_filename_clock_apply_reopen(tmp_path: Path) -> N
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1658,7 +1662,7 @@ async def test_scan_english_date_token_typed_and_notes_preview(tmp_path: Path) -
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1744,7 +1748,7 @@ async def test_scan_english_date_token_typed_and_notes_preview(tmp_path: Path) -
     app2 = RenamerApp(tmp_path)
     app2.scan_backend = MockBackend(dates=[], tokens=[], transcription="")
     async with app2.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app2, pilot)
         index = next(i for i, path in enumerate(app2.files) if path.name == notes_photo.name)
         app2._move_to(index)
         await pilot.pause()
@@ -1775,7 +1779,7 @@ async def test_scan_lock_ignores_suffix(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.locked[0] = "lockme.jpg"
         await pilot.press("S")
         await pilot.pause()
@@ -1804,7 +1808,7 @@ async def test_scan_name_toggle_off_does_not_add_meta(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1847,7 +1851,7 @@ async def test_scan_first_candidate_preview_keeps_original_read(tmp_path: Path) 
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1884,7 +1888,7 @@ async def test_scan_metadata_only_apply_without_rename(tmp_path: Path) -> None:
         people_count=None,
     )
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1924,7 +1928,7 @@ async def test_scan_jk_moves_chips_without_toggle(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1963,7 +1967,7 @@ async def test_scan_jk_related_highlight_does_not_read(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -1993,7 +1997,7 @@ async def test_scan_model_jk_does_not_read_until_enter(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     app.scan_backend = backend
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -2023,7 +2027,7 @@ async def test_scan_input_types_jkq_escape_blurs_tab_leaves(tmp_path: Path) -> N
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -2056,7 +2060,7 @@ async def test_scan_q_closes_keeps_suffix_app_running(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     app.scan_backend = MockBackend()
     async with app.run_test(size=(120, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("S")
         await pilot.pause()
         review = app.screen
@@ -2083,7 +2087,7 @@ async def test_main_jk_and_q_unchanged_outside_scan(tmp_path: Path) -> None:
     two.write_text("b", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         assert app._cursor == 0
         await pilot.press("j")
         await pilot.pause()
@@ -2104,7 +2108,7 @@ async def test_edit_name_stages_on_enter_and_escape_cancels(tmp_path: Path) -> N
     source.write_text("keep", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         await pilot.press("i")
         assert isinstance(app.screen, InsertScreen)
         app.screen.query_one("#stem", Input).value = "staged"
@@ -2128,7 +2132,7 @@ async def test_refresh_cancel_preserves_staged_work(tmp_path: Path) -> None:
     (tmp_path / "original.txt").write_text("keep", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.selected.add(0)
         app.manual[0] = "staged.txt"
         app.locked[0] = "locked.txt"
@@ -2157,7 +2161,7 @@ async def test_layout_prioritizes_files_and_review_actions_fit(tmp_path: Path) -
     app.setfile = None
     app.scan_backend = MockBackend()
     async with app.run_test(size=(140, 42)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         assert app.query_one("#files").size.width > app.query_one("#detail").size.width
         await pilot.resize_terminal(60, 24)
         await pilot.pause()
@@ -2185,7 +2189,7 @@ async def test_focused_option_enter_toggles_without_apply(tmp_path: Path) -> Non
     source.write_text("keep", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.selected.add(0)
         app.query_one("#group-cleanup", Collapsible).collapsed = False
         await pilot.pause()

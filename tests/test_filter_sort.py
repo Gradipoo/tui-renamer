@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from textual.widgets import Button, Checkbox, DataTable, Input
 
+from conftest import wait_for_folder_load
 from tui_renamer.app import ConfirmScreen, FilterSortScreen, RenamerApp
 from tui_renamer.core import DateCandidate, FileFacts
 from tui_renamer.scan_bits import PendingScan
@@ -22,7 +23,7 @@ async def test_sort_filter_preserve_staging_and_cursor(tmp_path: Path) -> None:
     files(tmp_path)
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.selected = {0, 1}
         app.locked = {0: "locked.jpg"}
         app.manual = {1: "manual.png"}
@@ -54,7 +55,7 @@ async def test_navigation_search_and_range_follow_visible_order(tmp_path: Path) 
     files(tmp_path)
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.table_view = TableView(extension="jpg", descending=True)
         app.refresh_view()
         app.action_goto_top()
@@ -84,7 +85,7 @@ async def test_empty_results_have_no_cursor_actions(tmp_path: Path) -> None:
     files(tmp_path)
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.table_view = TableView(extension="mov")
         app.refresh_view()
         await pilot.pause()
@@ -110,7 +111,7 @@ async def test_panel_combines_filters_and_can_cancel(tmp_path: Path) -> None:
     files(tmp_path)
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.manual[2] = "trip.jpg"
         app.scan_pending[str(app.files[2])] = PendingScan(app.files[2], description="Trip")
         await pilot.click("#view-open")
@@ -135,7 +136,7 @@ async def test_capture_sort_keeps_missing_dates_last(tmp_path: Path, descending:
     files(tmp_path)
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         facts = {}
         for index, path in enumerate(app.files):
             moment = datetime(2020 + index, 1, 1, tzinfo=timezone.utc)
@@ -159,7 +160,7 @@ async def test_confirmation_identifies_hidden_targets(tmp_path: Path, mode: str)
         (tmp_path / name).write_bytes(b"fixture")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.selected = {0, 1}
         app.manual[1] = "hidden.png"
         app.table_view = TableView(extension="jpg")
@@ -189,7 +190,7 @@ async def test_changing_filter_updates_after_manual_edit(tmp_path: Path) -> None
     files(tmp_path)
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.manual[2] = "trip.jpg"
         app.table_view = TableView(frozenset({"changed"}))
         app.refresh_view()
@@ -206,7 +207,7 @@ async def test_sorted_apply_keeps_collision_order_and_undo(tmp_path: Path) -> No
     (tmp_path / "b.txt").write_text("second")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.manual = {0: "trip.txt", 1: "trip.txt"}
         app.table_view = TableView(descending=True)
         app.refresh_view()
@@ -230,7 +231,7 @@ async def test_new_name_sort_uses_resolved_names_without_reordering_files(tmp_pa
     (tmp_path / "c.txt").write_text("c")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.action_filter_sort()
         await pilot.pause()
         assert str(app.screen.query_one("#view-descending", Checkbox).label) == "Descending"
@@ -258,7 +259,7 @@ async def test_partial_selection_keeps_a_name_reserved_by_an_earlier_file(tmp_pa
     (tmp_path / "c.txt").write_text("c")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         assert [path.name for path in app.files] == [
             "2020-01-01-000000-photo.jpg",
             "2020-01-02-000000-photo.jpg",
@@ -293,7 +294,7 @@ async def test_locked_name_uses_the_collision_base(tmp_path: Path) -> None:
     (tmp_path / "z.jpg").write_bytes(b"z")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.locked = {1: "photo-01.jpg"}
         app.refresh_view()
         await pilot.pause()
@@ -307,7 +308,7 @@ async def test_fit_codes_for_filename_dates_and_file_times(tmp_path: Path) -> No
     (tmp_path / "2020-01-02-photo.jpg").write_bytes(b"x")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app.date_mode = True
         app.refresh_view()
         await pilot.pause()
@@ -331,7 +332,7 @@ async def test_warning_sort_does_not_recompute_neighbors_in_display_order(tmp_pa
     files(tmp_path)
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         facts = {}
         for index, path in enumerate(app.files):
             moment = datetime(2020, 1, 1, tzinfo=timezone.utc)
@@ -366,7 +367,7 @@ async def test_sort_keeps_highlight_scrolled_into_view(tmp_path: Path, monkeypat
         (tmp_path / f"{index:03}.txt").write_text("fixture")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app._move_to(95)
         await pilot.pause()
         table = app.query_one(DataTable)
@@ -404,7 +405,7 @@ async def test_detached_table_highlight_does_not_change_current_file(tmp_path: P
     (tmp_path / "b.txt").write_text("fixture")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app._move_to(1)
         await pilot.pause()
         table = app.query_one(DataTable)
@@ -420,7 +421,7 @@ async def test_column_fit_keeps_queued_cursor_movement(tmp_path: Path, monkeypat
         (tmp_path / f"{index:03}.txt").write_text("fixture")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         table = app.query_one(DataTable)
         with monkeypatch.context() as patch:
             sizes = (app._name_width + 1, app._new_width)
@@ -450,7 +451,7 @@ async def test_refresh_and_column_fit_build_the_name_key_a_few_times(
         (tmp_path / f"photo-{index:02}.txt").write_text("fixture", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         calls = 0
         original = app._names_key
 
@@ -471,7 +472,7 @@ async def test_refresh_and_column_fit_build_the_name_key_a_few_times(
 async def test_resize_events_apply_during_table_rebuild(tmp_path: Path) -> None:
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+        await wait_for_folder_load(app, pilot)
         app._begin_rebuild()
         try:
             await pilot.resize_terminal(80, 30)
