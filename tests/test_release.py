@@ -159,7 +159,7 @@ def test_release_ref_writes_actions_outputs(tmp_path: Path, monkeypatch) -> None
 def test_replace_header_switches_git_source_back_to_pypi() -> None:
     text = (
         '  url "https://github.com/Gradipoo/tui-renamer.git", '
-        f'tag: "v0.1.16", revision: "{"a" * 40}"\n'
+        f'revision: "{"a" * 40}"\n'
         '  version "0.1.16"\n'
         '  license "GPL-3.0-only"\n'
     )

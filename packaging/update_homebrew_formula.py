@@ -117,7 +117,7 @@ def resource_artifact(name: str, payload: dict) -> tuple[str, str]:
 
 
 def replace_header(text: str, url: str, digest: str) -> str:
-    source = r'^  url "[^"\n]+"(?:, tag: "[^"\n]+", revision: "[0-9a-f]+")?\n'
+    source = r'^  url "[^"\n]+"(?:, revision: "[0-9a-f]+")?\n'
     integrity = r'  (?:sha256 "[0-9a-f]+"|version "[^"\n]+")$'
     text, count = re.subn(
         source + integrity,
