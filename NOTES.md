@@ -53,3 +53,7 @@ None.
 - File-table rows use `_visible` to map display positions to canonical `self.files` indexes. Selection, locks, manual names, date plans, and batch execution keep canonical indexes. Never reorder `self.files` to sort the table: it changes collision suffix order and neighbor warnings. Search and visual ranges follow `_visible`.
 
 - Headless tests that expect a populated table must explicitly await `wait_for_folder_load` from `tests/conftest.py`. `pilot.pause()` only waits for UI idle, which can precede worker completion on Windows/Python 3.12. Background-loading tests deliberately control their reader events instead.
+
+- Set filesystem times after all metadata writes. Both piexif and exiftool can change mtime when writing tags. Invalidate cached filename-date plans after time or metadata writes so reopening date mode does not show the old current timestamps.
+- macOS SetFile accepts local wall time. The birth-time helper uses only `-d` with `moment.astimezone()`; `-m` would overwrite the precise mtime already set by `os.utime` and shift it when the selected zone differs from the system zone.
+- Timezone selection reloads with a pending rules copy. Commit the zone only after a successful background read, remap canonical selection/manual/lock/cursor state by file path, and keep the previous rules and cached facts on cancellation or failure.

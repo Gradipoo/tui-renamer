@@ -1072,6 +1072,9 @@ class RenamerApp(App[None]):
         self._loading = False
         self._folder_generation = 0
         self._folder_cancel = Event()
+        self._folder_preserve_state = False
+        self._folder_success_message: str | None = None
+        self._folder_rules: RenameRules | None = None
         self.visual = False
         self.anchor: int | None = None
         self.date_mode = False
@@ -1239,7 +1242,12 @@ class RenamerApp(App[None]):
         if snapshot is not None:
             self._install_folder(snapshot)
 
-    def _install_folder(self, snapshot: FolderSnapshot) -> None:
+    def _install_folder(self, snapshot: FolderSnapshot, *, preserve_state: bool = False) -> None:
+        old_files = self.files
+        selected = self.selected.copy()
+        locked = self.locked.copy()
+        manual = self.manual.copy()
+        cursor, anchor, visual = self._cursor, self.anchor, self.visual
         self.files = snapshot.files
         self._visible = list(range(len(self.files)))
         self.selected.clear()
@@ -1266,6 +1274,28 @@ class RenamerApp(App[None]):
             key: parts for key, parts in self.scan_accepted.items() if key in names
         }
         self.scan_sessions = {key: item for key, item in self.scan_sessions.items() if key in names}
+        if preserve_state:
+            positions = {path: index for index, path in enumerate(self.files)}
+
+            def remap(index: int | None) -> int | None:
+                if index is None or not 0 <= index < len(old_files):
+                    return None
+                return positions.get(old_files[index])
+
+            self.selected = {target for index in selected if (target := remap(index)) is not None}
+            self.locked = {
+                target: name
+                for index, name in locked.items()
+                if (target := remap(index)) is not None
+            }
+            self.manual = {
+                target: name
+                for index, name in manual.items()
+                if (target := remap(index)) is not None
+            }
+            self._cursor = remap(cursor) or 0
+            self.anchor = remap(anchor)
+            self.visual = visual and self.anchor is not None and remap(cursor) is not None
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if self._loading:
@@ -1279,15 +1309,24 @@ class RenamerApp(App[None]):
             self.query_one(selector).disabled = loading
         self.refresh_bindings()
 
-    def _start_folder_load(self) -> None:
+    def _start_folder_load(
+        self,
+        *,
+        preserve_state: bool = False,
+        rules: RenameRules | None = None,
+        success_message: str | None = None,
+    ) -> None:
         self._folder_cancel.set()
         self._folder_cancel = Event()
         self._folder_generation += 1
+        self._folder_preserve_state = preserve_state
+        self._folder_success_message = success_message
+        self._folder_rules = replace(self.rules if rules is None else rules)
         self._preview_gen += 1
         self._set_folder_loading(True)
         self.query_one("#folder-progress", Static).update("Loading folder…")
         self.query_one("#folder-cancel", Button).focus()
-        self._read_folder(self._folder_generation, replace(self.rules), self._folder_cancel)
+        self._read_folder(self._folder_generation, self._folder_rules, self._folder_cancel)
 
     @work(thread=True, group="folder-load", exit_on_error=False)
     def _read_folder(self, generation: int, rules: RenameRules, cancel: Event) -> None:
@@ -1325,8 +1364,12 @@ class RenamerApp(App[None]):
         if event.snapshot is None:
             self.set_status(f"Folder load failed: {event.error or 'no results'}. Press r to retry.")
         else:
-            self._install_folder(event.snapshot)
-            if self.exiftool:
+            if self._folder_rules is not None:
+                self.rules.source_tz = self._folder_rules.source_tz
+            self._install_folder(event.snapshot, preserve_state=self._folder_preserve_state)
+            if self._folder_success_message is not None:
+                self.set_status(self._folder_success_message)
+            elif self.exiftool:
                 self.set_status("File list refreshed")
             else:
                 self.set_status(
@@ -1345,6 +1388,12 @@ class RenamerApp(App[None]):
         self.set_status("Folder loading cancelled. Current work kept. Press r to retry.")
         self._update_status()
         self.query_one(FileTable).focus()
+
+    def _invalidate_metadata(self) -> None:
+        self._facts.clear()
+        self._date_plan = None
+        self._date_plan_key = None
+        self._name_plan_cache = None
 
     def target_zone(self) -> tzinfo:
         return resolve_tz(self.rules.source_tz)
@@ -3400,8 +3449,8 @@ class RenamerApp(App[None]):
                 self._update_status()
                 return
             if selected == "Local System":
-                self.rules.source_tz = None
-                self.set_status("Timezone override cleared (using system time).")
+                source_tz = None
+                message = "Timezone override cleared (using system time)."
             else:
                 try:
                     zone = resolve_tz(selected)
@@ -3409,11 +3458,14 @@ class RenamerApp(App[None]):
                     self.set_status(f"Timezone '{selected}' was not found.")
                     self._update_status()
                     return
-                self.rules.source_tz = selected
+                source_tz = selected
                 offset = format_offset(datetime.now(zone))
-                self.set_status(f"Timezone set to {selected} ({offset}).")
-            self._facts.clear()
-            self.refresh_view()
+                message = f"Timezone set to {selected} ({offset})."
+            self._start_folder_load(
+                preserve_state=True,
+                rules=replace(self.rules, source_tz=source_tz),
+                success_message=message,
+            )
 
         self.push_screen(TimezoneScreen(self.rules.source_tz), done)
 
@@ -3644,8 +3696,6 @@ class RenamerApp(App[None]):
                 errors.append(f"{path.name}: {exc}")
                 continue
             if write_date and item.moment is not None:
-                if not set_filesystem_times(path, item.moment, setfile=self.setfile):
-                    errors.append(f"{path.name}: some filesystem times could not be written")
                 if write_file_metadata_and_offset(path, item.moment, exiftool=self.exiftool):
                     dates += 1
                     details.append(f"Capture date written: {path.name}")
@@ -3657,6 +3707,9 @@ class RenamerApp(App[None]):
                     details.append(f"Description written: {path.name}")
                 else:
                     errors.append(f"{path.name}: description write failed")
+            if write_date and item.moment is not None:
+                if not set_filesystem_times(path, item.moment, setfile=self.setfile):
+                    errors.append(f"{path.name}: some filesystem times could not be written")
             ops.append(op)
         kind = "apply" if pending else "rename"
         batch = Batch(kind, ops)
@@ -3729,7 +3782,7 @@ class RenamerApp(App[None]):
             updated += 1
             details.append(f"File times updated: {path.name}")
         self.journal.push(batch)
-        self._facts.clear()
+        self._invalidate_metadata()
         self.mtime_mode = False
         message = f"Updated mtime for {updated} files."
         if errors:
@@ -3805,29 +3858,31 @@ class RenamerApp(App[None]):
                 self.debug(f"Snapshot failed for {item.path.name}: {exc}")
                 details.append(f"Failed: {item.path.name}; snapshot: {exc}")
                 continue
+            batch.ops.append(op)
+            if op.copy_failed:
+                notes.append(f"{item.path.name}: metadata cannot be undone")
+            metadata_ok = write_file_metadata_and_offset(item.path, moment, exiftool=self.exiftool)
+            if metadata_ok:
+                meta_ok += 1
+            # EXIF writes change mtime, so apply the requested filesystem clock last.
             if not set_filesystem_times(item.path, moment, setfile=self.setfile):
                 errors += 1
-                batch.ops.append(op)
+                meta_state = "written" if metadata_ok else "not written"
                 details.append(
                     f"Partial write: {item.path.name}; some filesystem times failed; "
-                    "recorded for undo"
+                    f"capture metadata {meta_state}; recorded for undo"
                 )
                 continue
-            if write_file_metadata_and_offset(item.path, moment, exiftool=self.exiftool):
-                meta_ok += 1
+            ok += 1
+            if metadata_ok:
                 details.append(f"Dates and capture metadata written: {item.path.name}")
             else:
                 details.append(
                     f"Partial write: {item.path.name}; file times updated, "
                     "capture metadata not written"
                 )
-            ok += 1
-            if op is not None:
-                batch.ops.append(op)
-                if op.copy_failed:
-                    notes.append(f"{item.path.name}: metadata cannot be undone")
         self.journal.push(batch)
-        self._facts.clear()
+        self._invalidate_metadata()
         self.date_mode = False
         note = f" ({meta_ok} EXIF or video tags written)" if meta_ok else ""
         message = f"Set dates on {ok} file(s){note}."
@@ -3881,13 +3936,13 @@ class RenamerApp(App[None]):
                 continue
             if op.copy_failed:
                 notes.append(f"{path.name}: metadata cannot be undone")
-            filesystem_ok = set_filesystem_times(path, moment, setfile=self.setfile)
             if can_write_metadata(path):
                 metadata_ok: bool | None = write_file_metadata_and_offset(
                     path, moment, exiftool=self.exiftool
                 )
             else:
                 metadata_ok = None
+            filesystem_ok = set_filesystem_times(path, moment, setfile=self.setfile)
             tally_write(counts, filesystem_ok=filesystem_ok, metadata_ok=metadata_ok)
             batch.ops.append(op)
             meta_state = (
@@ -3900,7 +3955,7 @@ class RenamerApp(App[None]):
             if metadata_ok is False:
                 self.debug(f"Metadata write failed for {path.name}")
         self.journal.push(batch)
-        self._facts.clear()
+        self._invalidate_metadata()
         message = timezone_write_message(counts)
         if notes:
             message += " " + " ".join(notes)
@@ -3958,7 +4013,7 @@ class RenamerApp(App[None]):
                 details.append(f"Failed: {path.name}; GPS write failed")
             batch.ops.append(op)
         self.journal.push(batch)
-        self._facts.clear()
+        self._invalidate_metadata()
         message = f"Wrote geodata to {updated} files."
         if errors:
             message += f" {errors} failed."

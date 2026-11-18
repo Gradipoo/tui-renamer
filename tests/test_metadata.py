@@ -241,7 +241,8 @@ def test_filesystem_time_and_birth_command(tmp_path: Path, monkeypatch: pytest.M
     assert set_filesystem_times(path, moment, setfile="SetFile", runner=runner) is True
     assert abs(path.stat().st_mtime - moment.timestamp()) < 1
     assert calls[0] == setfile_command("SetFile", path, moment)
-    assert calls[0][1:3] == ["-d", "01/02/2020 03:04:05"]
+    expected_local = datetime.fromtimestamp(moment.timestamp()).strftime("%m/%d/%Y %H:%M:%S")
+    assert calls[0] == ["SetFile", "-d", expected_local, str(path)]
 
     monkeypatch.setattr(sys, "platform", "linux")
     assert set_birthtime(path, moment, setfile="SetFile", runner=runner) is False

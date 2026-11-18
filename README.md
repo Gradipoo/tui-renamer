@@ -37,7 +37,7 @@ Neither install includes HEIC or JPEG XL. The command name stays `rn`.
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.14` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.15` is pushed.
 
 | File | System |
 | --- | --- |
@@ -159,7 +159,7 @@ On Windows, activate with `.venv\Scripts\activate`. Use Python 3.12 or newer for
 
 ### Download a release
 
-Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.14` is pushed.
+Prebuilt programs are attached to [GitHub Releases](https://github.com/Gradipoo/tui-renamer/releases) when a version tag such as `v0.1.15` is pushed.
 
 | File | System |
 | --- | --- |
@@ -340,6 +340,10 @@ locks, and manual names after the existing confirmation. Photo-review staging is
 kept for files still present. Reads already in progress may finish after Cancel;
 their results are discarded. Loading does not rename files or write metadata.
 
+Timezone selection uses the same background loader while keeping selections,
+manual names, locks, and the highlighted file. The new timezone takes effect only
+after loading succeeds. Cancelling or a failed load keeps the previous timezone.
+
 Press `E` or click **Use earliest date** in the rename options to stage one date
 per file. The line below the file list shows the highlighted file's earliest
 available date and source before you choose it, even with the detail pane hidden.
@@ -429,7 +433,7 @@ The command pushes the `v<version>` tag. GitHub Actions builds the binaries, pub
 Before the first run, `brew tap gradipoo/tap` must already exist on this machine, and that checkout must be able to push to `Gradipoo/homebrew-tap`.
 
 When tag pushes are unavailable, create a branch named `release/<version>` from
-the reviewed commit, for example `release/0.1.14`. The release workflow verifies
+the reviewed commit, for example `release/0.1.15`. The release workflow verifies
 that the branch matches the package version and changelog, then publishes PyPI
 and creates the matching GitHub tag and binary release. Ordinary branch pushes
 do not publish. This route still requires updating the Homebrew formula after
