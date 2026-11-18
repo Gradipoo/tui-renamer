@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.17
+
+- Show earliest-date reconciliation in the file table with batch confirmation on Enter.
+- Edit individual date sources and fields with `I`. Leave unresolved rows out of Apply.
+
 ## 0.1.16
 
 - Review and reconcile the earliest filename, filesystem, or capture date with `R`.

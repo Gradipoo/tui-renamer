@@ -318,7 +318,8 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `l` / `L` / `U` | Lock this file / lock selected / unlock all |
 | Enter | Apply the current mode. Asks first |
 | `D` | Filename date mode. Enter sets dates and EXIF |
-| `R` | Review and reconcile earliest dates |
+| `R` | Earliest date mode. Enter reviews the batch |
+| `I` | Edit the highlighted file in earliest date mode |
 | `M` | Set mtime mode. Enter sets times |
 | `W` | Write the local time and timezone offset |
 | `B` | Write JSON location into EXIF GPS |
@@ -359,25 +360,30 @@ locks, manual edits, and batch scope work as usual. This only stages filenames.
 Apply still asks for confirmation, and metadata and file-time write modes remain
 separate.
 
-Press `R` to reconcile earliest dates for the selected files, or just the
-highlighted file when there is no selection. The review compares the existing
-filename date with embedded capture, enabled JSON sidecar, creation, and
-modified times and recommends one date per file. Inspect the old and proposed values, select a different source, or skip a
-file. The review includes selected files hidden by the current filter.
+Press `R` to preview earliest-date reconciliation in the file table. Each
+row shows the chosen date, source, fields that would change, and status. The
+detail pane shows the current and proposed values. The earliest date can come
+from the filename, embedded capture metadata, enabled JSON sidecars, or
+filesystem times.
 
-A timed date replaces the current filename stamp or adds a
-`YYYY-MM-DD-HHMMSS` stamp using the current prefix setting. Names with manual
-edits or locks stay as they are. Rename and filesystem times are enabled by
-default. Enable **Write capture metadata** to include eligible embedded date and
-offset fields. A partial filename date requires an explicit source choice and
-can only set filesystem times. An ambiguous local clock needs another source.
-The review skips colliding destinations and shows which creation time or embedded
-writes are available. Reconcile renames require hard-link support on the filesystem.
+Enter reviews the batch for the selected files, or the whole folder when there
+is no selection. The confirmation counts changes by field and includes hidden
+targets. Ready rows update the filename, modified and access times, creation
+time, and supported embedded dates and offsets together. The filename keeps
+its original text and receives a `YYYY-MM-DD-HHMMSS` stamp when needed. Manual
+or locked names stay in place. Reconcile renames require filesystem hard-link
+support.
 
-The batch writes only after you choose **Apply** in the review. **Last result**
-lists completed changes and failures. Apply and Refresh retain the list
-position, filters, sort, and unrelated staged work. After a rename the highlight
-follows the renamed file when it is still visible.
+Use `I` on a highlighted row to stage a different source, turn off individual
+fields, or skip the file. Rows marked **Needs review** stay out of Apply. For
+example, if the winning filesystem date cannot set capture metadata, choose
+an eligible source or turn off the capture write for that file. Partial dates
+can set filesystem times after an explicit choice. Ambiguous local clocks
+require another source.
+
+Apply and Refresh preserve the current mode, list position, filters, sort,
+selection, and unrelated staging. The highlight follows a renamed file when
+it remains visible. **Last result** lists completed changes and failures.
 
 Controls are grouped by what they do:
 

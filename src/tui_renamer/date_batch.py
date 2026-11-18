@@ -15,6 +15,7 @@ from tui_renamer.metadata import (
     IMAGE_EXTENSIONS,
     PIEXIF_AVAILABLE,
     can_write_metadata,
+    reconcile_metadata_target,
     set_birthtime,
     write_file_metadata_and_offset,
 )
@@ -39,8 +40,8 @@ class DateReviewFile:
     sidecar_revision: tuple[int, ...] | None
     birth: float | None
     modified: float | None
-    hidden: bool
     locked: bool
+    embedded: dict[str, str | None]
 
     def is_current(self) -> bool:
         return (
@@ -88,112 +89,138 @@ def _metadata_available(path: Path, exiftool: str | None) -> bool:
     return bool(exiftool) and can_write_metadata(path)
 
 
+@dataclass(frozen=True)
+class DateReviewRow:
+    detail: str
+    date: str = ""
+    source: str = ""
+    status: str = "Needs review"
+    change: DateChange | None = None
+
+    @property
+    def fields(self) -> str:
+        change = self.change
+        if change is None:
+            return "—"
+        return ", ".join(
+            label
+            for enabled, label in (
+                (change.rename, "Name"),
+                (change.modified, "Mtime"),
+                (change.birth, "Birth"),
+                (change.capture, "Capture"),
+            )
+            if enabled
+        )
+
+
 def review_date_changes(
     files: list[DateReviewFile],
-    choices: list[int | None],
-    filenames: bool,
-    filesystem: bool,
-    capture: bool,
+    options: list[tuple[int | None, bool, bool, bool, bool]],
     *,
     zone: tzinfo,
     prefix: bool,
     exiftool: str | None,
     birth_available: bool,
-) -> tuple[list[DateChange], list[str], str]:
+) -> list[DateReviewRow]:
     proposed = []
-    for file, choice in zip(files, choices, strict=True):
+    for file, (choice, filenames, _, _, _) in zip(files, options, strict=True):
         name = file.path.name
         if filenames and not file.locked and choice is not None:
-            candidate = file.dates.candidates[choice]
-            if not candidate.blocked:
-                name = file.dates.proposed_name(candidate, use_prefix=prefix)
+            name = file.dates.proposed_name(file.dates.candidates[choice], use_prefix=prefix)
         proposed.append(file.path.with_name(name))
     claimed = Counter(
-        target.name.casefold() for file, target in zip(files, proposed) if target != file.path
+        target.name.casefold()
+        for file, target in zip(files, proposed, strict=True)
+        if target != file.path
     )
-    plans = []
-    descriptions = []
-    for file, target, choice in zip(files, proposed, choices, strict=True):
+    rows = []
+    for file, target, (choice, filenames, filesystem, creation, capture) in zip(
+        files, proposed, options, strict=True
+    ):
         lines = [file.path.name]
-        if file.hidden:
-            lines.append("Hidden by current filter")
+        if file.revision is None:
+            rows.append(DateReviewRow("File unavailable or symbolic link."))
+            continue
         if choice is None:
-            lines.append("Skipped. Choose a source to include this file.")
-        else:
-            candidate = file.dates.candidates[choice]
-            moment = candidate.moment.replace(microsecond=0)
-            clock = _display(moment)
-            lines.append(f"Chosen date  {clock}  ·  {candidate.label}")
-            if candidate.warning:
-                lines.append(candidate.warning)
-            if candidate.blocked:
-                lines.append("Skipped. Choose an unambiguous source.")
+            recommended = file.dates.recommended
+            if recommended is None:
+                lines.append("Choose a date source with I, or skip this file.")
+                rows.append(DateReviewRow("\n".join(lines)))
             else:
-                stamp = moment.timestamp()
-                modified = filesystem and (
-                    file.modified is None or abs(stamp - file.modified) >= 0.001
+                if recommended.warning:
+                    lines.append(recommended.warning)
+                lines.append("Choose or confirm a date source with I.")
+                rows.append(
+                    DateReviewRow("\n".join(lines), _display(recommended.moment), recommended.label)
                 )
-                birth = (
-                    filesystem
-                    and birth_available
-                    and (file.birth is None or abs(stamp - file.birth) >= 1)
-                )
-                metadata = (
-                    capture and candidate.capture and _metadata_available(file.path, exiftool)
-                )
-                if target != file.path:
-                    lines.append(f"Filename  →  {target.name}")
-                elif filenames and file.locked:
-                    lines.append("Filename locked")
-                if modified:
-                    lines.append(f"Modified time  {_clock(file.modified, zone)}  →  {clock}")
-                    lines.append(f"Access time  →  {clock}")
-                if birth:
-                    lines.append(f"Creation time  {_clock(file.birth, zone)}  →  {clock}")
-                if filesystem and not birth_available:
-                    lines.append("Creation time write unavailable")
-                if capture and not metadata:
-                    lines.append("Capture write unavailable for this source or file type")
-                if metadata:
-                    current = "\n".join(
-                        f"  {item.label}  {_display(item.instant.astimezone(zone))}"
-                        for item in file.facts.candidates
-                        if item.capture
-                        and item.instant is not None
-                        and item.label != "Filename"
-                        and not item.label.startswith("JSON")
-                    )
-                    lines.append(f"Embedded dates and offsets  →  {clock}")
-                    lines.append(current or "  No embedded capture date found")
-                renamed = target != file.path
-                notes = renamed and _exists(notes_path_for(file.path))
-                collision = renamed and (
-                    claimed[target.name.casefold()] > 1
-                    or _exists(target)
-                    or (notes and _exists(notes_path_for(target)))
-                )
-                if file.revision is None:
-                    lines.append("Skipped. File unavailable.")
-                elif collision:
-                    lines.append("Skipped. Destination filename or notes file is already claimed.")
-                elif renamed or modified or birth or metadata:
-                    if notes:
-                        lines.append(f"Review notes  →  {notes_path_for(target).name}")
-                    plans.append(
-                        DateChange(file.path, target, moment, modified, birth, metadata, notes)
-                    )
-                else:
-                    lines.append("No changes with these options")
-        descriptions.append("\n".join(lines))
-    counts = (
-        f"{len(plans)} of {len(files)} files · "
-        f"{sum(file.hidden for file in files)} hidden in review\n"
-        f"{sum(item.rename for item in plans)} names · "
-        f"{sum(item.modified for item in plans)} modified times · "
-        f"{sum(item.birth for item in plans)} creation times · "
-        f"{sum(item.capture for item in plans)} embedded writes"
-    )
-    return plans, descriptions, counts
+            continue
+        candidate = file.dates.candidates[choice]
+        moment = candidate.moment.replace(microsecond=0)
+        clock = _display(moment)
+        lines.append(f"Chosen date  {clock}  ·  {candidate.label}")
+        if candidate.warning:
+            lines.append(candidate.warning)
+        if candidate.blocked:
+            lines.append("Choose an unambiguous source with I.")
+            rows.append(DateReviewRow("\n".join(lines), clock, candidate.label))
+            continue
+        stamp = moment.timestamp()
+        modified = filesystem and (file.modified is None or abs(stamp - file.modified) >= 0.001)
+        birth = (
+            creation and birth_available and (file.birth is None or abs(stamp - file.birth) >= 1)
+        )
+        embedded_changes = [
+            (tag, value, desired)
+            for tag, value in file.embedded.items()
+            if value != (desired := reconcile_metadata_target(file.path, tag, moment))
+        ]
+        metadata = capture and candidate.capture and bool(embedded_changes)
+        if target != file.path:
+            lines.append(f"Filename  {file.path.name}  →  {target.name}")
+        elif filenames and file.locked:
+            lines.append("Filename has a staged or locked name")
+        if modified:
+            lines.append(f"Modified time  {_clock(file.modified, zone)}  →  {clock}")
+            lines.append(f"Access time  →  {clock}")
+        if birth:
+            lines.append(f"Creation time  {_clock(file.birth, zone)}  →  {clock}")
+        if creation and not birth_available:
+            lines.append("Creation time write unavailable")
+        if capture and not _metadata_available(file.path, exiftool):
+            lines.append("Capture write unavailable for this file type")
+        if metadata:
+            lines.extend(
+                f"{tag}  {value or 'missing'}  →  {new}" for tag, value, new in embedded_changes
+            )
+        renamed = target != file.path
+        notes = renamed and _exists(notes_path_for(file.path))
+        collision = renamed and (
+            claimed[target.name.casefold()] > 1
+            or _exists(target)
+            or (notes and _exists(notes_path_for(target)))
+        )
+        status = "Needs review"
+        change = None
+        if collision:
+            lines.append(
+                "Destination occupied. Choose a different source or exclude Filename with I."
+            )
+        elif capture and not candidate.capture and embedded_changes:
+            lines.append(
+                "This source cannot set capture dates. "
+                "Choose another source or exclude Capture with I."
+            )
+        elif renamed or modified or birth or metadata:
+            if notes:
+                lines.append(f"Review notes  →  {notes_path_for(target).name}")
+            change = DateChange(file.path, target, moment, modified, birth, metadata, notes)
+            status = "Update"
+        else:
+            lines.append("No changes with these options")
+            status = "Match"
+        rows.append(DateReviewRow("\n".join(lines), clock, candidate.label, status, change))
+    return rows
 
 
 def apply_date_changes(

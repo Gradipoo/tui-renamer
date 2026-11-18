@@ -329,13 +329,22 @@ def _exiftool_clock(
     return empty
 
 
-def _exiftool_record(path: Path, tags: tuple[str, ...]) -> dict | None:
-    tool = find_exiftool()
+def _exiftool_record(
+    path: Path, tags: tuple[str, ...], *, tool: str | None = None, quicktime_utc: bool = True
+) -> dict | None:
+    tool = tool or find_exiftool()
     if not tool:
         return None
     try:
         result = subprocess.run(
-            [tool, "-j", *[f"-{tag}" for tag in tags], "-api", "QuickTimeUTC=1", str(path)],
+            [
+                tool,
+                "-j",
+                *[f"-{tag}" for tag in tags],
+                "-api",
+                f"QuickTimeUTC={int(quicktime_utc)}",
+                str(path),
+            ],
             capture_output=True,
             text=True,
             timeout=8,
@@ -493,6 +502,50 @@ def run_command(command: list[str]) -> bool:
     except Exception:
         return False
     return result.returncode == 0
+
+
+def reconcile_metadata_fields(path: Path, exiftool: str | None) -> dict[str, str | None]:
+    """Read the date and offset fields targeted by the reconciliation writer."""
+    dates = ("ModifyDate", "DateTimeOriginal", "CreateDate")
+    offsets = ("OffsetTime", "OffsetTimeOriginal", "OffsetTimeDigitized")
+    if path.suffix.lower() in IMAGE_EXTENSIONS and piexif is not None:
+        try:
+            data = piexif.load(str(path))
+        except Exception:
+            data = {}
+        locations = (
+            ("0th", DATETIME),
+            ("Exif", DATETIME_ORIGINAL),
+            ("Exif", piexif.ExifIFD.DateTimeDigitized),
+            ("Exif", OFFSET_TIME),
+            ("Exif", OFFSET_TIME_ORIGINAL),
+            ("Exif", OFFSET_TIME_DIGITIZED),
+        )
+        return {
+            label: _text(data.get(ifd, {}).get(tag))
+            for label, (ifd, tag) in zip(dates + offsets, locations, strict=True)
+        }
+    if not exiftool or not can_write_metadata(path):
+        return {}
+    if path.suffix.lower() in VIDEO_EXTENSIONS:
+        tags = ("CreationDate", "CreateDate", "ModifyDate")
+        fields = _exiftool_record(
+            path, tuple(f"QuickTime:{tag}" for tag in tags), tool=exiftool, quicktime_utc=False
+        )
+    else:
+        tags = dates + offsets
+        fields = _exiftool_record(path, tags, tool=exiftool)
+    return {tag: _text((fields or {}).get(tag)) for tag in tags}
+
+
+def reconcile_metadata_target(path: Path, field: str, moment: datetime) -> str:
+    local = moment.strftime("%Y:%m:%d %H:%M:%S")
+    offset = format_offset(moment)
+    if path.suffix.lower() in VIDEO_EXTENSIONS:
+        if field == "CreationDate":
+            return local + offset
+        return moment.astimezone(timezone.utc).strftime("%Y:%m:%d %H:%M:%S")
+    return offset if field.startswith("OffsetTime") else local
 
 
 def write_file_metadata_and_offset(

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from textual.widgets import Checkbox, Static
+from textual.widgets import Checkbox
 
 from conftest import wait_for_folder_load
 from tui_renamer.app import RenamerApp
@@ -14,6 +14,7 @@ from tui_renamer.date_batch import DateChange, apply_date_changes
 from tui_renamer.journal import Journal
 from tui_renamer.metadata import read_exif, write_image_exif_datetime
 from tui_renamer.reconcile_ui import ReconcileScreen
+from tui_renamer.table_view import TableView
 
 
 @pytest.mark.parametrize("filename_wins", [False, True])
@@ -33,18 +34,15 @@ async def test_review_apply_and_undo_dates(tmp_path: Path, filename_wins: bool):
         await wait_for_folder_load(app, pilot)
         await pilot.press("R")
         await pilot.pause()
-        assert isinstance(app.screen, ReconcileScreen)
-        assert app.screen.focused.id == "reconcile-cancel"
-        assert not app.screen.query_one("#reconcile-capture", Checkbox).value
-        details = app.screen.query_one("#reconcile-details", Static).render()
-        assert ("Filename" if filename_wins else "EXIF") in str(details)
+        assert app.reconcile_mode and not isinstance(app.screen, ReconcileScreen)
+        assert ("Filename" if filename_wins else "EXIF") in app._detail_text().plain
         assert original.exists()
         assert original.stat().st_mtime == modified
 
-        await pilot.click("#reconcile-capture")
-        await pilot.click("#reconcile-apply")
+        await pilot.press("enter", "y")
         await pilot.pause()
-        assert not isinstance(app.screen, ReconcileScreen)
+        assert app.reconcile_mode
+        assert app._reconcile_rows[app._cursor].status == "Match"
         assert app.files[app._cursor] == target
         assert target.stat().st_mtime == moment.timestamp()
         assert read_exif(target).naive == moment.replace(tzinfo=None)
@@ -90,11 +88,67 @@ async def test_date_review_rejects_modified_source(tmp_path: Path):
         await wait_for_folder_load(app, pilot)
         await pilot.press("R")
         await pilot.pause()
-        assert isinstance(app.screen, ReconcileScreen)
+        await pilot.press("enter")
         new_mtime = datetime(2025, 1, 2, tzinfo=timezone.utc).timestamp()
         os.utime(photo, (new_mtime, new_mtime))
-        await pilot.click("#reconcile-apply")
+        await pilot.press("y")
         await pilot.pause()
         assert photo.stat().st_mtime == new_mtime
         assert not app.journal.batches
         assert "changed during review" in app._message
+
+
+async def test_filesystem_winner_can_be_resolved_in_single_file_editor(tmp_path: Path):
+    photo = tmp_path / "scan.jpg"
+    Image.new("RGB", (8, 8), "red").save(photo)
+    moment = datetime(2000, 1, 2, tzinfo=timezone.utc)
+    os.utime(photo, (moment.timestamp(), moment.timestamp()))
+    app = RenamerApp(tmp_path)
+    app.rules.source_tz = "UTC"
+    async with app.run_test(size=(120, 42)) as pilot:
+        await wait_for_folder_load(app, pilot)
+        await pilot.press("R")
+        assert app._reconcile_rows[0].status == "Needs review"
+        await pilot.press("I")
+        assert isinstance(app.screen, ReconcileScreen)
+        assert app.screen.query_one("#reconcile-capture", Checkbox).value
+        await pilot.click("#reconcile-capture")
+        await pilot.click("#reconcile-apply")
+        await pilot.pause()
+        assert app._reconcile_rows[0].status == "Update"
+        assert photo.exists()
+        await pilot.press("enter", "y")
+        renamed = tmp_path / "2000-01-02-000000-scan.jpg"
+        assert renamed.exists()
+        assert read_exif(renamed).naive is None
+        assert app._reconcile_rows[app._cursor].status == "Match"
+
+
+async def test_batch_applies_hidden_files_and_leaves_unresolved_rows(tmp_path: Path):
+    files = [
+        tmp_path / "2001-02-03-040506-visible.jpg",
+        tmp_path / "2001-02-03-040506-hidden.png",
+        tmp_path / "1999-02-03-partial.jpg",
+    ]
+    for path in files:
+        Image.new("RGB", (8, 8), "red").save(path)
+        os.utime(path, (1700000000, 1700000000))
+    app = RenamerApp(tmp_path)
+    app.rules.source_tz = "UTC"
+    app.table_view = TableView(extension="jpg")
+    async with app.run_test(size=(120, 42)) as pilot:
+        await wait_for_folder_load(app, pilot)
+        await pilot.press("R")
+        assert sorted(row.status for row in app._reconcile_rows) == [
+            "Needs review",
+            "Update",
+            "Update",
+        ]
+        await pilot.press("enter")
+        assert "1 need review" in app.screen.question
+        assert files[1].name in app.screen.question
+        await pilot.press("y")
+        wanted = datetime(2001, 2, 3, 4, 5, 6, tzinfo=timezone.utc).timestamp()
+        assert [path.stat().st_mtime for path in files] == [wanted, wanted, 1700000000]
+        assert app.reconcile_mode
+        assert app.table_view.extension == "jpg"
