@@ -67,6 +67,7 @@ from tui_renamer.core import (
     format_offset,
     format_tz_display,
     is_warning,
+    json_candidates,
     list_timezones,
     looks_like_timezone,
     missing_marks,
@@ -83,6 +84,14 @@ from tui_renamer.core import (
     show_not_oldest_warning,
     timeline_bins,
     utc_from_timestamp,
+)
+from tui_renamer.date_batch import (
+    DateChange,
+    DateReviewFile,
+    apply_date_changes,
+    birth_supported,
+    file_revision,
+    review_date_changes,
 )
 from tui_renamer.extras import InstallOffer, distro_family, install_offers
 from tui_renamer.folder_load import FolderSnapshot, load_folder
@@ -103,6 +112,8 @@ from tui_renamer.metadata import (
     write_geodata,
     write_image_description,
 )
+from tui_renamer.reconcile import reconcile_dates
+from tui_renamer.reconcile_ui import ReconcileResult, ReconcileScreen
 from tui_renamer.scan_backend import OllamaBackend, ScanBackend
 from tui_renamer.scan_bits import (
     PendingScan,
@@ -120,6 +131,7 @@ from tui_renamer.scan_notes import (
     notes_renames,
     rewrite_pairing_names,
     save_notes,
+    takeout_sidecar,
 )
 from tui_renamer.scan_ui import ReviewScreen
 from tui_renamer.search import (
@@ -810,6 +822,7 @@ BATCH_LABEL = {
     "apply": "names and metadata",
     "mtime": "file times",
     "dates": "filename dates",
+    "reconcile": "reconciled dates",
     "timezone": "timezone write",
     "geodata": "GPS write",
 }
@@ -1048,6 +1061,7 @@ class RenamerApp(App[None]):
         Binding("L", "lock_selected", show=False),
         Binding("U", "unlock_all", show=False),
         Binding("D", "date_mode", show=False),
+        Binding("R", "reconcile_dates", show=False),
         Binding("W", "write_timezone", show=False),
         Binding("M", "mtime_mode", show=False),
         Binding("B", "write_geodata", show=False),
@@ -1229,7 +1243,12 @@ class RenamerApp(App[None]):
         self._message = ""
         self._search_nav = False
 
-    def reload_files(self) -> None:
+    def reload_files(
+        self,
+        *,
+        path_map: dict[Path, Path] | None = None,
+        applied_names: Iterable[Path] = (),
+    ) -> None:
         """Synchronous reload for post-write reconciliation and non-UI callers."""
         snapshot = load_folder(
             self.directory,
@@ -1240,9 +1259,21 @@ class RenamerApp(App[None]):
             strict=False,
         )
         if snapshot is not None:
-            self._install_folder(snapshot)
+            self._install_folder(
+                snapshot,
+                preserve_state=True,
+                path_map=path_map,
+                applied_names=applied_names,
+            )
 
-    def _install_folder(self, snapshot: FolderSnapshot, *, preserve_state: bool = False) -> None:
+    def _install_folder(
+        self,
+        snapshot: FolderSnapshot,
+        *,
+        preserve_state: bool = False,
+        path_map: dict[Path, Path] | None = None,
+        applied_names: Iterable[Path] = (),
+    ) -> None:
         old_files = self.files
         selected = self.selected.copy()
         locked = self.locked.copy()
@@ -1264,10 +1295,17 @@ class RenamerApp(App[None]):
         self._cursor = 0
         self.visual = False
         self.anchor = None
-        alive = snapshot.resolved_paths
-        self.scan_pending = {
-            key: item for key, item in self.scan_pending.items() if item.path.resolve() in alive
-        }
+        moved = path_map or {}
+        if moved:
+            self.scan_suffix = self._remap_scan_map(self.scan_suffix, moved)
+            self.scan_accepted = self._remap_scan_map(self.scan_accepted, moved)
+            self.scan_sessions = self._remap_sessions(moved)
+        pending = {}
+        for item in self.scan_pending.values():
+            path = moved.get(item.path, item.path)
+            if path.resolve() in snapshot.resolved_paths:
+                pending[str(path)] = item if path == item.path else replace(item, path=path)
+        self.scan_pending = pending
         names = {str(path) for path in self.files}
         self.scan_suffix = {key: parts for key, parts in self.scan_suffix.items() if key in names}
         self.scan_accepted = {
@@ -1276,26 +1314,29 @@ class RenamerApp(App[None]):
         self.scan_sessions = {key: item for key, item in self.scan_sessions.items() if key in names}
         if preserve_state:
             positions = {path: index for index, path in enumerate(self.files)}
+            applied = set(applied_names)
 
             def remap(index: int | None) -> int | None:
                 if index is None or not 0 <= index < len(old_files):
                     return None
-                return positions.get(old_files[index])
+                path = old_files[index]
+                return positions.get(moved.get(path, path))
 
             self.selected = {target for index in selected if (target := remap(index)) is not None}
             self.locked = {
                 target: name
                 for index, name in locked.items()
-                if (target := remap(index)) is not None
+                if (target := remap(index)) is not None and old_files[index] not in applied
             }
             self.manual = {
                 target: name
                 for index, name in manual.items()
-                if (target := remap(index)) is not None
+                if (target := remap(index)) is not None and old_files[index] not in applied
             }
-            self._cursor = remap(cursor) or 0
+            mapped_cursor = remap(cursor)
+            self._cursor = mapped_cursor if mapped_cursor is not None else -1
             self.anchor = remap(anchor)
-            self.visual = visual and self.anchor is not None and remap(cursor) is not None
+            self.visual = visual and self.anchor is not None and mapped_cursor is not None
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if self._loading:
@@ -1376,7 +1417,7 @@ class RenamerApp(App[None]):
                     "File list refreshed. exiftool is not on PATH. "
                     "Video, HEIC, PNG, CR3, and JPEG XL writes are off."
                 )
-        self.refresh_view()
+        self.refresh_view(keep_position=self._folder_preserve_state)
         self.query_one(FileTable).focus()
 
     def action_cancel_folder_load(self) -> None:
@@ -1516,11 +1557,12 @@ class RenamerApp(App[None]):
         self._name_plan_cache = (key, proposed, resolved)
         return proposed, resolved
 
-    def refresh_view(self) -> None:
+    def refresh_view(self, *, keep_position: bool = False) -> None:
+        row = self.query_one(FileTable).cursor_row if keep_position else 0
         with self._name_plan_scope():
             self._recompute_changing()
             self._recompute_neighbors()
-            self._recompute_visible()
+            self._recompute_visible(fallback_row=row)
             self._fill_table()
             self._sync_options()
             self._update_detail()
@@ -1547,7 +1589,7 @@ class RenamerApp(App[None]):
 
         self.push_screen(FilterSortScreen(self.table_view), done)
 
-    def _recompute_visible(self) -> None:
+    def _recompute_visible(self, *, fallback_row: int = 0) -> None:
         view = self.table_view
         _proposed, resolved = self._name_plan()
         visible = []
@@ -1596,7 +1638,7 @@ class RenamerApp(App[None]):
             self.visual = False
             self.anchor = None
         if self._cursor not in visible:
-            self._cursor = visible[0] if visible else 0
+            self._cursor = visible[min(fallback_row, len(visible) - 1)] if visible else 0
 
     def _recompute_changing(self) -> None:
         """Indexes whose apply preview differs from the file as it is now."""
@@ -1918,19 +1960,22 @@ class RenamerApp(App[None]):
                     DataTable.RowHighlighted(table, table.cursor_row, key)
                 )
 
-    def _restore_table_scroll(self, x: float, y: float, gen: int) -> None:
+    def _restore_table_scroll(self, x: float, y: float, gen: int, cursor_moved: bool) -> None:
         if gen != self._scroll_restore_gen:
             return
         try:
             table = self.query_one(FileTable)
         except NoMatches:
             return
-        table.scroll_to(x, y, animate=False)
+        table.scroll_to(x, y, animate=False, immediate=True)
+        if cursor_moved and table.row_count:
+            table.move_cursor()
 
     def _fill_table(self) -> None:
         table = self.query_one(FileTable)
         scroll_x = table.scroll_x
         scroll_y = table.scroll_y
+        previous_row = table.cursor_row
         self._scroll_restore_gen += 1
         gen = self._scroll_restore_gen
         self._begin_rebuild()
@@ -1952,7 +1997,13 @@ class RenamerApp(App[None]):
         if scroll_x or scroll_y:
             table.scroll_to(scroll_x, scroll_y, animate=False)
             # After the cursor watcher scrolls the row into view.
-            table.call_after_refresh(self._restore_table_scroll, scroll_x, scroll_y, gen)
+            table.call_after_refresh(
+                self._restore_table_scroll,
+                scroll_x,
+                scroll_y,
+                gen,
+                table.cursor_row != previous_row,
+            )
         self.call_after_refresh(self._end_rebuild)
 
     def _paint_rows(self, indexes: Iterable[int]) -> None:
@@ -3395,18 +3446,7 @@ class RenamerApp(App[None]):
         if self._loading:
             return
         self._begin()
-
-        def refresh() -> None:
-            self._start_folder_load()
-
-        if self.selected or self.locked or self.manual:
-            self._ask(
-                "A completed refresh clears selections, locks and staged manual names. "
-                "Photo-review staging is kept for files still present. Continue? y or n",
-                refresh,
-            )
-        else:
-            refresh()
+        self._start_folder_load(preserve_state=True)
 
     def action_insert(self) -> None:
         self._begin()
@@ -3662,9 +3702,6 @@ class RenamerApp(App[None]):
                     except OSError as exc:
                         errors.append(f"{dst.name}: updating notes references failed: {exc}")
             path_map = {src: dst for src, dst in outcome.done}
-            self.scan_suffix = self._remap_scan_map(self.scan_suffix, path_map)
-            self.scan_accepted = self._remap_scan_map(self.scan_accepted, path_map)
-            self.scan_sessions = self._remap_sessions(path_map)
             renamed = len(outcome.done)
             conflicts = outcome.conflicts
             errors.extend(outcome.errors)
@@ -3719,8 +3756,9 @@ class RenamerApp(App[None]):
                 "newly created notes may remain."
             )
         self.journal.push(batch)
-        self.scan_pending.clear()
-        self.reload_files()
+        for item in pending:
+            self.scan_pending.pop(str(item.path), None)
+        self.reload_files(path_map=path_map, applied_names=path_map)
         parts: list[str] = []
         if pairs:
             parts.append(f"Renamed {renamed} files.")
@@ -3737,7 +3775,7 @@ class RenamerApp(App[None]):
             self.debug("; ".join(errors))
         details.extend(f"Failed: {error}" for error in errors)
         self._record_result(" ".join(parts) if parts else "Applied notes.", details, batch)
-        self.refresh_view()
+        self.refresh_view(keep_position=True)
 
     def _ask_mtime(self) -> None:
         if not self.selected:
@@ -3783,12 +3821,125 @@ class RenamerApp(App[None]):
             details.append(f"File times updated: {path.name}")
         self.journal.push(batch)
         self._invalidate_metadata()
-        self.mtime_mode = False
         message = f"Updated mtime for {updated} files."
         if errors:
             message += f" {errors} failed."
         self._record_result(message, details, batch)
-        self.refresh_view()
+        self.refresh_view(keep_position=True)
+
+    def action_reconcile_dates(self) -> None:
+        if self._loading or self._find_open:
+            return
+        self._begin()
+        visible = set(self._visible)
+        zone = self.target_zone()
+        files: list[DateReviewFile] = []
+        indexes = self._targets()
+        for index in indexes:
+            path = self.files[index]
+            revision = file_revision(path)
+            if revision is None or path.is_symlink():
+                continue
+            sidecar = (
+                takeout_sidecar(path, json_candidates(path)) if self.rules.use_json_data else None
+            )
+            sidecar_revision = file_revision(sidecar) if sidecar is not None else None
+            facts = inspect_file(path, self.rules, zone)
+            try:
+                info = path.stat()
+            except OSError:
+                continue
+            birth = getattr(info, "st_birthtime", info.st_ctime if os.name == "nt" else None)
+            if birth is None:
+                # POSIX ctime records inode changes, so it cannot stand in for creation time.
+                facts.candidates = [item for item in facts.candidates if item.label != "birth"]
+                if facts.earliest_fallback is not None and facts.earliest_fallback.label == "birth":
+                    facts.earliest_fallback = None
+            files.append(
+                DateReviewFile(
+                    path,
+                    facts,
+                    reconcile_dates(path.name, facts, zone),
+                    revision,
+                    sidecar_revision,
+                    birth,
+                    info.st_mtime,
+                    index not in visible,
+                    index in self.locked or index in self.manual,
+                )
+            )
+        if not files:
+            self.set_status("No available files to review.")
+            self._update_status()
+            return
+        initial = [
+            file.dates.candidates.index(file.dates.recommended)
+            if file.dates.recommended is not None and file.dates.recommended.precision == "second"
+            else None
+            for file in files
+        ]
+        choices = [
+            [
+                f"{item.label} · {item.moment:%Y-%m-%d %H:%M:%S} {format_offset(item.moment)}"
+                for item in file.dates.candidates
+            ]
+            for file in files
+        ]
+        approved: list[DateChange] = []
+        unavailable = len(indexes) - len(files)
+
+        def describe(
+            selected: list[int | None], filenames: bool, filesystem: bool, capture: bool
+        ) -> tuple[str, list[str], bool]:
+            plans, details, summary = review_date_changes(
+                files,
+                selected,
+                filenames,
+                filesystem,
+                capture,
+                zone=zone,
+                prefix=self.rules.use_prefix,
+                exiftool=self.exiftool,
+                birth_available=birth_supported(self.setfile),
+            )
+            approved[:] = plans
+            if unavailable:
+                summary += f"\n{unavailable} missing or symbolic-link targets skipped."
+            return summary + "\nSession undo available until quit.", details, bool(plans)
+
+        def confirm(result: ReconcileResult | None) -> None:
+            if result is None:
+                return
+            targets = {item.path for item in approved}
+            if any(
+                not file.is_current()
+                or (
+                    self.rules.use_json_data
+                    and takeout_sidecar(file.path, json_candidates(file.path)) != file.facts.sidecar
+                )
+                for file in files
+                if file.path in targets
+            ):
+                self.set_status("Files changed during review. Press R to review again.")
+                self._update_status()
+                return
+            self._do_reconcile_dates(approved, zone)
+
+        self.push_screen(
+            ReconcileScreen([file.path for file in files], choices, describe, initial=initial),
+            confirm,
+        )
+
+    def _do_reconcile_dates(self, changes: list[DateChange], zone: tzinfo) -> None:
+        batch, moved, details, errors = apply_date_changes(
+            changes, self.journal, zone=zone, exiftool=self.exiftool, setfile=self.setfile
+        )
+        self.journal.push(batch)
+        self.reload_files(path_map=moved)
+        message = f"Reconciled dates and names. {len(details)} changes, {len(errors)} failures."
+        details.extend(f"Failed: {error}" for error in errors)
+        self._record_result(message, details, batch)
+        self.refresh_view(keep_position=True)
 
     def _ask_dates(self) -> None:
         if self.selected:
@@ -3883,7 +4034,6 @@ class RenamerApp(App[None]):
                 )
         self.journal.push(batch)
         self._invalidate_metadata()
-        self.date_mode = False
         note = f" ({meta_ok} EXIF or video tags written)" if meta_ok else ""
         message = f"Set dates on {ok} file(s){note}."
         if errors:
@@ -3891,7 +4041,7 @@ class RenamerApp(App[None]):
         if notes:
             message += " " + " ".join(notes)
         self._record_result(message, details, batch)
-        self.refresh_view()
+        self.refresh_view(keep_position=True)
 
     def action_write_timezone(self) -> None:
         if self._loading:
@@ -4033,26 +4183,18 @@ class RenamerApp(App[None]):
 
         def restore_birth(path: Path, birth: float) -> None:
             moment = utc_from_timestamp(birth)
-            if moment is None:
+            if moment is None or not birth_supported(self.setfile):
                 return
-            set_birthtime(path, moment.astimezone(), setfile=self.setfile)
+            if not set_birthtime(path, moment.astimezone(), setfile=self.setfile):
+                raise OSError("creation time could not be restored")
 
         last = self.journal.batches[-1] if self.journal.batches else None
-        reverse = (
-            {op.dst: op.src for op in last.ops if isinstance(op, RenameOp)}
-            if last is not None
-            else {}
-        )
         result = self.journal.undo(restore_birth=restore_birth)
         if result is None:
             self.set_status("Nothing to undo.")
             self._update_status()
             return
-        if reverse:
-            self.scan_suffix = self._remap_scan_map(self.scan_suffix, reverse)
-            self.scan_accepted = self._remap_scan_map(self.scan_accepted, reverse)
-            self.scan_sessions = self._remap_sessions(reverse)
-        self.reload_files()
+        self.reload_files(path_map=result.renamed)
         message = (
             f"Undid {BATCH_LABEL.get(result.kind, result.kind)} ({result.restored} steps restored)."
         )
@@ -4067,7 +4209,7 @@ class RenamerApp(App[None]):
                 for op in reversed(last.ops)
             )
         self._record_result(message, details)
-        self.refresh_view()
+        self.refresh_view(keep_position=True)
 
 
 def _local_zone() -> tzinfo:

@@ -167,6 +167,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     _spec("Batch actions", "enter", "Apply", "Apply the current mode", "apply"),
     _spec("Apply mode", "D", "Filename date", "Set dates from filenames", "date_mode", "date_mode"),
     _spec(
+        "Batch actions",
+        "R",
+        "Reconcile earliest date",
+        "Review filename, filesystem, and capture dates before applying changes",
+        "reconcile_dates",
+    ),
+    _spec(
         "Write after confirmation",
         "W",
         "Write zone",

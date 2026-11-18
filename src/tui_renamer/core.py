@@ -564,31 +564,51 @@ def rename_paths(pairs: list[tuple[Path, str]]) -> RenameOutcome:
 
 def parse_filename_datetime(name: str) -> tuple[datetime | None, str | None]:
     """Return a naive datetime and 'second', 'minute', or 'date'."""
+    moment, precision, _span = filename_date_match(name)
+    return moment, precision
+
+
+def filename_date_match(
+    name: str,
+) -> tuple[datetime | None, str | None, tuple[int, int] | None]:
+    """Also return the span of the parsed date within the filename stem."""
     stem = Path(name).stem
     first_date_only: datetime | None = None
+    first_span = None
     for match in FILENAME_DATE_RE.finditer(stem):
         year, month, day, hour, minute, second = match.groups()
         try:
             if hour is None:
                 if first_date_only is None:
                     first_date_only = datetime(int(year), int(month), int(day))
+                    first_span = match.span()
                 continue
             precision = "second" if second else "minute"
+            start, end = match.span()
+            # A dash after a canonical stamp can start a numeric collision suffix.
+            if (
+                second
+                and match.end(6) < end
+                and stem[match.end(6)] == "-"
+                and stem[start : match.end(6)] == f"{year}-{month}-{day}-{hour}{minute}{second}"
+            ):
+                end = match.end(6)
             return (
                 datetime(int(year), int(month), int(day), int(hour), int(minute), int(second or 0)),
                 precision,
+                (start, end),
             )
         except ValueError:
             continue
     if first_date_only is not None:
-        return first_date_only, "date"
+        return first_date_only, "date", first_span
 
     for match in _NATURAL_YMD_RE.finditer(stem):
         try:
             y = int(match.group(1))
             m_idx = _NATURAL_MONTH_NAMES[match.group(2).casefold()]
             d = int(match.group(3))
-            return datetime(y, m_idx, d), "date"
+            return datetime(y, m_idx, d), "date", match.span()
         except ValueError:
             continue
 
@@ -597,7 +617,7 @@ def parse_filename_datetime(name: str) -> tuple[datetime | None, str | None]:
             m_idx = _NATURAL_MONTH_NAMES[match.group(1).casefold()]
             d = int(match.group(2))
             y = int(match.group(3))
-            return datetime(y, m_idx, d), "date"
+            return datetime(y, m_idx, d), "date", match.span()
         except ValueError:
             continue
 
@@ -606,11 +626,11 @@ def parse_filename_datetime(name: str) -> tuple[datetime | None, str | None]:
             d = int(match.group(1))
             m_idx = _NATURAL_MONTH_NAMES[match.group(2).casefold()]
             y = int(match.group(3))
-            return datetime(y, m_idx, d), "date"
+            return datetime(y, m_idx, d), "date", match.span()
         except ValueError:
             continue
 
-    return None, None
+    return None, None, None
 
 
 def naive_to_ts(moment: datetime, source_tz: tzinfo | None) -> float:

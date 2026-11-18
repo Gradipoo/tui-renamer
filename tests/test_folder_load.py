@@ -124,7 +124,6 @@ async def test_cancelled_refresh_keeps_staging_and_rejects_old_results(tmp_path:
 
             monkeypatch.setattr("tui_renamer.app.inspect_file", reader)
             await pilot.press("r")
-            await pilot.press("y")
             assert await asyncio.to_thread(started.wait, 3)
             generation = app._folder_generation
             await pilot.press("escape")
@@ -137,12 +136,14 @@ async def test_cancelled_refresh_keeps_staging_and_rejects_old_results(tmp_path:
             assert app._facts == old_facts
             # Restart while a cancelled reader is still finishing.
             release.set()
-            await pilot.press("r", "y")
+            await pilot.press("r")
             app.on_folder_load_progress(FolderLoadProgress(generation, 99, 99))
             app.on_folder_load_finished(FolderLoadFinished(generation, None, "stale error"))
             await wait_loaded(app, pilot)
             assert app.files == [photo]
-            assert not app.selected and not app.locked and not app.manual
+            assert app.selected == {0}
+            assert app.locked == {0: "locked.txt"}
+            assert app.manual == {0: "manual.txt"}
             assert app.scan_suffix[str(photo)] == ["tag"]
             assert "stale error" not in app._message
             assert photo.read_text() == "fixture"
@@ -162,16 +163,16 @@ async def test_failed_load_keeps_current_files_and_can_retry(tmp_path: Path, mon
             raise OSError("cannot read fixture [/bold]")
 
         monkeypatch.setattr("tui_renamer.app.inspect_file", fail)
-        await pilot.press("r", "y")
+        await pilot.press("r")
         await wait_loaded(app, pilot)
         assert app.files == [photo]
         assert app.manual == {0: "manual.txt"}
         assert "cannot read fixture" in app._message
         assert not app.query_one("#body").disabled
         monkeypatch.setattr("tui_renamer.app.inspect_file", inspect_file)
-        await pilot.press("r", "y")
+        await pilot.press("r")
         await wait_loaded(app, pilot)
-        assert not app.manual
+        assert app.manual == {0: "manual.txt"}
         assert photo.read_text() == "fixture"
 
 

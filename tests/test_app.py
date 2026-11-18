@@ -2126,29 +2126,23 @@ async def test_edit_name_stages_on_enter_and_escape_cancels(tmp_path: Path) -> N
         assert source.exists()
 
 
-async def test_refresh_cancel_preserves_staged_work(tmp_path: Path) -> None:
-    from tui_renamer.app import ConfirmScreen
-
-    (tmp_path / "original.txt").write_text("keep", encoding="utf-8")
+async def test_refresh_remaps_staging_and_highlight_by_path(tmp_path: Path) -> None:
+    original = tmp_path / "original.txt"
+    original.write_text("keep", encoding="utf-8")
     app = RenamerApp(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_for_folder_load(app, pilot)
         app.selected.add(0)
         app.manual[0] = "staged.txt"
         app.locked[0] = "locked.txt"
+        (tmp_path / "earlier.txt").write_text("new fixture", encoding="utf-8")
         await pilot.press("r")
-        assert isinstance(app.screen, ConfirmScreen)
-        await pilot.press("escape")
-        await pilot.pause()
-        assert app.selected == {0}
-        assert app.manual == {0: "staged.txt"}
-        assert app.locked == {0: "locked.txt"}
-        await pilot.press("r", "y")
-        await pilot.pause()
-        assert not app.selected
-        assert not app.manual
-        assert not app.locked
-        assert (tmp_path / "original.txt").exists()
+        await wait_for_folder_load(app, pilot)
+        assert app.files[app._cursor] == original
+        assert app.selected == {1}
+        assert app.manual == {1: "staged.txt"}
+        assert app.locked == {1: "locked.txt"}
+        assert original.read_text(encoding="utf-8") == "keep"
 
 
 async def test_layout_prioritizes_files_and_review_actions_fit(tmp_path: Path) -> None:

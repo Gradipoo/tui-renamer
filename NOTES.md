@@ -56,4 +56,12 @@ None.
 
 - Set filesystem times after all metadata writes. Both piexif and exiftool can change mtime when writing tags. Invalidate cached filename-date plans after time or metadata writes so reopening date mode does not show the old current timestamps.
 - macOS SetFile accepts local wall time. The birth-time helper uses only `-d` with `moment.astimezone()`; `-m` would overwrite the precise mtime already set by `os.utime` and shift it when the selected zone differs from the system zone.
-- Timezone selection reloads with a pending rules copy. Commit the zone only after a successful background read, remap canonical selection/manual/lock/cursor state by file path, and keep the previous rules and cached facts on cancellation or failure.
+- Timezone selection reloads with a pending rules copy. Commit the zone only after a successful background read. Timezone selection, Refresh, and post-write reloads remap canonical selection, manual names, locks, and the cursor by file path. Post-write reloads can follow successful renames and clear only the name staging they applied. Filename-date and file-time Apply keep their modes active for review.
+
+- Earliest-date reconciliation uses one reviewed instant per file. The review
+  rechecks the source revision and sidecar before writing. Date-only and
+  minute-only choices can set file times after an explicit choice, but keep the
+  original filename and cannot become capture metadata. Reconcile renames and
+  their undo use an exclusive hard link followed by unlink to avoid replacing an
+  occupied destination. An unsupported filesystem fails that rename before
+  writing timestamps for the file.

@@ -318,6 +318,7 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `l` / `L` / `U` | Lock this file / lock selected / unlock all |
 | Enter | Apply the current mode. Asks first |
 | `D` | Filename date mode. Enter sets dates and EXIF |
+| `R` | Review and reconcile earliest dates |
 | `M` | Set mtime mode. Enter sets times |
 | `W` | Write the local time and timezone offset |
 | `B` | Write JSON location into EXIF GPS |
@@ -335,10 +336,10 @@ Startup and Refresh folder read metadata in the background and show a completed
 file count. Press Esc or click **Cancel loading** to stop, or `q` to quit. File
 actions, including Apply, are unavailable while loading. A refresh keeps the
 current table and staged work until the new folder is ready. Cancelling or a
-failed read keeps that work; `r` retries. A completed refresh clears selections,
-locks, and manual names after the existing confirmation. Photo-review staging is
-kept for files still present. Reads already in progress may finish after Cancel;
-their results are discarded. Loading does not rename files or write metadata.
+failed read keeps that work. Press `r` to retry. A completed refresh keeps the
+highlighted file, view settings, selections, locks, manual names, and photo-review
+staging for files still present. Reads already in progress may finish after Cancel
+and their results are discarded. Loading does not rename files or write metadata.
 
 Timezone selection uses the same background loader while keeping selections,
 manual names, locks, and the highlighted file. The new timezone takes effect only
@@ -357,6 +358,26 @@ Earliest off; their existing combinations still work. Prefix/Suffix placement,
 locks, manual edits, and batch scope work as usual. This only stages filenames.
 Apply still asks for confirmation, and metadata and file-time write modes remain
 separate.
+
+Press `R` to reconcile earliest dates for the selected files, or just the
+highlighted file when there is no selection. The review compares the existing
+filename date with embedded capture, enabled JSON sidecar, creation, and
+modified times and recommends one date per file. Inspect the old and proposed values, select a different source, or skip a
+file. The review includes selected files hidden by the current filter.
+
+A timed date replaces the current filename stamp or adds a
+`YYYY-MM-DD-HHMMSS` stamp using the current prefix setting. Names with manual
+edits or locks stay as they are. Rename and filesystem times are enabled by
+default. Enable **Write capture metadata** to include eligible embedded date and
+offset fields. A partial filename date requires an explicit source choice and
+can only set filesystem times. An ambiguous local clock needs another source.
+The review skips colliding destinations and shows which creation time or embedded
+writes are available. Reconcile renames require hard-link support on the filesystem.
+
+The batch writes only after you choose **Apply** in the review. **Last result**
+lists completed changes and failures. Apply and Refresh retain the list
+position, filters, sort, and unrelated staged work. After a rename the highlight
+follows the renamed file when it is still visible.
 
 Controls are grouped by what they do:
 
@@ -402,7 +423,7 @@ Esc closes find first, then leaves a zoomed pane, then leaves visual, filename d
 
 MOV, MP4, and M4V use the QuickTime creation date when the file stores one. That source is Q. A video with no capture date is not marked as missing EXIF. `exiftool` is only a fallback for reading those files, and it is still required to write video, HEIC, PNG, CR3, and JPEG XL dates. JPEG XL dates are read from the Exif box, then exiftool, without the plugin. Preview uses `djxl` when it is on `PATH`.
 
-Locked names stay put when you change toggles. A manual edit is used until you lock that file. Refresh asks before clearing selection, locks, and staged manual names. Cancel keeps that work. Photo-review staging is retained for files still present.
+Locked names stay put when you change toggles. A manual edit is used until you lock that file. Refresh retains selection, locks, manual names, and photo-review staging for files still present.
 
 Filename dates understand `2024-01-31-142500`, `IMG_20240131_142500`, `2024-01-31 14.25.00`, `2024-01-31_1425`, `20240131`, `20240101T123456`, subsecond timestamps, app conventions (such as `IMG-YYYYMMDD-WA0001` or macOS/Android screenshots), and natural written days (such as `October 20, 1994` or `1994-Oct-20`). A date with no time becomes 12:00, unless the file's calendar day already matches, in which case the clock is left alone. If two files land on the same second, the later one is nudged by one second.
 
