@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.16
+
+- Review and reconcile the earliest filename, filesystem, or capture date with `R`.
+- Inspect and override the proposed date per file before applying filename, filesystem, or optional capture metadata updates.
+- Keep the highlighted file, scroll position, filters, sort, and unrelated staging after Apply and Refresh.
+
 ## 0.1.15
 
 - Preserve the requested modified timestamp by applying filesystem dates after metadata writes.

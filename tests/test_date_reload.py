@@ -11,9 +11,78 @@ from PIL import Image
 from textual.widgets import Button
 
 from conftest import wait_for_folder_load
-from tui_renamer.app import RenamerApp, TimezoneScreen
+from tui_renamer.app import FileTable, RenamerApp, TimezoneScreen
 from tui_renamer.metadata import inspect_file, read_exif, write_image_exif_datetime
 from tui_renamer.scan_bits import PendingScan
+from tui_renamer.table_view import TableView
+
+
+async def test_filename_date_apply_and_refresh_keep_working_position(tmp_path: Path):
+    for index in range(36):
+        (tmp_path / f"file-{index:02}.jpg").write_text("fixture")
+    photo = tmp_path / "2024-01-15-142500.jpg"
+    Image.new("RGB", (16, 16), "red").save(photo)
+    os.utime(photo, (1700000000, 1700000000))
+    app = RenamerApp(tmp_path)
+    app.rules.source_tz = "UTC"
+    app.table_view = TableView(extension="jpg", descending=True)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await wait_for_folder_load(app, pilot)
+        row = app.files.index(photo)
+        app.selected = {row}
+        app.manual[row] = "still-staged.jpg"
+        await pilot.press("D")
+        app._move_to(row)
+        await pilot.pause()
+        table = app.query_one(FileTable)
+        assert table.scroll_y > 0
+        scroll_y = table.scroll_y
+
+        await pilot.press("enter", "y")
+        await pilot.pause()
+        assert app.date_mode
+        assert app.files[app._cursor] == photo
+        assert table.scroll_y == scroll_y
+        assert not app.cached_date_plan().todo
+
+        await pilot.press("r")
+        await wait_for_folder_load(app, pilot)
+        assert app.date_mode
+        assert app.files[app._cursor] == photo
+        assert table.scroll_y == scroll_y
+        assert app.table_view == TableView(extension="jpg", descending=True)
+        assert app.rules.source_tz == "UTC"
+        assert app.selected == {row}
+        assert app.manual == {row: "still-staged.jpg"}
+
+
+async def test_rename_apply_follows_file_and_keeps_unrelated_staging(tmp_path: Path):
+    source = tmp_path / "source.txt"
+    other = tmp_path / "other.txt"
+    for path in (source, other):
+        path.write_text("fixture")
+    for index in range(36):
+        (tmp_path / f"file-{index:02}.txt").write_text("fixture")
+    app = RenamerApp(tmp_path)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await wait_for_folder_load(app, pilot)
+        index = app.files.index(source)
+        app._move_to(index)
+        app.selected = {index}
+        app.manual = {index: "a-first.txt"}
+        app.locked = {app.files.index(other): other.name}
+        app.refresh_view()
+        await pilot.pause()
+        table = app.query_one(FileTable)
+        assert table.scroll_y > 0
+
+        await pilot.press("enter", "y")
+        await pilot.pause()
+        assert app.files[app._cursor] == tmp_path / "a-first.txt"
+        assert app.selected == {app._cursor}
+        assert not app.manual
+        assert app.locked == {app.files.index(other): other.name}
+        assert table.scroll_y == 0
 
 
 async def test_filename_dates_survive_metadata_write_and_invalidate_plan(tmp_path: Path):

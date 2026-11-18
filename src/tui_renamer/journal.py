@@ -19,6 +19,7 @@ from tui_renamer.metadata import PIEXIF_AVAILABLE, piexif, snapshot_mode
 class RenameOp:
     src: Path
     dst: Path
+    require_free: bool = False
 
 
 @dataclass
@@ -46,6 +47,7 @@ class UndoResult:
     kind: str
     restored: int
     notes: list[str]
+    renamed: dict[Path, Path] = field(default_factory=dict)
 
 
 class Journal:
@@ -103,17 +105,30 @@ class Journal:
         batch = self.batches.pop()
         notes = list(batch.notes)
         restored = 0
+        renamed: dict[Path, Path] = {}
         for op in reversed(batch.ops):
             if isinstance(op, RenameOp):
                 ok = _undo_rename(op, notes)
+                if ok:
+                    renamed[op.dst] = op.src
             else:
                 ok = _undo_meta(op, notes, restore_birth)
             if ok:
                 restored += 1
-        return UndoResult(batch.kind, restored, notes)
+        return UndoResult(batch.kind, restored, notes, renamed)
 
     def cleanup(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+
+def move_to_free_path(source: Path, target: Path) -> None:
+    """Move within a folder without replacing an occupied destination."""
+    os.link(source, target, follow_symlinks=False)
+    try:
+        source.unlink()
+    except OSError:
+        target.unlink()
+        raise
 
 
 def _undo_rename(op: RenameOp, notes: list[str]) -> bool:
@@ -122,6 +137,13 @@ def _undo_rename(op: RenameOp, notes: list[str]) -> bool:
     if not op.dst.exists():
         notes.append(f"{op.dst.name} is missing, so it was not restored")
         return False
+    if op.require_free:
+        try:
+            move_to_free_path(op.dst, op.src)
+        except OSError as exc:
+            notes.append(f"{op.dst.name}: {exc}")
+            return False
+        return True
     try:
         os.replace(op.dst, op.src)
         return True
