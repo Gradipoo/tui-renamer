@@ -117,16 +117,17 @@ def resource_artifact(name: str, payload: dict) -> tuple[str, str]:
 
 
 def replace_header(text: str, url: str, digest: str) -> str:
-    text, url_count = re.subn(r'^  url ".*"$', f'  url "{url}"', text, count=1, flags=re.M)
-    text, sha_count = re.subn(
-        r'^  sha256 "[0-9a-f]+"$',
-        f'  sha256 "{digest}"',
+    source = r'^  url "[^"\n]+"(?:, tag: "[^"\n]+", revision: "[0-9a-f]+")?\n'
+    integrity = r'  (?:sha256 "[0-9a-f]+"|version "[^"\n]+")$'
+    text, count = re.subn(
+        source + integrity,
+        lambda _match: f'  url "{url}"\n  sha256 "{digest}"',
         text,
         count=1,
         flags=re.M,
     )
-    if url_count != 1 or sha_count != 1:
-        raise SystemExit("Could not find the formula url and sha256 lines")
+    if count != 1:
+        raise SystemExit("Could not find the formula source and checksum or version")
     return text
 
 

@@ -154,3 +154,17 @@ def test_release_ref_writes_actions_outputs(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     release_ref_main()
     assert output.read_text().splitlines() == ["version=0.2.0", "tag=v0.2.0", "publish=true"]
+
+
+def test_replace_header_switches_git_source_back_to_pypi() -> None:
+    text = (
+        '  url "https://github.com/Gradipoo/tui-renamer.git", '
+        f'tag: "v0.1.16", revision: "{"a" * 40}"\n'
+        '  version "0.1.16"\n'
+        '  license "GPL-3.0-only"\n'
+    )
+    url = "https://files.example/tui_renamer-0.1.17.tar.gz"
+    digest = "ab" * 32
+    assert update_homebrew_formula.replace_header(text, url, digest) == (
+        f'  url "{url}"\n  sha256 "{digest}"\n  license "GPL-3.0-only"\n'
+    )
