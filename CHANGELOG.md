@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.18
+
+- Load earliest-date previews in the background and keep previews visible for unselected files.
+- Show colored diffs and add earliest-date controls to Metadata and file times.
+- Use `C` to stage one exact timestamp for the selection.
+
 ## 0.1.17
 
 - Show earliest-date reconciliation in the file table with batch confirmation on Enter.

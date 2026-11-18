@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import datetime, tzinfo
 from pathlib import Path
 from threading import Event
+from time import monotonic
 
 from rich.style import Style
 from rich.text import Text
@@ -114,8 +115,17 @@ from tui_renamer.metadata import (
     write_geodata,
     write_image_description,
 )
-from tui_renamer.reconcile import ReconcileCandidate, reconcile_dates
-from tui_renamer.reconcile_ui import ReconcileResult, ReconcileScreen
+from tui_renamer.reconcile import (
+    ReconcileCandidate,
+    assigned_reconcile_candidate,
+    reconcile_dates,
+)
+from tui_renamer.reconcile_ui import (
+    ChooseReconcileDateScreen,
+    ReconcileResult,
+    ReconcileScreen,
+    format_reconcile_detail,
+)
 from tui_renamer.scan_backend import OllamaBackend, ScanBackend
 from tui_renamer.scan_bits import (
     PendingScan,
@@ -177,6 +187,7 @@ TOGGLE_TIPS = {
     "replace_spaces": "Spaces become dashes",
     "replace_dots": "Dots to dashes",
     "date_mode": "Set dates from filenames",
+    "reconcile_mode": "Preview earliest dates across filenames, file times, and metadata",
     "mtime_mode": "Set mtime mode",
     "preview": "Show or hide the preview",
 }
@@ -187,6 +198,8 @@ BUTTON_TIPS = {
     "act-zone": "Choose a timezone",
     "act-write-zone": "Write date and timezone offset",
     "act-gps": "Write JSON location into EXIF",
+    "act-reconcile-date": "Choose one date for the selected files",
+    "act-edit-reconcile": "Edit date and fields for the highlighted file",
     "act-refresh": "Reload the folder",
     "act-reset": "Reset name options",
     "act-scan": "Review this photo",
@@ -275,6 +288,24 @@ class FolderLoadFinished(Message):
         super().__init__()
         self.generation = generation
         self.snapshot = snapshot
+        self.error = error
+
+
+class ReconcileLoadProgress(Message):
+    def __init__(self, generation: int, done: int, total: int) -> None:
+        super().__init__()
+        self.generation = generation
+        self.done = done
+        self.total = total
+
+
+class ReconcileLoadFinished(Message):
+    def __init__(
+        self, generation: int, files: list[DateReviewFile] | None, error: str = ""
+    ) -> None:
+        super().__init__()
+        self.generation = generation
+        self.files = files
         self.error = error
 
 
@@ -752,7 +783,7 @@ class OptionsPane(Vertical):
                 ):
                     yield Button(label, id=ident, compact=True, tooltip=tip)
         with Collapsible(title="Metadata and file times", id="group-metadata"):
-            yield Static("Choose Apply mode · filenames stay unchanged", classes="option-note")
+            yield Static("Choose Apply mode", classes="option-note")
             with WrappingRow(id="opt-modes"):
                 yield OptionToggle(
                     "D",
@@ -763,6 +794,18 @@ class OptionsPane(Vertical):
                 yield OptionToggle(
                     "M", "Set file times", tooltip=TOGGLE_TIPS["mtime_mode"], id="opt-mtime_mode"
                 )
+                yield OptionToggle(
+                    "R",
+                    "Earliest dates",
+                    tooltip=TOGGLE_TIPS["reconcile_mode"],
+                    id="opt-reconcile_mode",
+                )
+            with WrappingRow(id="reconcile-options", classes="option-row"):
+                for ident, label in (
+                    ("act-reconcile-date", "C Choose date"),
+                    ("act-edit-reconcile", "I Edit highlighted file"),
+                ):
+                    yield Button(label, id=ident, compact=True, tooltip=BUTTON_TIPS[ident])
             yield Static("Write actions · each asks for confirmation", classes="option-note")
             with WrappingRow(classes="option-row"):
                 for ident, label in (
@@ -1065,6 +1108,7 @@ class RenamerApp(App[None]):
         Binding("D", "date_mode", show=False),
         Binding("R", "reconcile_dates", show=False),
         Binding("I", "edit_reconcile", show=False),
+        Binding("C", "choose_reconcile_date", show=False),
         Binding("W", "write_timezone", show=False),
         Binding("M", "mtime_mode", show=False),
         Binding("B", "write_geodata", show=False),
@@ -1095,12 +1139,21 @@ class RenamerApp(App[None]):
         self.visual = False
         self.anchor: int | None = None
         self.reconcile_mode = False
+        self._reconcile_loading = False
+        self._reconcile_generation = 0
+        self._reconcile_cancel = Event()
+        self._reconcile_key: tuple[tuple[Path, ...], str | None, bool, str | None] | None = None
+        self._reconcile_cached_rules: tuple[str | None, bool, str | None] | None = None
+        self._reconcile_previous_facts: dict[Path, FileFacts] = {}
+        self._reconcile_progress = ""
+        self._reconcile_previous_modes: tuple[bool, bool] | None = None
         self._reconcile_files: list[DateReviewFile] = []
         self._reconcile_rows: list[DateReviewRow] = []
         self._reconcile_overrides: dict[
             Path, tuple[ReconcileCandidate | None, bool, bool, bool, bool]
         ] = {}
         self._reconcile_scope: set[int] = set()
+        self._reconcile_assigned: dict[Path, ReconcileCandidate] = {}
         self.date_mode = False
         self.mtime_mode = False
         self._leader = False
@@ -1193,6 +1246,7 @@ class RenamerApp(App[None]):
         self._start_folder_load()
 
     def on_unmount(self) -> None:
+        self._invalidate_reconcile_load()
         self._folder_cancel.set()
         self._folder_generation += 1
         if self._preview_timer is not None:
@@ -1284,6 +1338,7 @@ class RenamerApp(App[None]):
         path_map: dict[Path, Path] | None = None,
         applied_names: Iterable[Path] = (),
     ) -> None:
+        self._invalidate_reconcile_load(discard_cached=True)
         old_files = self.files
         selected = self.selected.copy()
         locked = self.locked.copy()
@@ -1306,6 +1361,13 @@ class RenamerApp(App[None]):
         self.visual = False
         self.anchor = None
         moved = path_map or {}
+        if self._reconcile_assigned:
+            alive_paths = set(self.files)
+            self._reconcile_assigned = {
+                dest: candidate
+                for path, candidate in self._reconcile_assigned.items()
+                if (dest := moved.get(path, path)) in alive_paths
+            }
         if moved:
             self._reconcile_overrides = {
                 moved.get(path, path): override
@@ -1445,6 +1507,7 @@ class RenamerApp(App[None]):
         self.query_one(FileTable).focus()
 
     def _invalidate_metadata(self) -> None:
+        self._invalidate_reconcile_load(discard_cached=True)
         self._facts.clear()
         self._date_plan = None
         self._date_plan_key = None
@@ -1469,6 +1532,9 @@ class RenamerApp(App[None]):
         key = (str(path), self.rules.source_tz, self.rules.use_json_data)
         cached = self._facts.get(key)
         if cached is None:
+            if self._reconcile_loading:
+                # The worker re-reads facts after a timezone or sidecar setting changes.
+                return self._reconcile_previous_facts.get(path) or FileFacts()
             cached = inspect_file(path, self.rules, self.target_zone())
             self._facts[key] = cached
         return cached
@@ -1573,8 +1639,7 @@ class RenamerApp(App[None]):
 
     def refresh_view(self, *, keep_position: bool = False) -> None:
         row = self.query_one(FileTable).cursor_row if keep_position else 0
-        if self.reconcile_mode:
-            self._reconcile_files = self._load_reconcile_files()
+        self._ensure_reconcile_preview()
         with self._name_plan_scope():
             self._recompute_changing()
             self._recompute_neighbors()
@@ -1608,7 +1673,7 @@ class RenamerApp(App[None]):
     def _recompute_visible(self, *, fallback_row: int = 0) -> None:
         view = self.table_view
         _proposed, resolved = self._name_plan()
-        if self.reconcile_mode:
+        if self.reconcile_mode and not self._reconcile_loading:
             resolved = [
                 row.change.target.name if row.change else path.name
                 for path, row in zip(self.files, self._reconcile_rows, strict=True)
@@ -1626,7 +1691,9 @@ class RenamerApp(App[None]):
                 facts,
                 warning=warning,
                 changed=(
-                    index in self._changing if self.reconcile_mode else resolved[index] != path.name
+                    self._reconcile_rows[index].change is not None
+                    if self.reconcile_mode and not self._reconcile_loading
+                    else self._reconcile_loading or resolved[index] != path.name
                 ),
                 pending=pending is not None
                 and (pending.moment is not None or bool(pending.description)),
@@ -1667,6 +1734,13 @@ class RenamerApp(App[None]):
         """Indexes whose apply preview differs from the file as it is now."""
         self._changing = set()
         if self.reconcile_mode:
+            if self._reconcile_loading or len(self._reconcile_files) != len(self.files):
+                self._reconcile_scope = set()
+                self._reconcile_rows = [
+                    DateReviewRow("Reading earliest-date metadata…", status="Loading")
+                    for _ in self.files
+                ]
+                return
             self._plan_reconcile_rows()
             self._changing = {
                 index for index, row in enumerate(self._reconcile_rows) if row.change is not None
@@ -2248,7 +2322,9 @@ class RenamerApp(App[None]):
         if not self.is_mounted:
             return
         hint = (
-            "I Edit highlighted file · Enter Review batch"
+            "C Choose date · I Edit highlighted file · Enter Review batch"
+            if self.reconcile_mode and not self._reconcile_loading
+            else ""
             if self.reconcile_mode
             else self._earliest_hint()
         )
@@ -2299,7 +2375,11 @@ class RenamerApp(App[None]):
         path = self.files[self._cursor]
         if self.reconcile_mode:
             row = self._reconcile_rows[self._cursor]
-            return Text(f"{row.status}\n{row.detail}\n\nI Edit highlighted file")
+            status_style = "yellow" if row.status == "Needs review" else "bold"
+            result = Text.assemble((row.status, status_style), "\n", format_reconcile_detail(row))
+            if not self._reconcile_loading:
+                result.append("\n\nC Choose date · I Edit highlighted file", style="dim")
+            return result
         facts = self.facts_for(path)
         new_name = self.preview_for(self._cursor)
         text.append(path.name + "\n", style="bold")
@@ -2396,6 +2476,9 @@ class RenamerApp(App[None]):
 
     def _update_status(self) -> None:
         widget = self.query_one("#status", Static)
+        if self._reconcile_loading and not self._loading:
+            widget.update(Text(f"{self._reconcile_progress} · Esc Cancel"))
+            return
         if self._message:
             widget.update(Text(self._message))
             return
@@ -2426,7 +2509,7 @@ class RenamerApp(App[None]):
         visible = {self.files[index] for index in self._visible}
         hint = "Previews alone do not queue renames."
         if self.reconcile_mode:
-            targets = {self.files[index] for index in self._changing}
+            targets = {self.files[index] for index in self._changing & self._reconcile_scope}
             summary = f"Apply earliest dates: {len(targets)} files"
             hint = f"{self._reconcile_issue_count()} need review · I Edit highlighted file"
         elif self.date_mode:
@@ -2483,7 +2566,9 @@ class RenamerApp(App[None]):
             if self.mtime_mode
             else "Apply names / notes"
         )
-        self.query_one("#act-apply", Button).label = f"Enter {label}"
+        apply = self.query_one("#act-apply", Button)
+        apply.label = f"Enter {label}"
+        apply.disabled = self._reconcile_loading
         undo = self.query_one("#act-undo", Button)
         last = self.journal.batches[-1] if self.journal.batches else None
         undo.label = f"u Undo {BATCH_LABEL.get(last.kind, last.kind)}" if last else "u Undo"
@@ -2689,6 +2774,9 @@ class RenamerApp(App[None]):
         if self._loading:
             self.action_cancel_folder_load()
             return
+        if self._reconcile_loading:
+            self._leave_reconcile_load("Earliest-date preview cancelled.")
+            return
         if self._find_open:
             self._close_find(restore=True)
             return
@@ -2756,6 +2844,7 @@ class RenamerApp(App[None]):
             date_mode=self.date_mode,
             mtime_mode=self.mtime_mode,
             reconcile_mode=self.reconcile_mode,
+            reconcile_loading=self._reconcile_loading,
         )
 
     def action_cursor_down(self) -> None:
@@ -3171,7 +3260,8 @@ class RenamerApp(App[None]):
             self.rules.use_earliest = False
         setattr(self.rules, field, value)
         if field == "use_json_data":
-            self._facts.clear()
+            if not self.reconcile_mode:
+                self._facts.clear()
             state = "on" if self.rules.use_json_data else "off"
             self.set_status(f"JSON data is {state}")
         if field == "add_datetime" and self.rules.add_datetime:
@@ -3187,6 +3277,10 @@ class RenamerApp(App[None]):
                 )
             self.query_one("#opt-date_mode", OptionToggle).set_value(self.date_mode)
             self.query_one("#opt-mtime_mode", OptionToggle).set_value(self.mtime_mode)
+            self.query_one("#opt-reconcile_mode", OptionToggle).set_value(self.reconcile_mode)
+            reconcile_controls = self.query_one("#reconcile-options", WrappingRow)
+            reconcile_controls.display = self.reconcile_mode
+            reconcile_controls.disabled = self._reconcile_loading or not self._visible
             self.query_one("#opt-preview", OptionToggle).set_value(self.preview_on)
             self.query_one("#opt-use_earliest", Button).label = (
                 "E Use earliest date · ON" if self.rules.use_earliest else "E Use earliest date"
@@ -3200,7 +3294,9 @@ class RenamerApp(App[None]):
                 ", ".join(cleanup) if cleanup else "off"
             )
             mode = (
-                "dates from filenames ON"
+                "earliest dates ON"
+                if self.reconcile_mode
+                else "dates from filenames ON"
                 if self.date_mode
                 else "file times ON"
                 if self.mtime_mode
@@ -3233,6 +3329,11 @@ class RenamerApp(App[None]):
                 return
             self._begin()
             self._assign_date_mode(event.value)
+            return
+        if box_id == "opt-reconcile_mode":
+            if event.value != self.reconcile_mode:
+                self.action_reconcile_dates()
+                event.toggle.set_value(self.reconcile_mode)
             return
         if box_id == "opt-mtime_mode":
             if event.value == self.mtime_mode:
@@ -3272,6 +3373,8 @@ class RenamerApp(App[None]):
             "act-write-zone": "write_timezone",
             "view-open": "filter_sort",
             "act-gps": "write_geodata",
+            "act-reconcile-date": "choose_reconcile_date",
+            "act-edit-reconcile": "edit_reconcile",
             "act-refresh": "reload_files",
             "act-reset": "reset_rules",
             "act-scan": "scan_review",
@@ -3330,7 +3433,7 @@ class RenamerApp(App[None]):
             self._update_status()
             return
         file_preview.forget_optional_readers()
-        self._facts.clear()
+        self._invalidate_metadata()
         self.refresh_view()
         if completed.returncode == 0:
             self.set_status(f"{offer.title} install finished.")
@@ -3416,7 +3519,8 @@ class RenamerApp(App[None]):
     def action_reset_rules(self) -> None:
         self._begin()
         reset_name_rules(self.rules)
-        self._facts.clear()
+        if not self.reconcile_mode:
+            self._facts.clear()
         self.set_status("Naming rules reset. Manual names, locks and photo-review staging kept.")
         self.refresh_view()
 
@@ -3906,77 +4010,207 @@ class RenamerApp(App[None]):
         self._begin()
         self.reconcile_mode = not self.reconcile_mode
         if self.reconcile_mode:
+            self._reconcile_previous_modes = self.date_mode, self.mtime_mode
             self.date_mode = self.mtime_mode = False
         state = "on" if self.reconcile_mode else "off"
         self.set_status(f"Earliest date mode {state}")
         self.refresh_view(keep_position=True)
 
-    def _load_reconcile_files(self) -> list[DateReviewFile]:
-        zone = self.target_zone()
-        previous = {file.path: file for file in self._reconcile_files}
-        files = []
-        for index, path in enumerate(self.files):
-            revision = file_revision(path)
-            info = None
-            if revision is not None and not path.is_symlink():
-                try:
-                    info = path.stat()
-                except OSError:
-                    pass
-            cached = previous.get(path)
-            birth = None
-            modified = None
-            embedded = {}
-            sidecar_revision = None
-            facts = FileFacts()
-            if info is not None:
-                sidecar = (
-                    takeout_sidecar(path, json_candidates(path))
-                    if self.rules.use_json_data
-                    else None
+    def _invalidate_reconcile_load(self, *, discard_cached: bool = False) -> None:
+        self._reconcile_cancel.set()
+        self._reconcile_generation += 1
+        self._reconcile_loading = False
+        self._reconcile_key = None
+        self._reconcile_previous_facts.clear()
+        if discard_cached:
+            self._reconcile_files = []
+            self._reconcile_cached_rules = None
+
+    def _ensure_reconcile_preview(self) -> None:
+        if not self.reconcile_mode:
+            if self._reconcile_key is not None:
+                self._invalidate_reconcile_load()
+            self._reconcile_previous_modes = None
+            return
+        read_rules = self.rules.source_tz, self.rules.use_json_data, self.exiftool
+        key = (tuple(self.files), *read_rules)
+        if self._reconcile_key == key:
+            return
+        self._invalidate_reconcile_load()
+        self._reconcile_key = key
+        self._reconcile_loading = True
+        self._reconcile_progress = f"Loading earliest-date preview: 0/{len(self.files)} files"
+        self._reconcile_cancel = Event()
+        self._reconcile_previous_facts = {
+            Path(path): facts for (path, _, _), facts in self._facts.items()
+        }
+        previous = (
+            {file.path: file for file in self._reconcile_files}
+            if self._reconcile_cached_rules == read_rules
+            else {}
+        )
+        self._read_reconcile_preview(
+            self._reconcile_generation,
+            key[0],
+            replace(self.rules),
+            self.exiftool,
+            previous,
+            self._reconcile_cancel,
+        )
+
+    def _leave_reconcile_load(self, message: str) -> None:
+        self._invalidate_reconcile_load()
+        self.reconcile_mode = False
+        if self._reconcile_previous_modes is not None:
+            self.date_mode, self.mtime_mode = self._reconcile_previous_modes
+        self.set_status(message)
+        self.refresh_view(keep_position=True)
+
+    @work(thread=True, group="reconcile-load", exit_on_error=False)
+    def _read_reconcile_preview(
+        self,
+        generation: int,
+        paths: tuple[Path, ...],
+        rules: RenameRules,
+        exiftool: str | None,
+        previous: dict[Path, DateReviewFile],
+        cancel: Event,
+    ) -> None:
+        try:
+            zone = resolve_tz(rules.source_tz)
+            files = []
+            last_update = monotonic()
+            for path in paths:
+                if cancel.is_set():
+                    return
+                files.append(
+                    self._read_reconcile_file(path, rules, zone, exiftool, previous.get(path))
                 )
-                sidecar_revision = file_revision(sidecar) if sidecar is not None else None
-                facts = self.facts_for(path)
-                if (
-                    cached is None
-                    or revision != cached.revision
-                    or sidecar != facts.sidecar
-                    or sidecar_revision != cached.sidecar_revision
-                ):
-                    facts = inspect_file(path, self.rules, zone)
-                    self._facts[(str(path), self.rules.source_tz, self.rules.use_json_data)] = facts
-                birth = getattr(info, "st_birthtime", info.st_ctime if os.name == "nt" else None)
-                modified = info.st_mtime
-                embedded = (
-                    cached.embedded
-                    if cached is not None and cached.revision == revision
-                    else reconcile_metadata_fields(path, self.exiftool)
-                )
-            date_facts = facts
-            if birth is None:
-                date_facts = replace(
-                    facts,
-                    candidates=[item for item in facts.candidates if item.label != "birth"],
-                    earliest_fallback=(
-                        None
-                        if facts.earliest_fallback and facts.earliest_fallback.label == "birth"
-                        else facts.earliest_fallback
-                    ),
-                )
-            files.append(
-                DateReviewFile(
-                    path,
-                    facts,
-                    reconcile_dates(path.name, date_facts, zone),
-                    revision if info is not None else None,
-                    sidecar_revision,
-                    birth,
-                    modified,
-                    index in self.locked or index in self.manual,
-                    embedded,
-                )
+                if cancel.is_set():
+                    return
+                now = monotonic()
+                if len(files) == len(paths) or now - last_update >= 0.05:
+                    self.post_message(ReconcileLoadProgress(generation, len(files), len(paths)))
+                    last_update = now
+        except Exception as error:
+            if not cancel.is_set():
+                self.post_message(ReconcileLoadFinished(generation, None, str(error)))
+            return
+        if not cancel.is_set():
+            self.post_message(ReconcileLoadFinished(generation, files))
+
+    def _reconcile_load_current(self, generation: int) -> bool:
+        return (
+            self.is_running
+            and self.reconcile_mode
+            and self._reconcile_loading
+            and self._reconcile_generation == generation
+        )
+
+    def on_reconcile_load_progress(self, event: ReconcileLoadProgress) -> None:
+        if self._reconcile_load_current(event.generation):
+            self._reconcile_progress = (
+                f"Loading earliest-date preview: {event.done}/{event.total} files"
             )
-        return files
+            self._update_status()
+
+    def on_reconcile_load_finished(self, event: ReconcileLoadFinished) -> None:
+        if not self._reconcile_load_current(event.generation):
+            return
+        if event.files is None:
+            self._leave_reconcile_load(f"Earliest-date preview failed: {event.error}")
+            return
+        self._reconcile_loading = False
+        self._reconcile_previous_modes = None
+        self._reconcile_files = event.files
+        self._reconcile_cached_rules = self.rules.source_tz, self.rules.use_json_data, self.exiftool
+        self._reconcile_previous_facts.clear()
+        for file in event.files:
+            self._facts[(str(file.path), self.rules.source_tz, self.rules.use_json_data)] = (
+                file.facts
+            )
+        if not self._message or self._message == "Earliest date mode on":
+            self.set_status("Earliest-date preview ready.")
+        self.refresh_view(keep_position=True)
+
+    @staticmethod
+    def _read_reconcile_file(
+        path: Path,
+        rules: RenameRules,
+        zone: tzinfo,
+        exiftool: str | None,
+        cached: DateReviewFile | None,
+    ) -> DateReviewFile:
+        revision = file_revision(path)
+        info = None
+        if revision is not None and not path.is_symlink():
+            try:
+                info = path.stat()
+            except OSError:
+                pass
+        birth = None
+        modified = None
+        embedded = {}
+        sidecar_revision = None
+        facts = FileFacts()
+        if info is not None:
+            sidecar = takeout_sidecar(path, json_candidates(path)) if rules.use_json_data else None
+            sidecar_revision = file_revision(sidecar) if sidecar is not None else None
+            if (
+                cached is not None
+                and revision == cached.revision
+                and sidecar == cached.facts.sidecar
+                and sidecar_revision == cached.sidecar_revision
+            ):
+                return cached
+            facts = inspect_file(path, rules, zone)
+            birth = getattr(info, "st_birthtime", info.st_ctime if os.name == "nt" else None)
+            modified = info.st_mtime
+            embedded = (
+                cached.embedded
+                if cached is not None and cached.revision == revision
+                else reconcile_metadata_fields(path, exiftool)
+            )
+        date_facts = facts
+        if birth is None:
+            date_facts = replace(
+                facts,
+                candidates=[item for item in facts.candidates if item.label != "birth"],
+                earliest_fallback=(
+                    None
+                    if facts.earliest_fallback and facts.earliest_fallback.label == "birth"
+                    else facts.earliest_fallback
+                ),
+            )
+        return DateReviewFile(
+            path,
+            facts,
+            reconcile_dates(path.name, date_facts, zone),
+            revision if info is not None else None,
+            sidecar_revision,
+            birth,
+            modified,
+            False,
+            embedded,
+        )
+
+    def _with_assigned_date(self, file: DateReviewFile) -> DateReviewFile:
+        candidate = self._reconcile_assigned.get(file.path)
+        override = self._reconcile_overrides.get(file.path)
+        individual = override[0] if override is not None else None
+        zone = self.target_zone()
+        chosen = assigned_reconcile_candidate(candidate, zone) if candidate is not None else None
+        options = file.dates.candidates
+        if individual is not None and individual.assigned:
+            options = (assigned_reconcile_candidate(individual, zone), *options)
+        if chosen is not None and chosen not in options:
+            options = (chosen, *options)
+        if options == file.dates.candidates:
+            return file
+        dates = replace(
+            file.dates, recommended=chosen or file.dates.recommended, candidates=options
+        )
+        return replace(file, dates=dates)
 
     def _reconcile_options(self, file: DateReviewFile) -> tuple[int | None, bool, bool, bool, bool]:
         override = self._reconcile_overrides.get(file.path)
@@ -4002,8 +4236,13 @@ class RenamerApp(App[None]):
     def _review_reconcile(
         self, files: list[DateReviewFile], options: list[tuple[int | None, bool, bool, bool, bool]]
     ) -> list[DateReviewRow]:
+        locked_paths = {
+            self.files[index]
+            for index in self.locked.keys() | self.manual.keys()
+            if 0 <= index < len(self.files)
+        }
         return review_date_changes(
-            files,
+            [replace(file, locked=file.path in locked_paths) for file in files],
             options,
             zone=self.target_zone(),
             prefix=self.rules.use_prefix,
@@ -4015,25 +4254,22 @@ class RenamerApp(App[None]):
         all_indexes = set(range(len(self.files)))
         scope = self.selected & all_indexes if self.selected else all_indexes
         self._reconcile_scope = scope
-        rows = [
-            DateReviewRow("File is outside the current selection.", status="Outside scope")
-            for _ in self.files
-        ]
+        rows = [DateReviewRow("Choose a date with I or C.") for _ in self.files]
         for indexes in (sorted(scope), sorted(all_indexes - scope)):
-            files = [self._reconcile_files[index] for index in indexes]
+            files = [self._with_assigned_date(self._reconcile_files[index]) for index in indexes]
             options = [self._reconcile_options(file) for file in files]
             reviewed = self._review_reconcile(files, options)
             for index, file, row in zip(indexes, files, reviewed, strict=True):
                 override = self._reconcile_overrides.get(file.path)
                 if override and override[0] is None:
                     row = DateReviewRow("File skipped by override.", status="Skipped")
-                if index not in scope:
-                    row = replace(row, status="Outside scope", change=None)
                 rows[index] = row
         self._reconcile_rows = rows
 
     def _reconcile_issue_count(self) -> int:
-        return sum(row.status == "Needs review" for row in self._reconcile_rows)
+        return sum(
+            self._reconcile_rows[index].status == "Needs review" for index in self._reconcile_scope
+        )
 
     def _add_reconcile_columns(self, table: FileTable) -> None:
         self._name_width, self._new_width = self._desired_flex()
@@ -4054,16 +4290,72 @@ class RenamerApp(App[None]):
                 fit_middle(path.name, self._name_width),
                 row.date[:19],
                 fit_middle(row.source, 15),
-                row.fields,
-                row.status,
+                Text(row.fields, style="green" if row.change is not None else "dim"),
+                Text(row.status, style="yellow" if row.status == "Needs review" else ""),
             )
             for index, (path, row) in enumerate(zip(self.files, self._reconcile_rows, strict=True))
         ]
 
-    def action_edit_reconcile(self) -> None:
-        if not self.reconcile_mode or not self._visible or self._loading or self._find_open:
+    def action_choose_reconcile_date(self) -> None:
+        if (
+            not self.reconcile_mode
+            or self._loading
+            or self._reconcile_loading
+            or self._find_open
+            or not self._visible
+            or not self._reconcile_files
+        ):
             return
-        file = self._reconcile_files[self._cursor]
+        source = self._reconcile_files[self._cursor]
+        targets = [self.files[index] for index in self._targets()]
+        candidates = [
+            item
+            for item in source.dates.candidates
+            if item.precision == "second" and not item.blocked
+        ]
+        choices = [
+            f"{item.label} · {item.moment:%Y-%m-%d %H:%M:%S} {format_offset(item.moment)}"
+            for item in candidates
+        ]
+
+        def stage(index: int | None) -> None:
+            if index is None:
+                return
+            if index == len(candidates):
+                for path in targets:
+                    self._reconcile_assigned.pop(path, None)
+                self.set_status("Automatic dates restored for the chosen files.")
+            elif not source.is_current() or (
+                self.rules.use_json_data
+                and takeout_sidecar(source.path, json_candidates(source.path))
+                != source.facts.sidecar
+            ):
+                self._invalidate_reconcile_load()
+                self.set_status("The date source changed. Check the refreshed preview.")
+            else:
+                for path in targets:
+                    self._reconcile_assigned[path] = candidates[index]
+                self.set_status(f"Staged the chosen timestamp for {len(targets)} files.")
+            self.refresh_view(keep_position=True)
+
+        self.push_screen(
+            ChooseReconcileDateScreen(
+                source.path.name, self.rules.source_tz or "Local system", len(targets), choices
+            ),
+            stage,
+        )
+
+    def action_edit_reconcile(self) -> None:
+        if (
+            not self.reconcile_mode
+            or not self._visible
+            or self._loading
+            or self._find_open
+            or self._reconcile_loading
+            or not self._reconcile_files
+        ):
+            return
+        file = self._with_assigned_date(self._reconcile_files[self._cursor])
         initial, filenames, filesystem, birth, capture = self._reconcile_options(file)
         choices = [
             f"{item.label} · {item.moment:%Y-%m-%d %H:%M:%S} {format_offset(item.moment)}"
@@ -4072,11 +4364,11 @@ class RenamerApp(App[None]):
 
         def describe(
             selected: list[int | None], name: bool, times: bool, creation: bool, metadata: bool
-        ) -> tuple[str, list[str], bool]:
+        ) -> tuple[str, list[str | Text], bool]:
             (row,) = self._review_reconcile(
                 [file], [(selected[0], name, times, creation, metadata)]
             )
-            return row.status, [row.detail], row.change is not None
+            return row.status, [format_reconcile_detail(row)], row.change is not None
 
         def stage(result: ReconcileResult | None) -> None:
             if result is None:
@@ -4101,7 +4393,13 @@ class RenamerApp(App[None]):
         )
 
     def _ask_reconcile_dates(self) -> None:
-        changes = [row.change for row in self._reconcile_rows if row.change is not None]
+        if self._reconcile_loading:
+            return
+        changes = [
+            change
+            for index in sorted(self._reconcile_scope)
+            if (change := self._reconcile_rows[index].change) is not None
+        ]
         issues = self._reconcile_issue_count()
         if not changes:
             self.set_status(f"No ready changes. {issues} need review.")
@@ -4129,6 +4427,7 @@ class RenamerApp(App[None]):
                 )
                 for item in changes
             ):
+                self._invalidate_reconcile_load()
                 self.refresh_view(keep_position=True)
                 self.set_status(
                     "Files changed during review. Check the refreshed plan and apply again."

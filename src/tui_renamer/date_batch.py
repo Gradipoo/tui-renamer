@@ -90,12 +90,19 @@ def _metadata_available(path: Path, exiftool: str | None) -> bool:
 
 
 @dataclass(frozen=True)
+class DateValueDiff:
+    before: tuple[int, int]
+    after: tuple[int, int]
+
+
+@dataclass(frozen=True)
 class DateReviewRow:
     detail: str
     date: str = ""
     source: str = ""
     status: str = "Needs review"
     change: DateChange | None = None
+    diffs: tuple[DateValueDiff, ...] = ()
 
     @property
     def fields(self) -> str:
@@ -139,6 +146,16 @@ def review_date_changes(
         files, proposed, options, strict=True
     ):
         lines = [file.path.name]
+        diffs: list[DateValueDiff] = []
+
+        def add_diff(label: str, old: str, new: str) -> None:
+            header = f"{label}  "
+            separator = "  →  " if old else "→  "
+            before = sum(len(line) + 1 for line in lines) + len(header)
+            after = before + len(old) + len(separator)
+            diffs.append(DateValueDiff((before, before + len(old)), (after, after + len(new))))
+            lines.append(f"{header}{old}{separator}{new}")
+
         if file.revision is None:
             rows.append(DateReviewRow("File unavailable or symbolic link."))
             continue
@@ -177,22 +194,21 @@ def review_date_changes(
         ]
         metadata = capture and candidate.capture and bool(embedded_changes)
         if target != file.path:
-            lines.append(f"Filename  {file.path.name}  →  {target.name}")
+            add_diff("Filename", file.path.name, target.name)
         elif filenames and file.locked:
             lines.append("Filename has a staged or locked name")
         if modified:
-            lines.append(f"Modified time  {_clock(file.modified, zone)}  →  {clock}")
-            lines.append(f"Access time  →  {clock}")
+            add_diff("Modified time", _clock(file.modified, zone), clock)
+            add_diff("Access time", "", clock)
         if birth:
-            lines.append(f"Creation time  {_clock(file.birth, zone)}  →  {clock}")
+            add_diff("Creation time", _clock(file.birth, zone), clock)
         if creation and not birth_available:
             lines.append("Creation time write unavailable")
         if capture and not _metadata_available(file.path, exiftool):
             lines.append("Capture write unavailable for this file type")
         if metadata:
-            lines.extend(
-                f"{tag}  {value or 'missing'}  →  {new}" for tag, value, new in embedded_changes
-            )
+            for tag, value, new in embedded_changes:
+                add_diff(tag, value or "missing", new)
         renamed = target != file.path
         notes = renamed and _exists(notes_path_for(file.path))
         collision = renamed and (
@@ -213,13 +229,17 @@ def review_date_changes(
             )
         elif renamed or modified or birth or metadata:
             if notes:
-                lines.append(f"Review notes  →  {notes_path_for(target).name}")
+                add_diff(
+                    "Review notes", notes_path_for(file.path).name, notes_path_for(target).name
+                )
             change = DateChange(file.path, target, moment, modified, birth, metadata, notes)
             status = "Update"
         else:
             lines.append("No changes with these options")
             status = "Match"
-        rows.append(DateReviewRow("\n".join(lines), clock, candidate.label, status, change))
+        rows.append(
+            DateReviewRow("\n".join(lines), clock, candidate.label, status, change, tuple(diffs))
+        )
     return rows
 
 

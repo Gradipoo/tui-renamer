@@ -65,3 +65,8 @@ None.
   their undo use an exclusive hard link followed by unlink to avoid replacing an
   occupied destination. An unsupported filesystem fails that rename before
   writing timestamps for the file.
+
+- The earliest-date preview has its own cancellable metadata worker. Wait for
+  `wait_for_reconcile_load` in headless tests before reading planned changes.
+  Table previews include all files. Apply uses only the current batch scope, and
+  `C` stages dates by path without changing that scope.

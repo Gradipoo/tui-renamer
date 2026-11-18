@@ -1,6 +1,6 @@
 """Plan reconciliation of dates from filenames and file facts."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
@@ -21,6 +21,7 @@ class ReconcileCandidate:
     warning: str = ""
     capture: bool = False
     blocked: bool = False
+    assigned: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,3 +135,12 @@ def reconcile_dates(name: str, facts: FileFacts, zone: tzinfo) -> Reconciliation
     candidates = dict.fromkeys((recommended, filename, earliest, *options.values()))
     candidates.pop(None, None)
     return Reconciliation(name, filename, earliest, recommended, tuple(candidates), span)
+
+
+def assigned_reconcile_candidate(candidate: ReconcileCandidate, zone: tzinfo) -> ReconcileCandidate:
+    """Keep the selected instant and recheck its clock in the current display zone."""
+    label = candidate.label if candidate.assigned else f"Chosen · {candidate.label}"
+    chosen = _candidate(
+        label, candidate.moment.astimezone(zone), candidate.precision, candidate.capture
+    )
+    return replace(chosen, assigned=True)

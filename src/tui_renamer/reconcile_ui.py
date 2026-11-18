@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -12,11 +13,21 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, OptionList, Select, Static
 
+from tui_renamer.date_batch import DateReviewRow
+
 ReconcileResult = tuple[list[int | None], bool, bool, bool, bool]
 DescribeReconcile = Callable[
-    [list[int | None], bool, bool, bool, bool], tuple[str, list[str], bool]
+    [list[int | None], bool, bool, bool, bool], tuple[str, list[str | Text], bool]
 ]
 SKIP = -1
+
+
+def format_reconcile_detail(row: DateReviewRow) -> Text:
+    detail = Text(row.detail)
+    for diff in row.diffs:
+        detail.stylize("red strike", *diff.before)
+        detail.stylize("green", *diff.after)
+    return detail
 
 
 class ReconcileScreen(ModalScreen[ReconcileResult | None]):
@@ -58,7 +69,7 @@ class ReconcileScreen(ModalScreen[ReconcileResult | None]):
             else [0 if options else None for options in choices]
         )
         self.describe = describe
-        self.details: list[str] = []
+        self.details: list[str | Text] = []
         self.row: int | None = None
         self.summary = ""
 
@@ -192,3 +203,58 @@ class ReconcileScreen(ModalScreen[ReconcileResult | None]):
                 )
             elif not event.button.disabled:
                 self.dismiss(self._result())
+
+
+class ChooseReconcileDateScreen(ModalScreen[int | None]):
+    """Choose an exact timestamp to stage for the current target files."""
+
+    BINDINGS = [Binding("escape", "dismiss(None)", show=False)]
+    DEFAULT_CSS = """
+    ChooseReconcileDateScreen { align: center middle; }
+    ChooseReconcileDateScreen #choose-date-dialog {
+        width: 76; max-width: 98%; height: auto; max-height: 95%;
+        border: solid $primary; background: $surface; padding: 1 2;
+    }
+    ChooseReconcileDateScreen Horizontal { height: auto; }
+    """
+
+    def __init__(self, source: str, zone: str, count: int, choices: list[str]) -> None:
+        super().__init__()
+        self.source = source
+        self.zone = zone
+        self.count = count
+        self.choices = choices
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="choose-date-dialog"):
+            yield Static("Choose a date to assign", markup=False)
+            yield Static(
+                f"Source file: {self.source}\nTimezone: {self.zone}\n"
+                f"Stage for {self.count} files. Individual overrides take precedence.",
+                markup=False,
+            )
+            yield Select(
+                [(label, index) for index, label in enumerate(self.choices)]
+                + [("Use automatic dates", len(self.choices))],
+                prompt="Choose a date",
+                id="choose-date-source",
+            )
+            with Horizontal():
+                yield Button("Stage", id="choose-date-stage", variant="primary", disabled=True)
+                yield Button("Cancel", id="choose-date-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#choose-date-source", Select).focus()
+
+    @on(Select.Changed, "#choose-date-source")
+    def selection_changed(self, event: Select.Changed) -> None:
+        self.query_one("#choose-date-stage", Button).disabled = not isinstance(event.value, int)
+
+    @on(Button.Pressed)
+    def answer(self, event: Button.Pressed) -> None:
+        if event.button.id == "choose-date-cancel":
+            self.dismiss(None)
+        elif event.button.id == "choose-date-stage":
+            choice = self.query_one("#choose-date-source", Select).value
+            if isinstance(choice, int):
+                self.dismiss(choice)
