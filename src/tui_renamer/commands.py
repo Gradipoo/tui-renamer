@@ -167,11 +167,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     _spec("Batch actions", "enter", "Apply", "Apply the current mode", "apply"),
     _spec("Apply mode", "D", "Filename date", "Set dates from filenames", "date_mode", "date_mode"),
     _spec(
-        "Batch actions",
+        "Apply mode",
         "R",
-        "Reconcile earliest date",
-        "Review filename, filesystem, and capture dates before applying changes",
+        "Earliest date mode",
+        "Preview and apply the earliest date across files",
         "reconcile_dates",
+        "reconcile_mode",
+    ),
+    _spec(
+        "Apply mode",
+        "I",
+        "Edit earliest-date override",
+        "Choose a source or fields for the highlighted file",
+        "edit_reconcile",
     ),
     _spec(
         "Write after confirmation",
@@ -240,12 +248,17 @@ class CommandContext:
     undo_count: int
     date_mode: bool
     mtime_mode: bool
+    reconcile_mode: bool = False
 
 
 def dim_reason(spec: CommandSpec, ctx: CommandContext) -> str:
     """Why a command cannot run, or an empty string when it can."""
     run = spec.run
-    if run in {"lock", "lock_selected", "insert"} and (ctx.date_mode or ctx.mtime_mode):
+    if run == "edit_reconcile" and not ctx.reconcile_mode:
+        return "earliest date mode required"
+    if run in {"lock", "lock_selected", "insert"} and (
+        ctx.date_mode or ctx.mtime_mode or ctx.reconcile_mode
+    ):
         return "mode clash"
     if run == "date_mode" and ctx.mtime_mode:
         return "mode clash"

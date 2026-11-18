@@ -12,8 +12,10 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, OptionList, Select, Static
 
-ReconcileResult = tuple[list[int | None], bool, bool, bool]
-DescribeReconcile = Callable[[list[int | None], bool, bool, bool], tuple[str, list[str], bool]]
+ReconcileResult = tuple[list[int | None], bool, bool, bool, bool]
+DescribeReconcile = Callable[
+    [list[int | None], bool, bool, bool, bool], tuple[str, list[str], bool]
+]
 SKIP = -1
 
 
@@ -42,9 +44,13 @@ class ReconcileScreen(ModalScreen[ReconcileResult | None]):
         describe: DescribeReconcile,
         *,
         initial: list[int | None] | None = None,
+        fields: tuple[bool, bool, bool, bool] = (True, True, True, False),
+        stage: bool = False,
     ) -> None:
         super().__init__()
         self.paths = paths
+        self.fields = fields
+        self.stage = stage
         self.choices = choices
         self.selected = (
             initial.copy()
@@ -58,7 +64,9 @@ class ReconcileScreen(ModalScreen[ReconcileResult | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="reconcile-dialog"):
-            yield Static("Reconcile timestamps", markup=False)
+            yield Static(
+                "Edit reconciliation" if self.stage else "Reconcile timestamps", markup=False
+            )
             with Horizontal(id="reconcile-body"):
                 yield OptionList(
                     *(self._row_label(index) for index in range(len(self.paths))),
@@ -75,12 +83,25 @@ class ReconcileScreen(ModalScreen[ReconcileResult | None]):
                     )
                     with VerticalScroll(id="reconcile-detail-scroll"):
                         yield Static("", id="reconcile-details", markup=False)
-            yield Checkbox("Rename files", True, id="reconcile-filenames", compact=True)
-            yield Checkbox("Set filesystem times", True, id="reconcile-filesystem", compact=True)
-            yield Checkbox("Write capture metadata", False, id="reconcile-capture", compact=True)
+            yield Checkbox("Rename file", self.fields[0], id="reconcile-filenames", compact=True)
+            yield Checkbox(
+                "Set modified and access times",
+                self.fields[1],
+                id="reconcile-filesystem",
+                compact=True,
+            )
+            yield Checkbox("Set creation time", self.fields[2], id="reconcile-birth", compact=True)
+            yield Checkbox(
+                "Write capture metadata", self.fields[3], id="reconcile-capture", compact=True
+            )
             yield Static("", id="reconcile-summary", markup=False)
             with Horizontal():
-                yield Button("Apply", variant="primary", id="reconcile-apply", disabled=True)
+                yield Button(
+                    "Stage override" if self.stage else "Apply",
+                    variant="primary",
+                    id="reconcile-apply",
+                    disabled=True,
+                )
                 yield Button("Cancel", id="reconcile-cancel")
 
     def on_mount(self) -> None:
@@ -99,13 +120,14 @@ class ReconcileScreen(ModalScreen[ReconcileResult | None]):
             self.selected.copy(),
             self.query_one("#reconcile-filenames", Checkbox).value,
             self.query_one("#reconcile-filesystem", Checkbox).value,
+            self.query_one("#reconcile-birth", Checkbox).value,
             self.query_one("#reconcile-capture", Checkbox).value,
         )
 
     def _refresh_plan(self) -> None:
         self.summary, self.details, can_apply = self.describe(*self._result())
         self.query_one("#reconcile-summary", Static).update(self.summary)
-        self.query_one("#reconcile-apply", Button).disabled = not can_apply
+        self.query_one("#reconcile-apply", Button).disabled = not can_apply and not self.stage
         if self.row is not None:
             self.query_one("#reconcile-details", Static).update(self.details[self.row])
 

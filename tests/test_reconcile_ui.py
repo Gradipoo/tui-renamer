@@ -13,8 +13,8 @@ async def test_reconcile_preserves_each_rows_source_and_refreshes_only_on_change
     reviews: list[ReconcileResult] = []
     answers: list[ReconcileResult | None] = []
 
-    def describe(selected, filenames, filesystem, capture):
-        reviews.append((selected, filenames, filesystem, capture))
+    def describe(selected, filenames, filesystem, creation, capture):
+        reviews.append((selected, filenames, filesystem, creation, capture))
         return (
             "Two rows",
             [str(choice) for choice in selected],
@@ -31,7 +31,7 @@ async def test_reconcile_preserves_each_rows_source_and_refreshes_only_on_change
         await app.push_screen(screen, answers.append)
         await pilot.pause()
         assert screen.focused is screen.query_one("#reconcile-cancel", Button)
-        assert reviews[-1] == ([0, None], True, True, False)
+        assert reviews[-1] == ([0, None], True, True, True, False)
 
         rows = screen.query_one("#reconcile-rows", OptionList)
         source = screen.query_one("#reconcile-source", Select)
@@ -42,7 +42,7 @@ async def test_reconcile_preserves_each_rows_source_and_refreshes_only_on_change
 
         source.value = 0
         await pilot.pause()
-        assert reviews[-1] == ([0, 0], True, True, False)
+        assert reviews[-1] == ([0, 0], True, True, True, False)
         rows.highlighted = 0
         await pilot.pause()
         source.value = 1
@@ -51,7 +51,7 @@ async def test_reconcile_preserves_each_rows_source_and_refreshes_only_on_change
         await pilot.click("#reconcile-capture")
         await pilot.click("#reconcile-apply")
         await pilot.pause()
-        assert answers == [([1, 0], True, True, True)]
+        assert answers == [([1, 0], True, True, True, True)]
 
 
 async def test_reconcile_disables_apply_and_enter_cancels_without_a_plan():
