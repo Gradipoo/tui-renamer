@@ -320,6 +320,7 @@ If the picture cannot be drawn, the detail pane stays up and shows the file name
 | `D` | Filename date mode. Enter sets dates and EXIF |
 | `R` | Earliest date mode. Enter reviews the batch |
 | `I` | Edit the highlighted file in earliest date mode |
+| `C` | Assign one exact timestamp in earliest date mode |
 | `M` | Set mtime mode. Enter sets times |
 | `W` | Write the local time and timezone offset |
 | `B` | Write JSON location into EXIF GPS |
@@ -360,9 +361,12 @@ locks, manual edits, and batch scope work as usual. This only stages filenames.
 Apply still asks for confirmation, and metadata and file-time write modes remain
 separate.
 
-Press `R` to preview earliest-date reconciliation in the file table. Each
-row shows the chosen date, source, fields that would change, and status. The
-detail pane shows the current and proposed values. The earliest date can come
+Press `R` or choose **Earliest dates** in **Metadata and file times**. The
+preview loads in the background. You can move and select files while it reads
+metadata, and Esc cancels the load. Apply becomes available when loading finishes.
+Selecting files changes the Apply scope while all visible previews stay in the
+table. Each row shows the chosen date, source, fields that would change, and status. The
+detail pane shows old values in red and proposed values in green. The earliest date can come
 from the filename, embedded capture metadata, enabled JSON sidecars, or
 filesystem times.
 
@@ -373,6 +377,12 @@ time, and supported embedded dates and offsets together. The filename keeps
 its original text and receives a `YYYY-MM-DD-HHMMSS` stamp when needed. Manual
 or locked names stay in place. Reconcile renames require filesystem hard-link
 support.
+
+Press `C` to choose an exact date from the highlighted file and stage it for
+the selection, or just for the highlighted file if nothing is selected.
+Individual overrides take precedence. Choose **Use automatic dates** in the
+picker to clear the shared assignment for those targets. Enter confirms the
+writes using the current batch scope.
 
 Use `I` on a highlighted row to stage a different source, turn off individual
 fields, or skip the file. Rows marked **Needs review** stay out of Apply. For
@@ -392,7 +402,7 @@ Controls are grouped by what they do:
 | Filename preview | Date stamps, sidecar names and locations, placement, timezone, and reset naming rules. These controls do not write files. |
 | Filename cleanup | Optional text transformations. Collapsed initially; the title lists active transformations. |
 | Staged edits and selection | Manual names, photo review, locks, selection, and discard manual name. Apply writes staged changes. |
-| Metadata and file times | Choose the filename-date or file-time Apply mode. Write timezone and Write GPS each have their own confirmation. |
+| Metadata and file times | Choose filename-date, earliest-date, or file-time Apply mode. Write timezone and Write GPS each have their own confirmation. |
 | View and session | Picture visibility, reset preview/zoom, and Refresh folder. |
 | Batch bar | Pending Apply scope, Apply, the named Undo action, and Last result. Always outside the scrolling options. |
 

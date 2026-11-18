@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 from textual.widgets import Checkbox
 
-from conftest import wait_for_folder_load
+from conftest import wait_for_folder_load, wait_for_reconcile_load
 from tui_renamer.app import RenamerApp
 from tui_renamer.date_batch import DateChange, apply_date_changes
 from tui_renamer.journal import Journal
@@ -33,21 +33,21 @@ async def test_review_apply_and_undo_dates(tmp_path: Path, filename_wins: bool):
     async with app.run_test(size=(120, 42)) as pilot:
         await wait_for_folder_load(app, pilot)
         await pilot.press("R")
-        await pilot.pause()
+        await wait_for_reconcile_load(app, pilot)
         assert app.reconcile_mode and not isinstance(app.screen, ReconcileScreen)
         assert ("Filename" if filename_wins else "EXIF") in app._detail_text().plain
         assert original.exists()
         assert original.stat().st_mtime == modified
 
         await pilot.press("enter", "y")
-        await pilot.pause()
+        await wait_for_reconcile_load(app, pilot)
         assert app.reconcile_mode
         assert app._reconcile_rows[app._cursor].status == "Match"
         assert app.files[app._cursor] == target
         assert target.stat().st_mtime == moment.timestamp()
         assert read_exif(target).naive == moment.replace(tzinfo=None)
         app.action_undo()
-        await pilot.pause()
+        await wait_for_reconcile_load(app, pilot)
         assert original.stat().st_mtime == modified
         assert read_exif(original).naive == capture.replace(tzinfo=None)
 
@@ -87,7 +87,7 @@ async def test_date_review_rejects_modified_source(tmp_path: Path):
     async with app.run_test(size=(120, 42)) as pilot:
         await wait_for_folder_load(app, pilot)
         await pilot.press("R")
-        await pilot.pause()
+        await wait_for_reconcile_load(app, pilot)
         await pilot.press("enter")
         new_mtime = datetime(2025, 1, 2, tzinfo=timezone.utc).timestamp()
         os.utime(photo, (new_mtime, new_mtime))
@@ -108,6 +108,7 @@ async def test_filesystem_winner_can_be_resolved_in_single_file_editor(tmp_path:
     async with app.run_test(size=(120, 42)) as pilot:
         await wait_for_folder_load(app, pilot)
         await pilot.press("R")
+        await wait_for_reconcile_load(app, pilot)
         assert app._reconcile_rows[0].status == "Needs review"
         await pilot.press("I")
         assert isinstance(app.screen, ReconcileScreen)
@@ -118,6 +119,7 @@ async def test_filesystem_winner_can_be_resolved_in_single_file_editor(tmp_path:
         assert app._reconcile_rows[0].status == "Update"
         assert photo.exists()
         await pilot.press("enter", "y")
+        await wait_for_reconcile_load(app, pilot)
         renamed = tmp_path / "2000-01-02-000000-scan.jpg"
         assert renamed.exists()
         assert read_exif(renamed).naive is None
@@ -139,6 +141,7 @@ async def test_batch_applies_hidden_files_and_leaves_unresolved_rows(tmp_path: P
     async with app.run_test(size=(120, 42)) as pilot:
         await wait_for_folder_load(app, pilot)
         await pilot.press("R")
+        await wait_for_reconcile_load(app, pilot)
         assert sorted(row.status for row in app._reconcile_rows) == [
             "Needs review",
             "Update",

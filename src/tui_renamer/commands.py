@@ -176,6 +176,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     ),
     _spec(
         "Apply mode",
+        "C",
+        "Choose date",
+        "Stage one date for selected files or the highlighted file",
+        "choose_reconcile_date",
+    ),
+    _spec(
+        "Apply mode",
         "I",
         "Edit earliest-date override",
         "Choose a source or fields for the highlighted file",
@@ -234,6 +241,8 @@ FILE_ACTIONS = {
     "lock_selected",
     "date_mode",
     "mtime_mode",
+    "edit_reconcile",
+    "choose_reconcile_date",
     "write_timezone",
     "write_geodata",
     "scan_review",
@@ -249,13 +258,16 @@ class CommandContext:
     date_mode: bool
     mtime_mode: bool
     reconcile_mode: bool = False
+    reconcile_loading: bool = False
 
 
 def dim_reason(spec: CommandSpec, ctx: CommandContext) -> str:
     """Why a command cannot run, or an empty string when it can."""
     run = spec.run
-    if run == "edit_reconcile" and not ctx.reconcile_mode:
+    if run in {"edit_reconcile", "choose_reconcile_date"} and not ctx.reconcile_mode:
         return "earliest date mode required"
+    if run in {"apply", "edit_reconcile", "choose_reconcile_date"} and ctx.reconcile_loading:
+        return "dates are loading"
     if run in {"lock", "lock_selected", "insert"} and (
         ctx.date_mode or ctx.mtime_mode or ctx.reconcile_mode
     ):

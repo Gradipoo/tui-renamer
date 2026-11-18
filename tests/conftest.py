@@ -62,3 +62,12 @@ async def wait_for_folder_load(app, pilot) -> None:
         # The result message can schedule a rebuild after the worker has finished.
         while app._loading or app._rebuilding:
             await pilot.pause()
+
+
+async def wait_for_reconcile_load(app, pilot) -> None:
+    """Wait for the active earliest-date snapshot and its table refresh."""
+    async with asyncio.timeout(15):
+        await pilot.pause()
+        while app._reconcile_loading or app._rebuilding:
+            await asyncio.sleep(0.01)
+            await pilot.pause()
