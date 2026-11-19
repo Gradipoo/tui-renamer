@@ -370,6 +370,10 @@ detail pane shows old values in red and proposed values in green. The earliest d
 from the filename, embedded capture metadata, enabled JSON sidecars, or
 filesystem times.
 
+When a filename contains only a date or a minute, a complete timestamp within
+that period can supply the missing precision. A later conflicting date requires
+review. Partial dates alone do not supply a time for a filename or capture tag.
+
 Enter reviews the batch for the selected files, or the whole folder when there
 is no selection. The confirmation counts changes by field and includes hidden
 targets. Ready rows update the filename, modified and access times, creation

@@ -50,7 +50,7 @@ def test_partial_date_compares_whole_day_and_uses_noon():
     facts = FileFacts(candidates=[fact("mtime", "2024-02-02T00:00:00")])
     plan = reconcile_dates("Trip February 1, 2024.JPG", facts, UTC)
 
-    assert plan.recommended is plan.filename
+    assert plan.recommended is None
     assert not plan.filename.capture
     assert plan.filename.precision == "date"
     assert plan.filename.warning
@@ -58,7 +58,40 @@ def test_partial_date_compares_whole_day_and_uses_noon():
     assert plan.proposed_name(plan.filename) == plan.name
 
     same_day = FileFacts(candidates=[fact("mtime", "2024-02-01T09:00:00")])
-    assert reconcile_dates(plan.name, same_day, UTC).recommended is None
+    assert reconcile_dates(plan.name, same_day, UTC).recommended.label == "File modified"
+
+
+def test_partial_filename_prefers_complete_same_day_and_preserves_suffix():
+    facts = FileFacts(candidates=[fact("EXIF", "2015-12-29T20:43:24", capture=True)])
+    plan = reconcile_dates("2015-12-29-10.jxl", facts, UTC)
+    assert plan.recommended is plan.earliest
+    assert plan.proposed_name(plan.recommended) == "2015-12-29-204324-10.jxl"
+
+
+def test_partial_filename_and_later_complete_date_needs_review():
+    facts = FileFacts(candidates=[fact("EXIF", "2015-12-30T20:43:24", capture=True)])
+    plan = reconcile_dates("2015-12-29-10.jxl", facts, UTC)
+    assert plan.recommended is None
+
+
+def test_partial_filename_and_earlier_complete_date_uses_earlier():
+    facts = FileFacts(candidates=[fact("EXIF", "2015-12-28T20:43:24", capture=True)])
+    plan = reconcile_dates("2015-12-29-10.jxl", facts, UTC)
+    assert plan.recommended is plan.earliest
+
+
+@pytest.mark.parametrize("clock", ["09:00:00", "23:59:59"])
+def test_partial_day_matches_complete_clock(clock):
+    facts = FileFacts(candidates=[fact("EXIF", f"2015-12-29T{clock}", capture=True)])
+    assert reconcile_dates("2015-12-29-1.jpg", facts, UTC).recommended.precision == "second"
+
+
+def test_minute_precision_uses_matching_second():
+    facts = FileFacts(candidates=[fact("EXIF", "2024-02-01T12:00:34", capture=True)])
+    plan = reconcile_dates("2024-02-01-1200-trip.jpg", facts, UTC)
+    assert plan.filename.precision == "minute"
+    assert plan.recommended is plan.earliest
+    assert plan.proposed_name(plan.recommended) == "2024-02-01-120034-trip.jpg"
 
 
 def test_exact_filename_wins_tie_and_can_be_reviewed_for_capture():

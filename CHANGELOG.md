@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.19
+
+- Use complete matching timestamps when reconciling partial filename dates.
+- Keep conflicting partial dates in review and preserve filename suffixes.
+
 ## 0.1.18
 
 - Load earliest-date previews in the background and keep previews visible for unselected files.
