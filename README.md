@@ -395,6 +395,13 @@ an eligible source or turn off the capture write for that file. Partial dates
 can set filesystem times after an explicit choice. Ambiguous local clocks
 require another source.
 
+For a file that needs review, **Suggested from neighbors** can appear in `I`.
+It uses the nearest earlier and later images with the same numbered filename
+pattern, within ten numbers on either side and thirty minutes apart. The
+review shows the two names and timestamps. Accepting the estimate writes it to
+the selected filesystem fields and marks the filename with `-estimated` when
+renaming. Estimated times are excluded from embedded capture writes.
+
 Apply and Refresh preserve the current mode, list position, filters, sort,
 selection, and unrelated staging. The highlight follows a renamed file when
 it remains visible. **Last result** lists completed changes and failures.

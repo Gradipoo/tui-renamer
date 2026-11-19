@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.20
+
+- Suggest estimated times from nearby numbered photos in earliest-date review.
+- Show every planned date change and explain selected fields that will stay unchanged.
+
 ## 0.1.19
 
 - Use complete matching timestamps when reconciling partial filename dates.

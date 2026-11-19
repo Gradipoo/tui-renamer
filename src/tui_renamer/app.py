@@ -61,6 +61,7 @@ from tui_renamer.core import (
     delta_text,
     earliest_date,
     earliest_source,
+    estimated_filename_date,
     filename_clock_text,
     filter_timezones,
     fit_middle,
@@ -94,6 +95,7 @@ from tui_renamer.date_batch import (
     birth_supported,
     file_revision,
     review_date_changes,
+    suggest_neighbor_date,
 )
 from tui_renamer.extras import InstallOffer, distro_family, install_offers
 from tui_renamer.folder_load import FolderSnapshot, load_folder
@@ -4356,6 +4358,11 @@ class RenamerApp(App[None]):
         ):
             return
         file = self._with_assigned_date(self._reconcile_files[self._cursor])
+        if self._reconcile_rows[self._cursor].status == "Needs review":
+            suggestion = suggest_neighbor_date(file, self._reconcile_files, self.target_zone())
+            if suggestion is not None and suggestion not in file.dates.candidates:
+                dates = replace(file.dates, candidates=(*file.dates.candidates, suggestion))
+                file = replace(file, dates=dates)
         initial, filenames, filesystem, birth, capture = self._reconcile_options(file)
         choices = [
             f"{item.label} · {item.moment:%Y-%m-%d %H:%M:%S} {format_offset(item.moment)}"
@@ -4368,7 +4375,8 @@ class RenamerApp(App[None]):
             (row,) = self._review_reconcile(
                 [file], [(selected[0], name, times, creation, metadata)]
             )
-            return row.status, [format_reconcile_detail(row)], row.change is not None
+            summary = f"{row.status} · {row.fields}" if row.change is not None else row.status
+            return summary, [format_reconcile_detail(row)], row.change is not None
 
         def stage(result: ReconcileResult | None) -> None:
             if result is None:
@@ -4483,6 +4491,9 @@ class RenamerApp(App[None]):
             )
             if part
         ]
+        estimated = sum(estimated_filename_date(item.path.name) for item in plan.todo)
+        if estimated:
+            parts.append(f"{estimated} estimated filenames update filesystem times only")
         question = (
             f"Set dates and EXIF offsets ({offset}) for {len(plan.todo)} file(s)?\n"
             f"Timezone: {name}. Sets mtime, birth time, and EXIF offset tags.\n"
@@ -4511,7 +4522,8 @@ class RenamerApp(App[None]):
                 details.append(f"Failed: {item.path.name}; {exc}")
                 continue
             try:
-                op = self.journal.snapshot(item.path)
+                estimated = estimated_filename_date(item.path.name)
+                op = self.journal.snapshot(item.path, mode="times" if estimated else None)
             except OSError as exc:
                 errors += 1
                 self.debug(f"Snapshot failed for {item.path.name}: {exc}")
@@ -4520,7 +4532,9 @@ class RenamerApp(App[None]):
             batch.ops.append(op)
             if op.copy_failed:
                 notes.append(f"{item.path.name}: metadata cannot be undone")
-            metadata_ok = write_file_metadata_and_offset(item.path, moment, exiftool=self.exiftool)
+            metadata_ok = not estimated and write_file_metadata_and_offset(
+                item.path, moment, exiftool=self.exiftool
+            )
             if metadata_ok:
                 meta_ok += 1
             # EXIF writes change mtime, so apply the requested filesystem clock last.
@@ -4535,6 +4549,8 @@ class RenamerApp(App[None]):
             ok += 1
             if metadata_ok:
                 details.append(f"Dates and capture metadata written: {item.path.name}")
+            elif estimated:
+                details.append(f"File times updated from estimate: {item.path.name}")
             else:
                 details.append(
                     f"Partial write: {item.path.name}; file times updated, "
@@ -4580,6 +4596,10 @@ class RenamerApp(App[None]):
         details: list[str] = []
         for index in indexes:
             path = self.files[index]
+            if estimated_filename_date(path.name):
+                counts.skipped += 1
+                details.append(f"Skipped {path.name}: estimated filename date")
+                continue
             moment = datetime_for_write(path, self.facts_for(path), zone)
             if moment is None:
                 counts.skipped += 1
