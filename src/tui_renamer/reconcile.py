@@ -98,6 +98,12 @@ def _recommended(
         return None
     filename_start, filename_end = _bounds(filename)
     earliest_start, earliest_end = _bounds(earliest)
+    if filename.precision != "second":
+        if earliest.precision == "second" and filename_start <= earliest_start < filename_end:
+            return earliest
+        if earliest_end < filename_start:
+            return earliest
+        return None
     if filename_end <= earliest_start:
         return filename
     if earliest_end < filename_start or (

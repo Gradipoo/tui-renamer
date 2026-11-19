@@ -162,6 +162,11 @@ def review_date_changes(
         if choice is None:
             recommended = file.dates.recommended
             if recommended is None:
+                if file.dates.filename and file.dates.filename.precision != "second":
+                    lines.append(
+                        "Incomplete filename date conflicts with other dates "
+                        "or has no complete match."
+                    )
                 lines.append("Choose a date source with I, or skip this file.")
                 rows.append(DateReviewRow("\n".join(lines)))
             else:

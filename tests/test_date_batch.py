@@ -17,6 +17,31 @@ from tui_renamer.reconcile_ui import ReconcileScreen
 from tui_renamer.table_view import TableView
 
 
+async def test_partial_filename_uses_complete_capture_and_undo(tmp_path: Path):
+    original = tmp_path / "2015-12-29-10.jpg"
+    target = tmp_path / "2015-12-29-204324-10.jpg"
+    capture = datetime(2015, 12, 29, 20, 43, 24, tzinfo=timezone.utc)
+    modified = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+    Image.new("RGB", (8, 8), "red").save(original)
+    assert write_image_exif_datetime(original, capture)
+    os.utime(original, (modified, modified))
+    app = RenamerApp(tmp_path)
+    app.rules.source_tz = "UTC"
+    async with app.run_test(size=(120, 42)) as pilot:
+        await wait_for_folder_load(app, pilot)
+        await pilot.press("R")
+        await wait_for_reconcile_load(app, pilot)
+        assert app._reconcile_rows[0].status == "Update"
+        assert app._reconcile_rows[0].change.target == target
+        assert original.exists() and not target.exists()
+        await pilot.press("enter", "y")
+        await wait_for_reconcile_load(app, pilot)
+        assert target.exists() and target.stat().st_mtime == capture.timestamp()
+        app.action_undo()
+        await wait_for_reconcile_load(app, pilot)
+        assert original.exists() and original.stat().st_mtime == modified
+
+
 @pytest.mark.parametrize("filename_wins", [False, True])
 async def test_review_apply_and_undo_dates(tmp_path: Path, filename_wins: bool):
     original = tmp_path / "2020-01-02-030405-photo.jpg"

@@ -65,6 +65,8 @@ None.
   their undo use an exclusive hard link followed by unlink to avoid replacing an
   occupied destination. An unsupported filesystem fails that rename before
   writing timestamps for the file.
+  A complete earliest timestamp within a partial filename date or minute supplies
+  its missing precision; a later conflicting date requires review.
 
 - The earliest-date preview has its own cancellable metadata worker. Wait for
   `wait_for_reconcile_load` in headless tests before reading planned changes.
