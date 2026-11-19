@@ -5,9 +5,11 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from tui_renamer.core import (
+    ESTIMATED_DATE_SUFFIX,
     FileFacts,
     earliest_date,
     earliest_source,
+    estimated_filename_date,
     filename_clock_text,
     filename_date_match,
 )
@@ -22,6 +24,7 @@ class ReconcileCandidate:
     capture: bool = False
     blocked: bool = False
     assigned: bool = False
+    inferred: bool = False
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,10 @@ class Reconciliation:
         if candidate.blocked or candidate.precision != "second":
             return self.name
         stamp = filename_clock_text(candidate.moment)
+        if candidate.inferred or (
+            self.filename and self.filename.inferred and not candidate.capture
+        ):
+            stamp += ESTIMATED_DATE_SUFFIX
         if self.stamp_span is not None:
             start, end = self.stamp_span
             return f"{self.name[:start]}{stamp}{self.name[end:]}"
@@ -120,7 +127,17 @@ def reconcile_dates(name: str, facts: FileFacts, zone: tzinfo) -> Reconciliation
     if wall is not None and precision is not None:
         if precision == "date":
             wall = wall.replace(hour=12)
-        filename = _candidate("Filename", wall.replace(tzinfo=zone), precision, capture=True)
+        inferred = estimated_filename_date(name)
+        filename = _candidate(
+            "Filename", wall.replace(tzinfo=zone), precision, capture=not inferred
+        )
+        if inferred:
+            filename = replace(
+                filename,
+                inferred=True,
+                warning=filename.warning or "Estimated from neighboring photos.",
+            )
+            span = (span[0], span[1] + len(ESTIMATED_DATE_SUFFIX))
 
     source = earliest_date(facts)
     alternatives = [
@@ -149,4 +166,38 @@ def assigned_reconcile_candidate(candidate: ReconcileCandidate, zone: tzinfo) ->
     chosen = _candidate(
         label, candidate.moment.astimezone(zone), candidate.precision, candidate.capture
     )
-    return replace(chosen, assigned=True)
+    return replace(
+        chosen,
+        assigned=True,
+        inferred=candidate.inferred,
+        warning=chosen.warning or (candidate.warning if candidate.inferred else ""),
+    )
+
+
+def neighbor_reconcile_candidate(
+    before: tuple[str, ReconcileCandidate],
+    after: tuple[str, ReconcileCandidate],
+    fraction: float,
+    zone: tzinfo,
+) -> ReconcileCandidate | None:
+    left = before[1].moment.astimezone(timezone.utc)
+    right = after[1].moment.astimezone(timezone.utc)
+    gap = right - left
+    if not timedelta(seconds=2) <= gap <= timedelta(minutes=30):
+        return None
+    instant = (left + gap * fraction).replace(microsecond=0)
+    if not left < instant < right:
+        return None
+    candidate = _candidate("Suggested from neighbors", instant.astimezone(zone), "second", False)
+    if candidate.blocked:
+        return None
+    evidence = "\n".join(
+        f"{name}  {date.moment:%Y-%m-%d %H:%M:%S %z}  ·  {date.label}"
+        for name, date in (before, after)
+    )
+    return replace(
+        candidate,
+        assigned=True,
+        inferred=True,
+        warning=f"Estimated from neighboring photos.\n{evidence}",
+    )

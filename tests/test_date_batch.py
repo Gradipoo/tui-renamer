@@ -180,3 +180,53 @@ async def test_batch_applies_hidden_files_and_leaves_unresolved_rows(tmp_path: P
         assert [path.stat().st_mtime for path in files] == [wanted, wanted, 1700000000]
         assert app.reconcile_mode
         assert app.table_view.extension == "jpg"
+
+
+async def test_neighbor_estimate_stages_filename_and_mtime_without_capture(tmp_path: Path):
+    from textual.widgets import Select
+
+    left = tmp_path / "2015-07-01-100000-IMG_1041.jpg"
+    photo = tmp_path / "2015-07-01-IMG_1042.jpg"
+    right = tmp_path / "2015-07-01-100030-IMG_1044.jpg"
+    for path in (left, photo, right):
+        Image.new("RGB", (8, 8), "red").save(path)
+        os.utime(path, (1700000000, 1700000000))
+    app = RenamerApp(tmp_path)
+    app.rules.source_tz = "UTC"
+    async with app.run_test(size=(120, 42)) as pilot:
+        await wait_for_folder_load(app, pilot)
+        await pilot.press("R")
+        await wait_for_reconcile_load(app, pilot)
+        index = app.files.index(photo)
+        app.selected = {index}
+        app.refresh_view()
+        app._move_to(index)
+        assert app._reconcile_rows[index].status == "Needs review"
+        await pilot.press("I")
+        assert isinstance(app.screen, ReconcileScreen)
+        options = app.screen.choices[0]
+        suggestion = next(
+            i for i, label in enumerate(options) if "Suggested from neighbors" in label
+        )
+        app.screen.query_one("#reconcile-source", Select).value = suggestion
+        await pilot.pause()
+        assert left.name in str(app.screen.details[0])
+        assert right.name in str(app.screen.details[0])
+        assert "Modified time" in str(app.screen.details[0])
+        assert "Capture metadata excluded" in str(app.screen.details[0])
+        await pilot.click("#reconcile-apply")
+        assert photo.exists()
+        assert "Name Mtime" in app._reconcile_rows[index].fields
+        await pilot.press("enter")
+        assert "1 names" in app.screen.question
+        assert "1 modified and access times" in app.screen.question
+        assert "0 embedded dates" in app.screen.question
+        await pilot.press("y")
+        renamed = tmp_path / "2015-07-01-100010-estimated-IMG_1042.jpg"
+        wanted = datetime(2015, 7, 1, 10, 0, 10, tzinfo=timezone.utc)
+        assert renamed.stat().st_mtime == wanted.timestamp()
+        assert read_exif(renamed).naive is None
+        await wait_for_reconcile_load(app, pilot)
+        app.action_undo()
+        await wait_for_reconcile_load(app, pilot)
+        assert photo.stat().st_mtime == 1700000000

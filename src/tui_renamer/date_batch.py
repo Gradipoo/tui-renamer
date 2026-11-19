@@ -19,8 +19,10 @@ from tui_renamer.metadata import (
     set_birthtime,
     write_file_metadata_and_offset,
 )
-from tui_renamer.reconcile import Reconciliation
+from tui_renamer.reconcile import ReconcileCandidate, Reconciliation, neighbor_reconcile_candidate
+from tui_renamer.scan_candidates import numeric_stem
 from tui_renamer.scan_notes import notes_path_for
+from tui_renamer.scan_pairing import IMAGE_SUFFIXES
 
 
 def file_revision(path: Path) -> tuple[int, ...] | None:
@@ -52,6 +54,55 @@ class DateReviewFile:
                 or self.sidecar_revision == file_revision(self.facts.sidecar)
             )
         )
+
+
+def _photo_sequence(file: DateReviewFile) -> tuple[str, int] | None:
+    if file.revision is None or file.path.suffix.lower() not in IMAGE_SUFFIXES:
+        return None
+    stem = file.path.stem
+    if file.dates.stamp_span is not None:
+        start, end = file.dates.stamp_span
+        stem = stem[:start] + stem[end:]
+    return numeric_stem(stem.strip("-_ ."))
+
+
+def suggest_neighbor_date(
+    file: DateReviewFile, files: list[DateReviewFile], zone: tzinfo
+) -> ReconcileCandidate | None:
+    sequence = _photo_sequence(file)
+    if sequence is None:
+        return None
+    prefix, index = sequence
+    neighbors: dict[int, list[DateReviewFile]] = {}
+    for other in files:
+        pair = _photo_sequence(other)
+        if pair is not None and pair[0] == prefix and abs(pair[1] - index) <= 10:
+            neighbors.setdefault(pair[1], []).append(other)
+    lower = max((number for number in neighbors if number < index), default=None)
+    upper = min((number for number in neighbors if number > index), default=None)
+    if (
+        lower is None
+        or upper is None
+        or any(len(neighbors[number]) != 1 for number in (lower, index, upper))
+    ):
+        return None
+    anchors = []
+    for number in (lower, upper):
+        neighbor = neighbors[number][0]
+        exact = [
+            option
+            for option in neighbor.dates.candidates
+            if option.capture and option.precision == "second" and not option.blocked
+        ]
+        # Prefer actual capture metadata to a name. Conflicting capture dates are ambiguous.
+        captured = [option for option in exact if option != neighbor.dates.filename]
+        eligible = captured or exact
+        if not eligible or len({option.moment.timestamp() for option in eligible}) != 1:
+            return None
+        anchors.append((neighbor.path.name, eligible[0]))
+    return neighbor_reconcile_candidate(
+        anchors[0], anchors[1], (index - lower) / (upper - lower), zone
+    )
 
 
 @dataclass(frozen=True)
@@ -109,7 +160,7 @@ class DateReviewRow:
         change = self.change
         if change is None:
             return "—"
-        return ", ".join(
+        return " ".join(
             label
             for enabled, label in (
                 (change.rename, "Name"),
@@ -202,18 +253,32 @@ def review_date_changes(
             add_diff("Filename", file.path.name, target.name)
         elif filenames and file.locked:
             lines.append("Filename has a staged or locked name")
+        elif filenames:
+            lines.append(
+                "Filename already matches"
+                if candidate.precision == "second"
+                else "Filename needs a complete timestamp"
+            )
         if modified:
             add_diff("Modified time", _clock(file.modified, zone), clock)
             add_diff("Access time", "", clock)
+        elif filesystem:
+            lines.append("Modified time already matches")
         if birth:
             add_diff("Creation time", _clock(file.birth, zone), clock)
         if creation and not birth_available:
             lines.append("Creation time write unavailable")
-        if capture and not _metadata_available(file.path, exiftool):
+        elif creation and not birth:
+            lines.append("Creation time already matches")
+        if capture and candidate.inferred:
+            lines.append("Capture metadata excluded for this estimated date")
+        elif capture and not _metadata_available(file.path, exiftool):
             lines.append("Capture write unavailable for this file type")
         if metadata:
             for tag, value, new in embedded_changes:
                 add_diff(tag, value or "missing", new)
+        elif capture and candidate.capture and file.embedded and not embedded_changes:
+            lines.append("Capture metadata already matches")
         renamed = target != file.path
         notes = renamed and _exists(notes_path_for(file.path))
         collision = renamed and (
@@ -227,7 +292,7 @@ def review_date_changes(
             lines.append(
                 "Destination occupied. Choose a different source or exclude Filename with I."
             )
-        elif capture and not candidate.capture and embedded_changes:
+        elif capture and not candidate.capture and not candidate.inferred and embedded_changes:
             lines.append(
                 "This source cannot set capture dates. "
                 "Choose another source or exclude Capture with I."

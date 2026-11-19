@@ -568,6 +568,17 @@ def parse_filename_datetime(name: str) -> tuple[datetime | None, str | None]:
     return moment, precision
 
 
+ESTIMATED_DATE_SUFFIX = "-estimated"
+
+
+def estimated_filename_date(name: str) -> bool:
+    _, _, span = filename_date_match(name)
+    if span is None:
+        return False
+    tail = Path(name).stem[span[1] :]
+    return tail == ESTIMATED_DATE_SUFFIX or tail.startswith(ESTIMATED_DATE_SUFFIX + "-")
+
+
 def filename_date_match(
     name: str,
 ) -> tuple[datetime | None, str | None, tuple[int, int] | None]:

@@ -126,3 +126,10 @@ def test_embedded_instant_whose_rendered_name_is_ambiguous_is_blocked():
     assert plan.recommended is None
     assert plan.earliest.blocked
     assert plan.proposed_name(plan.earliest) == "Trip.JPG"
+
+
+def test_estimated_filename_cannot_become_confirmed_capture():
+    name = "2015-07-01-100010-estimated-IMG_1042.jpg"
+    plan = reconcile_dates(name, FileFacts(), UTC)
+    assert plan.filename and plan.filename.inferred and not plan.filename.capture
+    assert plan.proposed_name(plan.filename) == name
